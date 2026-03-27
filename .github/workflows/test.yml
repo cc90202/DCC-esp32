@@ -19,7 +19,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: riscv32imac-unknown-none-elf
+          targets: riscv32imac-unknown-none-elf, x86_64-unknown-linux-gnu
 
       - name: Run host-side tests
         run: cargo test-host
@@ -35,7 +35,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: riscv32imac-unknown-none-elf
+          targets: riscv32imac-unknown-none-elf, x86_64-unknown-linux-gnu
           components: clippy
 
       - name: Run clippy (library only)
