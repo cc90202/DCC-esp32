@@ -1,0 +1,36 @@
+# Rust
+/target/
+Cargo.lock
+
+# Build artifacts
+*.elf
+*.bin
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Cargo
+.cargo/*
+!.cargo/config.toml
+
+# ESP32 specific
+build/
+sdkconfig
+sdkconfig.old
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git worktrees
+.worktrees/
+
+# WiFi credentials (never commit)
+.env

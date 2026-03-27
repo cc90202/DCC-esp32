@@ -1,0 +1,32 @@
+[build]
+# Default firmware target for `cargo build` / `cargo run`.
+# Host-side unit tests must use the explicit `cargo test-host` alias below.
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+  "-C",
+  "link-arg=-Tlinkall.x",
+  "-C",
+  "link-arg=-Tdefmt.x",
+  "-C",
+  "force-frame-pointers",
+]
+
+[env]
+DEFMT_LOG = "info"
+ESP_LOG = "info"
+
+[alias]
+# Host-side unit tests for protocol logic (fast feedback).
+test-host = "test --lib --target x86_64-unknown-linux-gnu"
+# Host-side linting for library/tests plus host-safe bin stub.
+clippy-host = "clippy --all-targets --all-features --target x86_64-unknown-linux-gnu"
+# Embedded target compile checks (no flashing required).
+check-esp = "check --target riscv32imac-unknown-none-elf"
+# Embedded linting for the real firmware target.
+clippy-esp = "clippy --all-features --target riscv32imac-unknown-none-elf --lib --bin dcc-esp32"
+# Firmware builds for ESP32-C6.
+build-esp = "build --target riscv32imac-unknown-none-elf"
+build-esp-release = "build --release --target riscv32imac-unknown-none-elf"
