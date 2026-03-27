@@ -1,0 +1,69 @@
+[package]
+edition      = "2024"
+name         = "dcc-esp32"
+rust-version = "1.88"
+version      = "0.1.0"
+
+[features]
+default = []
+rmt-stats = []
+
+[[bin]]
+name = "dcc-esp32"
+path = "./src/bin/main.rs"
+
+[dependencies]
+# Platform-independent dependencies (available in tests)
+heapless         = "0.9"
+
+# ESP32-specific dependencies (only compiled for RISC-V target, not for host tests)
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+esp-hal = { version = "~1.0", features = ["defmt", "esp32c6", "unstable"] }
+ssd1306 = { version = "0.10", features = ["async"] }
+embedded-graphics = "0.8"
+heapless = { version = "0.9", features = ["defmt"] }
+
+esp-rtos = { version = "0.2.0", features = [
+  "defmt",
+  "embassy",
+  "esp-alloc",
+  "esp-radio",
+  "esp32c6",
+] }
+
+defmt                  = "1.0.1"
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32c6"] }
+
+esp-alloc = { version = "0.9.0", features = ["defmt"] }
+esp-println = { version = "0.16.1", features = ["defmt-espflash", "esp32c6"] }
+embassy-executor = { version = "0.9.1", features = ["defmt"] }
+embassy-time = { version = "0.5.0", features = ["defmt"] }
+embassy-sync = { version = "0.7.2", features = ["defmt"] }
+embassy-futures = "0.1.2"
+
+critical-section = "1.2.0"
+static_cell      = "2.1.1"
+
+# Network stack (WiFi Z21 UDP)
+esp-radio         = { version = "0.17.0", features = ["esp32c6", "wifi", "unstable"] }
+embassy-net       = { version = "0.8.0",  features = ["dhcpv4", "medium-ethernet", "udp"] }
+embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
+
+[dev-dependencies]
+# For running tests on host platform
+heapless = "0.9"
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
+incremental = false
+
+[profile.release]
+codegen-units    = 1     # LLVM can perform better optimizations using a single thread
+debug            = 2
+debug-assertions = false
+incremental      = false
+lto              = 'fat'
+opt-level        = 's'
+overflow-checks  = false

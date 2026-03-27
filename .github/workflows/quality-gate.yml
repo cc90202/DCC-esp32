@@ -1,0 +1,42 @@
+name: quality-gate
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: quality-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-and-esp-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imac-unknown-none-elf, x86_64-unknown-linux-gnu
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Host unit tests
+        run: cargo test-host
+
+      - name: ESP target compile check
+        run: cargo check-esp
+
+      - name: Clippy host lib
+        run: cargo clippy --lib --target x86_64-unknown-linux-gnu -- -D warnings
+
+      - name: Clippy riscv32 lib
+        run: cargo clippy --lib --target riscv32imac-unknown-none-elf -- -D warnings
