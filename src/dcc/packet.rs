@@ -210,7 +210,9 @@ impl NmraSpeed28 {
         if speed > 29 { None } else { Some(Self(speed)) }
     }
 
-    pub const fn value(self) -> u8 { self.0 }
+    pub const fn value(self) -> u8 {
+        self.0
+    }
 }
 
 /// Validated 128-step speed value per NMRA S-9.2.1.
@@ -225,7 +227,9 @@ impl NmraSpeed128 {
         if speed > 126 { None } else { Some(Self(speed)) }
     }
 
-    pub const fn value(self) -> u8 { self.0 }
+    pub const fn value(self) -> u8 {
+        self.0
+    }
 }
 
 /// DCC packet types
@@ -693,11 +697,9 @@ mod tests {
 
     #[test]
     fn test_speed128_packet_encoding() {
-        let packet = DccPacket::speed_128step(
-            DccAddress::new_long(1000).unwrap(),
-            64,
-            Direction::Reverse,
-        ).unwrap();
+        let packet =
+            DccPacket::speed_128step(DccAddress::new_long(1000).unwrap(), 64, Direction::Reverse)
+                .unwrap();
         let bytes = packet.to_bytes().unwrap();
 
         // Expected: [addr_high, addr_low, 0x3F, speed_byte, checksum]

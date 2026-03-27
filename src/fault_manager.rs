@@ -370,8 +370,7 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             let event = SystemStatusEvent::EstopActive;
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender
-                .try_send(crate::display::DisplayEvent::Fault(FaultCause::Estop));
+            let _ = display_sender.try_send(crate::display::DisplayEvent::Fault(FaultCause::Estop));
         }
         if t.emit_estop_cleared {
             let event = SystemStatusEvent::EstopCleared;
