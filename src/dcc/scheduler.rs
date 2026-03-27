@@ -1093,9 +1093,9 @@ pub async fn packet_scheduler_task(
         let slot_count = slot_manager.slot_count();
         if slot_count != prev_slot_count {
             prev_slot_count = slot_count;
-            let _ = display_sender.try_send(
-                crate::display::DisplayEvent::ActiveLocoCount(slot_count as u8),
-            );
+            let _ = display_sender.try_send(crate::display::DisplayEvent::ActiveLocoCount(
+                slot_count as u8,
+            ));
         }
         let to_send = slot_manager
             .build_next_packet_with_function_budget(allowed_slot_visits_without_function(
@@ -1174,7 +1174,11 @@ mod tests {
 
         assert_eq!(address, addr(3));
         assert_eq!(direction, Direction::Forward);
-        assert_eq!(speed.value(), 2, "logical step 1 must map to NMRA packet step 1");
+        assert_eq!(
+            speed.value(),
+            2,
+            "logical step 1 must map to NMRA packet step 1"
+        );
     }
 
     #[test]

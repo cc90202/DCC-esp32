@@ -254,8 +254,7 @@ mod imp {
                         0
                     };
                     // Suppress per-second polling noise (SystemState, XBus status)
-                    let is_polling =
-                        header == HEADER_SYSTEMSTATE_GETDATA || header == HEADER_XBUS;
+                    let is_polling = header == HEADER_SYSTEMSTATE_GETDATA || header == HEADER_XBUS;
                     if !is_polling {
                         let xheader = if header == HEADER_XBUS && n >= 5 {
                             recv_buf[4]

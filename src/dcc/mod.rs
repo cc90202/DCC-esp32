@@ -58,7 +58,7 @@ pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_dcc_packet};
 #[doc(inline)]
 pub use engine::{IdleWaveformBuildError, build_idle_rmt_buffer, dcc_engine_task};
 #[doc(inline)]
-pub use packet::{DccAddress, DccPacket, Direction, NmraSpeed128, NmraSpeed28, PacketEncodeError};
+pub use packet::{DccAddress, DccPacket, Direction, NmraSpeed28, NmraSpeed128, PacketEncodeError};
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
 pub use scheduler::SchedulerCommandChannel;

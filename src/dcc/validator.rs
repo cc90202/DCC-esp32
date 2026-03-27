@@ -378,7 +378,7 @@ impl DccValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dcc::{DccAddress, Direction, NmraSpeed128, NmraSpeed28, encode_dcc_packet};
+    use crate::dcc::{DccAddress, Direction, NmraSpeed28, NmraSpeed128, encode_dcc_packet};
 
     // --- Positive tests ---
 
