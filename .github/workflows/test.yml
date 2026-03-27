@@ -1,4 +1,4 @@
-name: Test on Multiple Platforms
+name: Test
 
 on:
   push:
@@ -8,35 +8,21 @@ on:
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: riscv32imac-unknown-none-elf
-
-      - name: Run host-side tests
-        run: cargo test-host
-
-      - name: Check ESP32-C6 firmware compilation
-        run: cargo check-esp
-
-  lint:
-    name: Lint
+    name: Test & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: riscv32imac-unknown-none-elf
+          targets: riscv32imac-unknown-none-elf, x86_64-unknown-linux-gnu
           components: clippy
+
+      - name: Run host-side tests
+        run: cargo test-host
+
+      - name: Check ESP32-C6 firmware compilation
+        run: cargo check-esp
 
       - name: Run clippy (library only)
         run: cargo clippy --lib -- -D warnings

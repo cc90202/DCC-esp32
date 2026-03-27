@@ -309,8 +309,9 @@ fn verify_boot_packet_encoding() -> Result<(), BootError> {
     let short_addr_3 = DccAddress::new_short(3).ok_or(BootError::DccSelfCheck(
         DccSelfCheckError::ShortAddress3Invalid,
     ))?;
-    let speed28 = DccPacket::speed_28step(short_addr_3, 14, Direction::Forward)
-        .ok_or(BootError::DccSelfCheck(DccSelfCheckError::Speed28PacketEncoding))?;
+    let speed28 = DccPacket::speed_28step(short_addr_3, 14, Direction::Forward).ok_or(
+        BootError::DccSelfCheck(DccSelfCheckError::Speed28PacketEncoding),
+    )?;
     log_packet_bytes(
         "Speed28 packet (addr=3, fwd, spd=14)",
         speed28,
@@ -320,8 +321,9 @@ fn verify_boot_packet_encoding() -> Result<(), BootError> {
     let long_addr_1000 = DccAddress::new_long(1000).ok_or(BootError::DccSelfCheck(
         DccSelfCheckError::LongAddress1000Invalid,
     ))?;
-    let speed128 = DccPacket::speed_128step(long_addr_1000, 64, Direction::Reverse)
-        .ok_or(BootError::DccSelfCheck(DccSelfCheckError::Speed128PacketEncoding))?;
+    let speed128 = DccPacket::speed_128step(long_addr_1000, 64, Direction::Reverse).ok_or(
+        BootError::DccSelfCheck(DccSelfCheckError::Speed128PacketEncoding),
+    )?;
     log_packet_bytes(
         "Speed128 packet (addr=1000, rev, spd=64)",
         speed128,
