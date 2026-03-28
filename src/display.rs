@@ -40,14 +40,85 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::channel::{Receiver, Sender};
 #[cfg(target_arch = "riscv32")]
+use embassy_time::{Duration, Instant, with_timeout};
+#[cfg(target_arch = "riscv32")]
 use embedded_graphics::{
+    geometry::Size,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
     prelude::*,
+    primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
 #[cfg(target_arch = "riscv32")]
 use ssd1306::{I2CDisplayInterface, Ssd1306Async, mode::BufferedGraphicsModeAsync, prelude::*};
+
+/// Braille dot spinner frames — each u8 is the Unicode offset from U+2800,
+/// which directly encodes the dot bitmask (2 cols x 3 rows).
+#[cfg(target_arch = "riscv32")]
+const THROBBER_FRAMES: [u8; 10] = [
+    0x0B, // ⠋
+    0x19, // ⠙
+    0x39, // ⠹
+    0x38, // ⠸
+    0x3C, // ⠼
+    0x34, // ⠴
+    0x26, // ⠦
+    0x27, // ⠧
+    0x07, // ⠇
+    0x0F, // ⠏
+];
+
+#[cfg(target_arch = "riscv32")]
+const THROBBER_INTERVAL: Duration = Duration::from_millis(80);
+
+/// Draw braille-style dot spinner at the given top-left position.
+/// Each dot is a 2x2 filled rectangle in a 2-column x 3-row grid.
+#[cfg(target_arch = "riscv32")]
+fn draw_throbber<D: DrawTarget<Color = BinaryColor>>(target: &mut D, origin: Point, mask: u8) {
+    let dot = Size::new(2, 2);
+    let style = PrimitiveStyle::with_fill(BinaryColor::On);
+
+    // Bit-to-position: column-major order matching braille encoding.
+    // (row, col) — col X offset: 0 or 3, row Y offset: 0, 3, 6.
+    const MAP: [(i32, i32); 6] = [
+        (0, 0), // bit 0: row 0, col 0
+        (3, 0), // bit 1: row 1, col 0
+        (6, 0), // bit 2: row 2, col 0
+        (0, 3), // bit 3: row 0, col 1
+        (3, 3), // bit 4: row 1, col 1
+        (6, 3), // bit 5: row 2, col 1
+    ];
+
+    for (bit, &(dy, dx)) in MAP.iter().enumerate() {
+        if mask & (1 << bit) != 0 {
+            let _ = Rectangle::new(Point::new(origin.x + dx, origin.y + dy), dot)
+                .into_styled(style)
+                .draw(target);
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+fn apply_display_event(
+    event: DisplayEvent,
+    boot_step: &mut BootStep,
+    ip: &mut Option<[u8; 4]>,
+    state: &mut LedState,
+    loco_count: &mut u8,
+    fault: &mut Option<FaultCause>,
+    message: &mut Option<heapless::String<21>>,
+) {
+    match event {
+        DisplayEvent::BootProgress(s) => *boot_step = s,
+        DisplayEvent::IpAssigned(addr) => *ip = Some(addr),
+        DisplayEvent::SystemState(s) => *state = s,
+        DisplayEvent::ActiveLocoCount(n) => *loco_count = n,
+        DisplayEvent::Fault(f) => *fault = Some(f),
+        DisplayEvent::FaultCleared => *fault = None,
+        DisplayEvent::Message(m) => *message = Some(m),
+    }
+}
 
 #[cfg(target_arch = "riscv32")]
 fn boot_step_label(step: BootStep) -> &'static str {
@@ -91,6 +162,7 @@ fn format_ip(addr: [u8; 4]) -> heapless::String<15> {
 }
 
 #[cfg(target_arch = "riscv32")]
+#[allow(clippy::too_many_arguments)]
 async fn render(
     display: &mut Ssd1306Async<
         I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
@@ -103,6 +175,7 @@ async fn render(
     loco_count: u8,
     fault: Option<FaultCause>,
     message: &Option<heapless::String<21>>,
+    throbber_frame: u8,
 ) {
     use core::fmt::Write;
 
@@ -134,6 +207,15 @@ async fn render(
         line.clear();
         let _ = write!(line, "Fault: {}", fault_label(cause));
         let _ = Text::new(&line, Point::new(0, 56), style).draw(display);
+    }
+
+    // Animated throbber next to state label when running.
+    if state == LedState::Running {
+        draw_throbber(
+            display,
+            Point::new(96, 18),
+            THROBBER_FRAMES[throbber_frame as usize % THROBBER_FRAMES.len()],
+        );
     }
 
     // Last row: boot step during boot, or message after boot
@@ -193,6 +275,7 @@ pub async fn display_task(
     let mut loco_count: u8 = 0;
     let mut fault: Option<FaultCause> = None;
     let mut message: Option<heapless::String<21>> = None;
+    let mut throbber_frame: u8 = 0;
 
     // Initial render (shows "PeripheralsInit" boot step).
     render(
@@ -203,19 +286,57 @@ pub async fn display_task(
         loco_count,
         fault,
         &message,
+        throbber_frame,
     )
     .await;
 
     loop {
-        let event = receiver.receive().await;
-        match event {
-            DisplayEvent::BootProgress(s) => boot_step = s,
-            DisplayEvent::IpAssigned(addr) => ip = Some(addr),
-            DisplayEvent::SystemState(s) => state = s,
-            DisplayEvent::ActiveLocoCount(n) => loco_count = n,
-            DisplayEvent::Fault(f) => fault = Some(f),
-            DisplayEvent::FaultCleared => fault = None,
-            DisplayEvent::Message(m) => message = Some(m),
+        if state == LedState::Running {
+            let mut next_throbber_tick = Instant::now() + THROBBER_INTERVAL;
+            loop {
+                let now = Instant::now();
+                if now >= next_throbber_tick {
+                    throbber_frame = (throbber_frame + 1) % THROBBER_FRAMES.len() as u8;
+                    next_throbber_tick += THROBBER_INTERVAL;
+                    break;
+                }
+
+                let wait = next_throbber_tick - now;
+                match with_timeout(wait, receiver.receive()).await {
+                    Ok(event) => {
+                        apply_display_event(
+                            event,
+                            &mut boot_step,
+                            &mut ip,
+                            &mut state,
+                            &mut loco_count,
+                            &mut fault,
+                            &mut message,
+                        );
+                        if state != LedState::Running {
+                            throbber_frame = 0;
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        throbber_frame = (throbber_frame + 1) % THROBBER_FRAMES.len() as u8;
+                        next_throbber_tick += THROBBER_INTERVAL;
+                        break;
+                    }
+                }
+            }
+        } else {
+            throbber_frame = 0;
+            let event = receiver.receive().await;
+            apply_display_event(
+                event,
+                &mut boot_step,
+                &mut ip,
+                &mut state,
+                &mut loco_count,
+                &mut fault,
+                &mut message,
+            );
         }
         render(
             &mut display,
@@ -225,6 +346,7 @@ pub async fn display_task(
             loco_count,
             fault,
             &message,
+            throbber_frame,
         )
         .await;
     }
