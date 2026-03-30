@@ -59,7 +59,7 @@
 use crate::dcc::packet::DccPacket;
 use crate::dcc::timing::{
     DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
-    PREAMBLE_BITS,
+    MAX_DATA_PULSES, PREAMBLE_BITS,
 };
 use heapless::Vec;
 
@@ -175,9 +175,45 @@ pub fn encode_dcc_packet(
     Ok(pulses)
 }
 
+/// Encode only the variable packet tail written by the ISR.
+///
+/// Format: \[start_bit\]\[data_bytes\]\[end_bit\]
+pub fn encode_dcc_data_portion(
+    packet: &DccPacket,
+) -> Result<Vec<PulseCode, MAX_DATA_PULSES>, EncodeError> {
+    let mut pulses = Vec::new();
+
+    push_data_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
+
+    let bytes = packet.to_bytes()?;
+    for (i, &byte) in bytes.iter().enumerate() {
+        let byte_pulses = encode_byte(byte);
+        for pulse in byte_pulses {
+            push_data_pulse(&mut pulses, pulse)?;
+        }
+
+        if i < bytes.len() - 1 {
+            push_data_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
+        }
+    }
+
+    push_data_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
+
+    Ok(pulses)
+}
+
 /// Push a pulse into the fixed-capacity pulse buffer.
 fn push_pulse(
     pulses: &mut Vec<PulseCode, DCC_MAX_PACKET_PULSES>,
+    pulse: PulseCode,
+) -> Result<(), EncodeError> {
+    pulses
+        .push(pulse)
+        .map_err(|_| EncodeError::PulseBufferOverflow)
+}
+
+fn push_data_pulse(
+    pulses: &mut Vec<PulseCode, MAX_DATA_PULSES>,
     pulse: PulseCode,
 ) -> Result<(), EncodeError> {
     pulses
@@ -246,6 +282,104 @@ mod tests {
         // Preamble should be all "1"s (58μs)
         for i in 0..PREAMBLE_BITS {
             assert_eq!(pulses[i].length1, DCC_ONE_HIGH_US);
+        }
+    }
+
+    #[test]
+    fn test_encode_dcc_data_portion_matches_full_packet_tail() {
+        let addr = DccAddress::short(3).unwrap();
+        let packet = DccPacket::speed_28step(addr, 10, Direction::Forward).unwrap();
+
+        let full = encode_dcc_packet(&packet).unwrap();
+        let tail = encode_dcc_data_portion(&packet).unwrap();
+
+        assert_eq!(&full[PREAMBLE_BITS..], tail.as_slice());
+    }
+
+    #[test]
+    fn test_all_packet_types_fit_in_rmt_ram() {
+        // RMT channel memsize: 2 = 96 RAM slots. transmit_continuously requires
+        // all data in RAM at once. RMT buffer = encode output + 1 end marker.
+        const RMT_RAM_SLOTS: usize = 96;
+
+        let addr_short = DccAddress::new_short(3).unwrap();
+        let addr_long = DccAddress::new_long(9999).unwrap();
+
+        let packets = [
+            DccPacket::Idle,
+            DccPacket::Reset,
+            DccPacket::speed_28step(addr_short, 28, Direction::Forward).unwrap(),
+            DccPacket::speed_128step(addr_long, 126, Direction::Reverse).unwrap(),
+            DccPacket::FunctionGroup1 {
+                address: addr_long,
+                fl: true,
+                f1: true,
+                f2: true,
+                f3: true,
+                f4: true,
+            },
+            DccPacket::FunctionGroup2A {
+                address: addr_long,
+                f5: true,
+                f6: true,
+                f7: true,
+                f8: true,
+            },
+            DccPacket::FunctionGroup2B {
+                address: addr_long,
+                f9: true,
+                f10: true,
+                f11: true,
+                f12: true,
+            },
+            DccPacket::FunctionGroup3 {
+                address: addr_long,
+                f13: true,
+                f14: true,
+                f15: true,
+                f16: true,
+                f17: true,
+                f18: true,
+                f19: true,
+                f20: true,
+            },
+            DccPacket::FunctionGroup4 {
+                address: addr_long,
+                f21: true,
+                f22: true,
+                f23: true,
+                f24: true,
+                f25: true,
+                f26: true,
+                f27: true,
+                f28: true,
+            },
+            DccPacket::ServiceModeVerifyByte {
+                cv: 256,
+                value: 255,
+            },
+            DccPacket::ServiceModeWriteByte {
+                cv: 256,
+                value: 255,
+            },
+            DccPacket::EmergencyStop {
+                address: addr_long,
+                direction: Direction::Forward,
+            },
+        ];
+
+        for packet in &packets {
+            let pulses = encode_dcc_packet(packet)
+                .unwrap_or_else(|e| panic!("encode failed for {:?}: {:?}", packet, e));
+            // RMT conversion: 1 entry per pulse + 1 end marker
+            let rmt_entries = pulses.len() + 1;
+            assert!(
+                rmt_entries <= RMT_RAM_SLOTS,
+                "packet {:?} would produce {} RMT entries, exceeds {} RAM slots",
+                packet,
+                rmt_entries,
+                RMT_RAM_SLOTS,
+            );
         }
     }
 }
