@@ -35,6 +35,8 @@ pub mod encoder;
 #[cfg(target_arch = "riscv32")]
 pub mod engine;
 pub mod packet;
+#[cfg(target_arch = "riscv32")]
+pub mod rmt_driver;
 pub mod scheduler;
 pub mod speed28;
 pub mod timing;

@@ -36,10 +36,10 @@ and runtime status/reporting.
 
 ## What This Software Does
 
-- Generates DCC waveforms with the ESP32-C6 RMT peripheral
+- Generates gap-free DCC waveforms via ISR-driven RMT (interrupt swaps packets during preamble playback, CPU overhead <0.4%)
 - Encodes NMRA DCC packets for locomotive control and service mode
 - Continuously refreshes active locomotive state on the track
-- Controls up to 12 active DCC locomotives/decoders
+- Controls up to 12 active DCC locomotives/decoders simultaneously without signal degradation
 - Supports speed, direction, functions, emergency stop, and fault handling
 - Exposes control through the Roco Z21 app over a Z21-compatible UDP protocol layer
 - Targets real hardware with host-side tests for pure logic
@@ -56,6 +56,32 @@ Important:
   external hardware around it.
 - Wiring, power stage, protection, and signal routing are documented in the hardware files above.
 - Do not wire directly from the README alone. Use the hardware docs as the source of truth.
+
+## Getting Started
+
+1. Copy `.env.example` to `.env` and fill in your WiFi credentials:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Edit `.env` with your network name and password.
+
+2. Build and flash the firmware:
+
+   ```bash
+   cargo run --release
+   ```
+
+3. Once booted, the OLED display shows the station's IP address.
+
+4. In the **Roco Z21 app**, go to settings and enter that IP address as the command station.
+
+5. Select the locomotive address and drive.
+
+> **Note:** CV programming is not yet available.
+> Locomotives can only be controlled at their factory default address until
+> the programming track hardware is integrated.
 
 ## Cargo Aliases
 
@@ -97,7 +123,7 @@ cargo clippy-esp           # lint (ESP32-C6)
 ## Project Layout
 
 - `src/bin/main.rs`: firmware entrypoint
-- `src/dcc/`: DCC packet, encoder, timing, scheduler, validator, CV logic
+- `src/dcc/`: DCC packet, encoder, timing, scheduler, validator, CV logic, ISR-driven RMT backend
 - `src/net/`: Z21-compatible network protocol and UDP control
 - `docs/specs/`: protocol and standards references
 - `docs/hardware/`: wiring and hardware usage notes
@@ -107,6 +133,13 @@ cargo clippy-esp           # lint (ESP32-C6)
 - Current output/control behavior must match the external amplifier and protection hardware.
 - For protocol, power-stage, or GPIO wiring changes, re-check the hardware documentation before flashing.
 - DCC track power can damage decoders or hardware if the power stage is wired incorrectly.
+
+## TODO
+
+- [ ] CV programming hardware integration (prog track relay, ACK detection circuit)
+- [ ] Z21 multi-client support (multiple apps controlling the same station)
+- [ ] RailCom bi-directional communication (hardware + firmware)
+- [ ] PCB design for a standalone command station board
 
 ## License
 
