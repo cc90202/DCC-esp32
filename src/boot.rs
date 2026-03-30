@@ -10,9 +10,8 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer, with_timeout};
-use esp_hal::Blocking;
 use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_hal::rmt::{Channel as RmtChannel, Rmt, Tx, TxChannelConfig, TxChannelCreator};
+use esp_hal::rmt::{Rmt, TxChannelConfig, TxChannelCreator};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use static_cell::StaticCell;
@@ -21,6 +20,7 @@ use crate::control_buttons::{new_button_input, resume_button_task, stop_button_t
 use crate::dcc::dcc_engine_task;
 use crate::dcc::engine::DccPacketChannel;
 use crate::dcc::packet_scheduler_task;
+use crate::dcc::rmt_driver;
 use crate::dcc::{DccAddress, DccPacket, Direction, SchedulerCommand, SchedulerCommandChannel};
 use crate::display::{BootStep, DisplayChannel, DisplayEvent};
 use crate::fault_manager::{
@@ -84,6 +84,7 @@ pub enum DccSelfCheckError {
 pub enum CriticalHardwareInit {
     Rmt,
     RmtChannel0,
+    RmtDriver,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -183,6 +184,9 @@ impl BootError {
             Self::CriticalHardwareInit(CriticalHardwareInit::Rmt) => "RMT init failed",
             Self::CriticalHardwareInit(CriticalHardwareInit::RmtChannel0) => {
                 "RMT channel0 configure failed"
+            }
+            Self::CriticalHardwareInit(CriticalHardwareInit::RmtDriver) => {
+                "RMT ISR driver init failed"
             }
             Self::CriticalTaskSpawn(CriticalTask::Display) => "failed to spawn display_task",
             Self::CriticalTaskSpawn(CriticalTask::DccEngine) => "failed to spawn dcc_engine_task",
@@ -339,12 +343,10 @@ fn verify_boot_packet_encoding() -> Result<(), BootError> {
 async fn dcc_engine_task_wrapper(
     receiver: Receiver<'static, CriticalSectionRawMutex, DccPacket, 16>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
-    tx: RmtChannel<'static, Blocking, Tx>,
-    idle_rmt: crate::dcc::engine::IdleRmtBuffer,
     ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::DccEngine).await;
-    dcc_engine_task(receiver, fault_sender, tx, idle_rmt).await
+    dcc_engine_task(receiver, fault_sender).await
 }
 
 /// Wrapper task for the Z21 WiFi UDP net task
@@ -463,6 +465,8 @@ pub async fn run(
         .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RmtChannel0))?;
     let idle_rmt = crate::dcc::build_idle_rmt_buffer()
         .map_err(|_| BootError::DccSelfCheck(DccSelfCheckError::IdleWaveformBuild))?;
+    rmt_driver::init(tx_channel, idle_rmt.as_slice())
+        .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RmtDriver))?;
 
     info!("boot: RMT initialized and DCC output mapped to GPIO2");
     DISPLAY_CHANNEL
@@ -494,8 +498,6 @@ pub async fn run(
         .spawn(dcc_engine_task_wrapper(
             receiver,
             FAULT_CHANNEL.sender(),
-            tx_channel,
-            idle_rmt,
             BOOT_READY.sender(),
         ))
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::DccEngine))?;
