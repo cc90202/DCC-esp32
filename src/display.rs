@@ -70,7 +70,7 @@ const THROBBER_FRAMES: [u8; 10] = [
 ];
 
 #[cfg(target_arch = "riscv32")]
-const THROBBER_INTERVAL: Duration = Duration::from_millis(80);
+const THROBBER_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Draw braille-style dot spinner at the given top-left position.
 /// Each dot is a 2x2 filled rectangle in a 2-column x 3-row grid.
