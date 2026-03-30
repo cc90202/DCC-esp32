@@ -22,19 +22,36 @@ pub const PREAMBLE_BITS: usize = 20;
 /// RMT clock frequency (1 MHz = 1μs resolution)
 pub const RMT_CLOCK_HZ: u32 = 1_000_000;
 
-/// Maximum number of DCC data pulses encodable in one RMT TX submission (single-shot).
+/// Maximum number of DCC data pulses encodable in one RMT TX submission.
 ///
-/// Used for real-packet (non-idle) single-shot blocking transmissions.
-/// 128 comfortably fits 5–6 byte DCC packets (preamble + data + checksum) plus end marker.
+/// 128 comfortably fits 5-6 byte DCC packets (preamble + data + checksum).
+/// The actual RMT buffer includes +1 for the end marker.
+/// Must not exceed RMT RAM capacity (memsize: 2 = 96 slots) since
+/// `transmit_continuously` requires all data in RAM at once.
 pub const DCC_MAX_PACKET_PULSES: usize = 128;
 
-/// RMT buffer capacity for the pre-built idle packet used by the hardware continuous loop.
+/// Number of fixed preamble entries written at the start of the RMT RAM window.
+pub const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
+
+/// Maximum number of RMT entries in the variable packet tail (start bit, data,
+/// separators, end bit). The ISR appends the end marker itself.
+pub const MAX_DATA_PULSES: usize = 56;
+
+/// RMT buffer capacity for the pre-built idle packet.
 ///
 /// Idle packet: PREAMBLE_BITS(20) + 1 start + 3×(8 data + 1 sep) + 1 end-bit = 48 DCC pulses
 /// + 1 RMT end marker = 49 entries total.
 ///
-/// The engine uses `transmit_continuously(LoopMode::Infinite)` on a two-block RMT channel
-/// (96 slots) so the hardware loops the idle waveform with zero inter-iteration gap.
-/// This eliminates the ~64μs Embassy interrupt-to-task latency gap that would otherwise
-/// extend the last LOW half-period and create an invalid ~122μs DCC bit at every boundary.
+/// The engine uses this pre-encoded buffer to avoid re-encoding DccPacket::Idle
+/// on every loop iteration.  All packets (idle and real) are transmitted via
+/// `transmit_continuously(LoopMode::Infinite)` — the hardware loops the buffer
+/// with zero inter-packet gap.  RMT channel memsize must be ≥ 2 blocks (96 slots)
+/// to fit both idle (49 entries) and the longest real packet (~77 entries).
 pub const IDLE_RMT_SIZE: usize = 49; // 48 DCC pulses + 1 end marker
+
+/// Minimum Embassy executor yield time per DCC engine cycle (milliseconds).
+///
+/// During this period, the RMT hardware loops the current packet with zero gap,
+/// allowing other Embassy tasks (networking, buttons, short detector, LED) to run.
+/// Trade-off: higher = more executor freedom, lower = tighter packet refresh.
+pub const ENGINE_YIELD_MS: u64 = 2;
