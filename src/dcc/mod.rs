@@ -42,47 +42,20 @@ pub mod speed28;
 pub mod timing;
 pub mod validator;
 
-/// RailCom cutout policy attached to a frame.
-///
-/// The three states encode the two orthogonal bits of information the
-/// downstream RMT driver needs: whether to assert the cutout at all and, when
-/// asserting, whether a RailCom response is expected for an in-flight POM
-/// (programming-on-main) transaction. A POM frame without a cutout is
-/// unreachable in the scheduler, so the bits are represented as one enum
-/// rather than two independently set booleans.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CutoutMode {
-    /// No cutout: normal command and safety traffic.
-    #[default]
-    None,
-    /// Cutout asserted to collect RailCom telemetry on unrelated traffic
-    /// (loco identification, background scanning).
-    Telemetry,
-    /// Cutout asserted and a POM response is expected for the current packet.
-    Pom,
-}
-
 /// Precomputed transmission metadata for one DCC packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DccFrame {
     pub packet: DccPacket,
-    pub cutout: CutoutMode,
+    pub cutout_allowed: bool,
 }
 
 impl DccFrame {
     #[must_use]
-    pub const fn new(packet: DccPacket, cutout: CutoutMode) -> Self {
-        Self { packet, cutout }
-    }
-
-    #[must_use]
-    pub const fn cutout_allowed(&self) -> bool {
-        !matches!(self.cutout, CutoutMode::None)
-    }
-
-    #[must_use]
-    pub const fn pom_requested(&self) -> bool {
-        matches!(self.cutout, CutoutMode::Pom)
+    pub const fn new(packet: DccPacket, cutout_allowed: bool) -> Self {
+        Self {
+            packet,
+            cutout_allowed,
+        }
     }
 }
 

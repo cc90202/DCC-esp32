@@ -1,54 +1,65 @@
 #[cfg(target_arch = "riscv32")]
+use embassy_futures::select::{Either, select};
+#[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
-use esp_hal::uart::{Config, Parity, RxConfig, StopBits};
+use embassy_sync::channel::{Receiver, Sender};
+#[cfg(target_arch = "riscv32")]
+use esp_hal::Async;
+#[cfg(target_arch = "riscv32")]
+use esp_hal::uart::{Config, Parity, RxConfig, RxError, StopBits, UartRx};
 
 use crate::railcom::pipeline::RailcomChannel;
 use crate::railcom::uart_adapter::{
-    RailcomUartAdapter, RailcomUartAdapterOutput, RailcomUartEvent, RailcomUartWindowInputError,
+    RailcomUartAdapter, RailcomUartAdapterOutput, RailcomUartEvent,
 };
 
-/// Preferred UART RX pin for RailCom reception.
+/// Preferred UART RX pin for experimental RailCom reception.
 ///
 /// The current board review leaves `GPIO5` free and it is the preferred input
-/// for the detector output. `GPIO4` is owned by `track_output` as the fast
-/// DRV8874 EN/IN1 RailCom cutout control.
+/// for the detector output. `GPIO4` remains free as a useful debug/marker pin.
 pub const RAILCOM_UART_RX_GPIO_NUM: u8 = 5;
+pub const RAILCOM_DEBUG_GPIO_NUM: u8 = 4;
 pub const RAILCOM_UART_BAUDRATE: u32 = 250_000;
 const RAILCOM_UART_DRAIN_CHUNK: usize = 16;
-// Hard cap on drain iterations so a wedged FIFO (or sustained DCC-edge noise)
-// cannot keep us inside `drain_uart_rx_fifo` past the 460 µs cutout budget.
-// ESP32-C6 RX FIFO is 128 bytes → 8 × 16-byte chunks is a complete drain.
-const RAILCOM_UART_DRAIN_MAX_ITERATIONS: usize = 8;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RailcomRxOutput {
-    WindowProcessed(RailcomRxResult),
-    WindowCorrupted(RailcomCorruptedWindow),
-    WindowError(RailcomUartWindowError),
-    AdapterError(RailcomUartAdapterError),
-}
-
-/// Per-byte UART noise observed while a RailCom window was open, tagged with
-/// the kind of disturbance and the context needed by downstream logging.
-///
-/// `kind` reuses the same `RailcomUartWindowInputError` variants the adapter
-/// consumes, so the reader and the adapter stay in lock-step by construction:
-/// a new disturbance variant can't be added on one side without the compiler
-/// flagging the missing match arm on the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct RailcomUartReaderNoise {
-    pub kind: RailcomUartWindowInputError,
-    pub packet_sequence: u32,
-    pub channel: RailcomChannel,
-    pub after_first_byte: bool,
+pub enum RailcomWindowControl {
+    Open {
+        packet_sequence: u32,
+        channel: RailcomChannel,
+    },
+    Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum RailcomUartReaderError {
+    CloseWithoutOpen,
+    NestedOpen {
+        active_packet_sequence: u32,
+        active_channel: RailcomChannel,
+        new_packet_sequence: u32,
+        new_channel: RailcomChannel,
+    },
+    Rx(RxError),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum RailcomUartRuntimeOutput {
+    Adapter(RailcomUartAdapterOutput),
+    ReaderError(RailcomUartReaderError),
 }
 
 #[cfg(target_arch = "riscv32")]
+pub type RailcomWindowControlChannel =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, RailcomWindowControl, 8>;
+
+#[cfg(target_arch = "riscv32")]
 pub type RailcomUartRuntimeResultChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, RailcomRxOutput, 8>;
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, RailcomUartRuntimeOutput, 8>;
 
 #[cfg(target_arch = "riscv32")]
 #[must_use]
@@ -65,24 +76,17 @@ pub fn railcom_uart_rx_config() -> Config {
 }
 
 #[cfg(target_arch = "riscv32")]
-fn drain_uart_rx_fifo(uart_rx: &mut UartRx<'static, Async>) {
+fn drain_uart_rx_fifo(uart_rx: &mut UartRx<'static, Async>) -> Result<(), RxError> {
     let mut drain_buf = [0u8; RAILCOM_UART_DRAIN_CHUNK];
 
-    // Tolerate errors during drain: the FIFO is full of DCC-period garbage
-    // and may have overflow/glitch flags set. Clear everything silently.
-    let _ = uart_rx.check_for_errors();
-    for _ in 0..RAILCOM_UART_DRAIN_MAX_ITERATIONS {
-        match uart_rx.read_buffered(&mut drain_buf) {
-            Ok(0) => return,
-            Ok(_) => continue,
-            Err(_) => {
-                // Error flag was set — clear it and bail; a sustained
-                // noise source will be handled on the next window.
-                let _ = uart_rx.check_for_errors();
-                return;
-            }
+    while uart_rx.read_ready() {
+        let read = uart_rx.read_buffered(&mut drain_buf)?;
+        if read == 0 {
+            break;
         }
     }
+
+    Ok(())
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -125,8 +129,15 @@ pub async fn railcom_uart_reader_task(
             }
         };
 
-        // Drain stale bytes. Tolerates errors from DCC-period noise.
-        drain_uart_rx_fifo(&mut uart_rx);
+        if let Err(err) = drain_uart_rx_fifo(&mut uart_rx) {
+            send_runtime_output(
+                &result_sender,
+                RailcomUartRuntimeOutput::ReaderError(RailcomUartReaderError::Rx(err)),
+            )
+            .await;
+            adapter = RailcomUartAdapter::new();
+            continue;
+        }
 
         if let Some(output) = adapter.handle_event(RailcomUartEvent::BeginWindow {
             packet_sequence: open.0,
@@ -134,8 +145,6 @@ pub async fn railcom_uart_reader_task(
         }) {
             send_runtime_output(&result_sender, RailcomUartRuntimeOutput::Adapter(output)).await;
         }
-
-        let mut saw_byte = false;
 
         loop {
             match select(
@@ -171,7 +180,6 @@ pub async fn railcom_uart_reader_task(
                 }
                 Either::Second(Ok(read)) => {
                     for &byte in &byte_buf[..read] {
-                        saw_byte = true;
                         if let Some(output) = adapter.handle_event(RailcomUartEvent::Byte(byte)) {
                             send_runtime_output(
                                 &result_sender,
@@ -182,63 +190,14 @@ pub async fn railcom_uart_reader_task(
                     }
                 }
                 Either::Second(Err(err)) => {
-                    // Mid-window error handling must stay inside the 460 µs
-                    // cutout budget. check_for_errors() is a single MMIO and
-                    // clears the error flag so read_async can progress on the
-                    // next byte; any remaining corrupt bytes are drained by
-                    // the window-start drain on the *next* Open, which runs
-                    // outside the cutout.
-                    let _ = uart_rx.check_for_errors();
-                    match err {
-                        RxError::FifoOverflowed => {
-                            crate::railcom::pipeline::record_uart_overflow();
-                            send_runtime_output(
-                                &result_sender,
-                                RailcomUartRuntimeOutput::ReaderError(RailcomUartReaderError::Rx(
-                                    err,
-                                )),
-                            )
-                            .await;
-                            // Data irrecoverable — abandon the window.
-                            adapter = RailcomUartAdapter::new();
-                            break;
-                        }
-                        RxError::GlitchOccurred | RxError::FrameFormatViolated => {
-                            let kind = match err {
-                                RxError::GlitchOccurred => {
-                                    crate::railcom::pipeline::record_uart_glitch();
-                                    RailcomUartWindowInputError::Glitch
-                                }
-                                RxError::FrameFormatViolated => {
-                                    crate::railcom::pipeline::record_uart_framing_error();
-                                    RailcomUartWindowInputError::Framing
-                                }
-                                _ => unreachable!("outer match arm limits err to these two"),
-                            };
-                            let _ = adapter.handle_event(RailcomUartEvent::InputError(kind));
-                            send_runtime_output(
-                                &result_sender,
-                                RailcomUartRuntimeOutput::ReaderNoise(RailcomUartReaderNoise {
-                                    kind,
-                                    packet_sequence: open.0,
-                                    channel: open.1,
-                                    after_first_byte: saw_byte,
-                                }),
-                            )
-                            .await;
-                            continue;
-                        }
-                        _ => {
-                            send_runtime_output(
-                                &result_sender,
-                                RailcomUartRuntimeOutput::ReaderError(RailcomUartReaderError::Rx(
-                                    err,
-                                )),
-                            )
-                            .await;
-                            continue;
-                        }
-                    }
+                    send_runtime_output(
+                        &result_sender,
+                        RailcomUartRuntimeOutput::ReaderError(RailcomUartReaderError::Rx(err)),
+                    )
+                    .await;
+                    let _ = drain_uart_rx_fifo(&mut uart_rx);
+                    adapter = RailcomUartAdapter::new();
+                    break;
                 }
             }
         }

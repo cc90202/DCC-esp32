@@ -102,6 +102,8 @@ pub enum InitError {
 
 static DATA_READY: AtomicBool = AtomicBool::new(false);
 static ISR_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
+static CURRENT_PACKET_CUTOUT_ALLOWED: AtomicBool = AtomicBool::new(false);
+static NEXT_PACKET_CUTOUT_ALLOWED: AtomicBool = AtomicBool::new(false);
 static NEXT_PACKET: Mutex<RefCell<SharedPacket>> = Mutex::new(RefCell::new(SharedPacket::empty()));
 static CURRENT_PACKET_META: Mutex<RefCell<PacketMeta>> =
     Mutex::new(RefCell::new(PacketMeta::idle()));
@@ -132,10 +134,8 @@ pub fn init(
 
     DATA_READY.store(false, Ordering::Release);
     ISR_HEARTBEAT.store(0, Ordering::Relaxed);
-    critical_section::with(|cs| {
-        *NEXT_PACKET.borrow_ref_mut(cs) = SharedPacket::empty();
-        *CURRENT_PACKET_META.borrow_ref_mut(cs) = PacketMeta::idle();
-    });
+    CURRENT_PACKET_CUTOUT_ALLOWED.store(false, Ordering::Release);
+    NEXT_PACKET_CUTOUT_ALLOWED.store(false, Ordering::Release);
 
     let tx = channel
         .transmit_continuously(idle_rmt, LoopMode::InfiniteWithInterrupt(1))
@@ -159,13 +159,7 @@ pub fn init(
 /// Non-blocking. The ISR picks up the data within one packet cycle (~6ms).
 /// If called again before the ISR consumes the previous submission, the new
 /// data overwrites the old — use [`is_consumed`] to enforce ACK-based pacing.
-pub fn submit_packet(
-    data: &[PulseCode],
-    cutout_allowed: bool,
-    pom_requested: bool,
-    pom_read_requested: bool,
-    target_address: Option<DccAddress>,
-) {
+pub fn submit_packet(data: &[PulseCode], cutout_allowed: bool) {
     debug_assert!(
         data.len() <= MAX_DATA_PULSES,
         "packet tail exceeds MAX_DATA_PULSES"
@@ -183,6 +177,7 @@ pub fn submit_packet(
         };
     });
 
+    NEXT_PACKET_CUTOUT_ALLOWED.store(cutout_allowed, Ordering::Release);
     DATA_READY.store(true, Ordering::Release);
 }
 
@@ -230,24 +225,16 @@ fn rmt_interrupt() {
 
     clear_tx_loop_interrupt();
     reset_tx_loop_counter();
-    let packet_sequence = ISR_HEARTBEAT
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    ISR_HEARTBEAT.fetch_add(1, Ordering::Relaxed);
     // `on_dcc_packet_boundary()` is observation-only telemetry. It intentionally
     // runs before the cutout authorization check so packet-boundary health can be
     // counted on every loop. Do not add hardware side effects here: real cutout
-    // execution must remain gated by the current packet metadata below.
+    // execution must remain gated by `CURRENT_PACKET_CUTOUT_ALLOWED` below.
     crate::railcom::on_dcc_packet_boundary();
-    let current_meta = critical_section::with(|cs| *CURRENT_PACKET_META.borrow_ref(cs));
     // Only the precomputed scheduler decision may trigger a physical cutout from
     // this ISR. Keep all policy outside the RMT timing path.
-    if current_meta.cutout_allowed {
-        let _ = crate::track_output::request_cutout_from_isr(
-            packet_sequence,
-            current_meta.pom_requested,
-            current_meta.pom_read_requested,
-            current_meta.target_address,
-        );
+    if CURRENT_PACKET_CUTOUT_ALLOWED.load(Ordering::Relaxed) {
+        crate::track_output::request_cutout_from_isr();
     }
 
     if DATA_READY.load(Ordering::Acquire) {
@@ -257,6 +244,10 @@ fn rmt_interrupt() {
             write_data_to_rmt_ram(&pkt.data[..pkt.len as usize]);
             *CURRENT_PACKET_META.borrow_ref_mut(cs) = pkt.meta;
         });
+        CURRENT_PACKET_CUTOUT_ALLOWED.store(
+            NEXT_PACKET_CUTOUT_ALLOWED.load(Ordering::Acquire),
+            Ordering::Release,
+        );
         DATA_READY.store(false, Ordering::Release);
     } else {
         // IDLE_DATA is read-only after init — no critical section needed.
@@ -268,9 +259,7 @@ fn rmt_interrupt() {
             let idle = unsafe { &*idle_ptr };
             write_data_to_rmt_ram(&idle.data[..idle.len as usize]);
         }
-        critical_section::with(|cs| {
-            *CURRENT_PACKET_META.borrow_ref_mut(cs) = PacketMeta::idle();
-        });
+        CURRENT_PACKET_CUTOUT_ALLOWED.store(false, Ordering::Release);
     }
 }
 

@@ -10,10 +10,11 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer, with_timeout};
-use esp_hal::gpio::{Flex, Level, Output};
+use esp_hal::gpio::{Level, Output};
 use esp_hal::rmt::{Rmt, TxChannelConfig, TxChannelCreator};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::uart::UartRx;
 use static_cell::StaticCell;
 
 use crate::control_buttons::{new_button_input, resume_button_task, stop_button_task};
@@ -22,21 +23,17 @@ use crate::dcc::engine::DccPacketChannel;
 use crate::dcc::packet_scheduler_task;
 use crate::dcc::rmt_driver;
 use crate::dcc::{
-    DccAddress, DccFrame, DccPacket, Direction, PomRailcomResultChannel, PomRequestChannel,
-    PomResponseChannel, PomTxStartedChannel, SchedulerCommand, SchedulerCommandChannel,
-    pom_actor_task,
+    DccAddress, DccFrame, DccPacket, Direction, SchedulerCommand, SchedulerCommandChannel,
 };
+use crate::display::{BootStep, DisplayChannel, DisplayEvent};
 use crate::fault_manager::{
     FaultEvent, FaultEventChannel, FaultManagerState, FaultManagerTaskContext, FaultStateWatch,
     fault_manager_task,
 };
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
-use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
-use crate::railcom::pipeline::{RailcomChannel, RailcomRxOutcome};
-use crate::railcom::pom_dispatch::{evaluate_pom_window, pom_cutout_monitor_task};
 use crate::railcom::uart_reader::{
-    RailcomUartRuntimeOutput, RailcomUartRuntimeResultChannel, RailcomWindowControl,
-    RailcomWindowControlChannel, railcom_uart_reader_task, railcom_uart_rx_config,
+    RailcomUartRuntimeOutput, RailcomUartRuntimeResultChannel, RailcomWindowControlChannel,
+    railcom_uart_reader_task, railcom_uart_rx_config,
 };
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, status_led_task};
@@ -53,12 +50,9 @@ static FAULT_STATE: FaultStateWatch = FaultStateWatch::new_with(FaultManagerStat
 static DISPLAY_CHANNEL: DisplayChannel = DisplayChannel::new();
 static BOOT_READY: BootReadyChannel = BootReadyChannel::new();
 static BOOT_FAILURE: BootFailureChannel = BootFailureChannel::new();
+static RAILCOM_WINDOW_CONTROL: RailcomWindowControlChannel = RailcomWindowControlChannel::new();
 static RAILCOM_RUNTIME_RESULTS: RailcomUartRuntimeResultChannel =
     RailcomUartRuntimeResultChannel::new();
-static POM_REQUESTS: PomRequestChannel = PomRequestChannel::new();
-static POM_RESPONSES: PomResponseChannel = PomResponseChannel::new();
-static POM_TX_STARTED: PomTxStartedChannel = PomTxStartedChannel::new();
-static POM_RAILCOM_RESULTS: PomRailcomResultChannel = PomRailcomResultChannel::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -94,6 +88,7 @@ pub enum CriticalHardwareInit {
     Rmt,
     RmtChannel0,
     RmtDriver,
+    RailcomUart,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,10 +99,8 @@ pub enum CriticalTask {
     StatusLed,
     Scheduler,
     RailcomDiag,
-    PomActor,
-    PomCutoutMonitor,
-    RailcomIsrCapture,
-    RailcomUartDispatch,
+    RailcomUartReader,
+    RailcomUartLog,
     Net,
     FaultManager,
     StopButton,
@@ -185,6 +178,9 @@ impl BootError {
             Self::CriticalHardwareInit(CriticalHardwareInit::RmtDriver) => {
                 "RMT ISR driver init failed"
             }
+            Self::CriticalHardwareInit(CriticalHardwareInit::RailcomUart) => {
+                "RailCom UART RX init failed"
+            }
             Self::CriticalTaskSpawn(CriticalTask::Display) => "failed to spawn display_task",
             Self::CriticalTaskSpawn(CriticalTask::DccEngine) => "failed to spawn dcc_engine_task",
             Self::CriticalTaskSpawn(CriticalTask::StatusLed) => "failed to spawn status_led_task",
@@ -192,15 +188,11 @@ impl BootError {
             Self::CriticalTaskSpawn(CriticalTask::RailcomDiag) => {
                 "failed to spawn railcom_diag_task"
             }
-            Self::CriticalTaskSpawn(CriticalTask::PomActor) => "failed to spawn pom_actor_task",
-            Self::CriticalTaskSpawn(CriticalTask::PomCutoutMonitor) => {
-                "failed to spawn pom_cutout_monitor_task"
+            Self::CriticalTaskSpawn(CriticalTask::RailcomUartReader) => {
+                "failed to spawn railcom_uart_reader_task"
             }
-            Self::CriticalTaskSpawn(CriticalTask::RailcomIsrCapture) => {
-                "failed to spawn railcom_isr_capture_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::RailcomUartDispatch) => {
-                "failed to spawn railcom_uart_runtime_dispatch_task"
+            Self::CriticalTaskSpawn(CriticalTask::RailcomUartLog) => {
+                "failed to spawn railcom_uart_runtime_log_task"
             }
             Self::CriticalTaskSpawn(CriticalTask::Net) => "failed to spawn net_task",
             Self::CriticalTaskSpawn(CriticalTask::FaultManager) => {
@@ -351,7 +343,7 @@ fn verify_boot_packet_encoding() -> Result<(), BootError> {
 /// Wrapper task for the DCC engine (single RMT channel on the DRV8874 PH/IN2 input).
 #[embassy_executor::task]
 async fn dcc_engine_task_wrapper(
-    receiver: Receiver<'static, CriticalSectionRawMutex, DccPacket, 16>,
+    receiver: Receiver<'static, CriticalSectionRawMutex, DccFrame, 16>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
 ) -> ! {
@@ -395,6 +387,7 @@ async fn display_task_wrapper(
 async fn scheduler_task_wrapper(
     command_receiver: Receiver<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
     sender: Sender<'static, CriticalSectionRawMutex, DccFrame, 16>,
+    status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
     display_sender: Sender<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
 ) -> ! {
@@ -582,6 +575,59 @@ async fn railcom_diag_task() -> ! {
     }
 }
 
+#[embassy_executor::task]
+async fn railcom_uart_reader_task_wrapper(
+    uart_rx: UartRx<'static, esp_hal::Async>,
+    control_receiver: Receiver<
+        'static,
+        CriticalSectionRawMutex,
+        crate::railcom::uart_reader::RailcomWindowControl,
+        8,
+    >,
+    result_sender: Sender<'static, CriticalSectionRawMutex, RailcomUartRuntimeOutput, 8>,
+) -> ! {
+    railcom_uart_reader_task(uart_rx, control_receiver, result_sender).await
+}
+
+#[embassy_executor::task]
+async fn railcom_uart_runtime_log_task(
+    receiver: Receiver<'static, CriticalSectionRawMutex, RailcomUartRuntimeOutput, 8>,
+) -> ! {
+    loop {
+        let output = receiver.receive().await;
+        info!("railcom uart: {:?}", output);
+    }
+}
+
+#[embassy_executor::task]
+async fn railcom_diag_task() -> ! {
+    loop {
+        Timer::after(Duration::from_secs(10)).await;
+
+        let diag = crate::railcom::diagnostics();
+
+        info!(
+            "railcom diag: boundary={} enabled={} disabled={} granted={} skip_budget={} skip_priority={} started={} ended={} schedule_fail={} rx_windows={} rx_empty={} rx_ok={} rx_err={} ack={} nack={} unsupported_ch={}",
+            diag.boundary.packet_boundary_count,
+            diag.boundary.boundary_with_cutout_enabled_count,
+            diag.boundary.boundary_with_cutout_disabled_count,
+            diag.scheduler.cutout_granted_count,
+            diag.scheduler.cutout_skipped_budget_count,
+            diag.scheduler.cutout_skipped_priority_count,
+            diag.track_output.cutout_started_count,
+            diag.track_output.cutout_ended_count,
+            diag.track_output.cutout_schedule_fail_count,
+            diag.rx.rx_window_count,
+            diag.rx.rx_empty_window_count,
+            diag.rx.rx_parse_ok_count,
+            diag.rx.rx_parse_err_count,
+            diag.rx.rx_ack_count,
+            diag.rx.rx_nack_count,
+            diag.rx.rx_unsupported_channel_count,
+        );
+    }
+}
+
 pub async fn run(
     spawner: Spawner,
     peripherals: esp_hal::peripherals::Peripherals,
@@ -674,13 +720,14 @@ pub async fn run(
     let command_receiver = scheduler_commands.receiver();
     info!("boot: scheduler command channel initialized");
 
-    // DRV8874 SLEEP master enable: GPIO18 push-pull, held LOW during init so
-    // the track sees no signal until the DCC waveform is already stable.
-    // RailCom cutout: GPIO4 drives the fast EN/IN1 cutout path and is held
-    // HIGH outside timed cutout windows.
+    // H-bridge enable: GPIO18 push-pull, held LOW during init so the track
+    // sees no signal until the DCC waveform is already stable. This prevents
+    // the decoder (CV29 bit2=1, analog mode enabled) from detecting the brief
+    // DC phase that would otherwise appear while GPIO2 is at idle-LOW before
+    // the first DCC packet is transmitted.
     let timg1 = TimerGroup::new(peripherals.TIMG1);
-    let track_output = TrackOutput::new(peripherals.GPIO18, peripherals.GPIO4, timg1.timer0);
-    info!("boot: DRV8874 SLEEP GPIO18 held LOW; RailCom cutout GPIO4 held inactive HIGH");
+    let track_output = TrackOutput::new(peripherals.GPIO18, timg1.timer0);
+    info!("boot: H-bridge GPIO18 held LOW until DCC signal is stable");
 
     spawner
         .spawn(dcc_engine_task_wrapper(
@@ -717,46 +764,29 @@ pub async fn run(
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomDiag))?;
     info!("boot: RailCom diagnostics task spawned");
 
-    spawner
-        .spawn(pom_actor_task(
-            POM_REQUESTS.receiver(),
-            POM_RESPONSES.sender(),
-            POM_TX_STARTED.receiver(),
-            POM_RAILCOM_RESULTS.receiver(),
-            scheduler_commands.sender(),
-        ))
-        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::PomActor))?;
-    spawner
-        .spawn(pom_cutout_monitor_task(POM_TX_STARTED.sender()))
-        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::PomCutoutMonitor))?;
-    info!("boot: POM actor and cutout monitor tasks spawned");
-
-    // RailCom RX wiring: UART RX on GPIO5. The cutout timer opens/closes
-    // ISR-side capture windows and the task below drains UART1 FIFO snapshots.
-    // Gate 6 of the 74HC14 has a weak pull-down; bypass by wiring GPIO5 directly
-    // to pin 10 (gate 5 output) and invert the UART RX polarity in firmware.
-    let railcom_rx_pin = Flex::new(peripherals.GPIO5)
-        .peripheral_input()
-        .with_input_inverter(true);
+    // Experimental RailCom RX wiring: UART RX on GPIO5. Without detector hardware
+    // and without an Open/Close window source this reader stays idle, but booting
+    // it now verifies that the UART-side software pipeline is wired and harmless.
     let railcom_uart_rx = UartRx::new(peripherals.UART1, railcom_uart_rx_config())
         .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RailcomUart))?
-        .with_rx(railcom_rx_pin)
+        .with_rx(peripherals.GPIO5)
         .into_async();
 
     spawner
-        .spawn(railcom_isr_capture_task_wrapper(
+        .spawn(railcom_uart_reader_task_wrapper(
             railcom_uart_rx,
+            RAILCOM_WINDOW_CONTROL.receiver(),
             RAILCOM_RUNTIME_RESULTS.sender(),
         ))
-        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomIsrCapture))?;
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomUartReader))?;
     spawner
-        .spawn(railcom_uart_runtime_dispatch_task(
+        .spawn(railcom_uart_runtime_log_task(
             RAILCOM_RUNTIME_RESULTS.receiver(),
-            POM_RAILCOM_RESULTS.sender(),
-            scheduler_commands.sender(),
         ))
-        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomUartDispatch))?;
-    info!("boot: RailCom ISR capture spawned on GPIO5 (POM dispatcher active)");
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomUartLog))?;
+    info!(
+        "boot: RailCom UART RX task spawned on GPIO5 (reader idle until window control is wired)"
+    );
 
     spawner
         .spawn(net_task_wrapper(NetTaskWrapperContext {
@@ -784,9 +814,7 @@ pub async fn run(
     // is energised. 20 idle packets ≈ 160 ms of clean signal ensures the decoder
     // does not see a DC transient and enter analog mode at startup.
     for _ in 0..20 {
-        sender
-            .send(DccFrame::new(DccPacket::Idle, crate::dcc::CutoutMode::None))
-            .await;
+        sender.send(DccFrame::new(DccPacket::Idle, false)).await;
     }
     info!("boot: power-on idle burst complete (20 packets)");
 
@@ -796,7 +824,7 @@ pub async fn run(
             scheduler_sender: scheduler_commands.sender(),
             status_sender: SYSTEM_STATUS.sender(),
             net_status_sender: NET_STATUS.sender(),
-            hbridge_enable,
+            track_output,
             display_sender: DISPLAY_CHANNEL.sender(),
             state_sender: FAULT_STATE.sender(),
             ready_sender: BOOT_READY.sender(),
@@ -827,12 +855,7 @@ pub async fn run(
     // NMRA S-9.2.4: send >=3 Reset packets so the decoder clears its state and
     // enters normal operations mode. Without this some decoders ignore commands.
     for _ in 0..5 {
-        sender
-            .send(DccFrame::new(
-                DccPacket::Reset,
-                crate::dcc::CutoutMode::None,
-            ))
-            .await;
+        sender.send(DccFrame::new(DccPacket::Reset, false)).await;
     }
     info!("boot: reset sequence complete (5 packets)");
 

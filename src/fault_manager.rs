@@ -79,6 +79,8 @@ use crate::system_status::FaultCause;
 #[cfg(any(target_arch = "riscv32", test))]
 use crate::system_status::FaultEvent;
 #[cfg(target_arch = "riscv32")]
+use crate::track_output::TrackOutput;
+#[cfg(target_arch = "riscv32")]
 use crate::{dcc::SchedulerCommand, system_status::SystemStatusEvent};
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::channel::Sender;
@@ -240,7 +242,7 @@ pub struct FaultManagerTaskContext {
         SystemStatusEvent,
         8,
     >,
-    pub hbridge_enable: esp_hal::gpio::Output<'static>,
+    pub track_output: TrackOutput,
     pub display_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
@@ -268,12 +270,12 @@ pub struct FaultManagerTaskContext {
 #[embassy_executor::task]
 pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     #[inline]
-    fn apply_track_output_for_state(state: FaultManagerState, track_output: &mut TrackOutput) {
+    fn apply_hbridge_enable_for_state(state: FaultManagerState, track_output: &mut TrackOutput) {
         let armed = TRACK_POWER_ARMED.load(Ordering::Acquire);
         if armed && matches!(state, FaultManagerState::Normal) {
-            hbridge_enable.set_high();
+            track_output.set_track_enabled(true);
         } else {
-            hbridge_enable.set_low();
+            track_output.set_track_enabled(false);
         }
     }
 
@@ -282,7 +284,7 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
         scheduler_sender,
         status_sender,
         net_status_sender,
-        mut hbridge_enable,
+        mut track_output,
         display_sender,
         state_sender,
         ready_sender,
@@ -290,7 +292,7 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
 
     let mut state = FaultManagerState::Normal;
     set_motion_commands_enabled_for_state(state);
-    apply_track_output_for_state(state, &mut track_output);
+    apply_hbridge_enable_for_state(state, &mut track_output);
     state_sender.send(state);
     ready_sender
         .send(crate::system_status::BootReadyEvent::FaultManager)
@@ -306,7 +308,7 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
         let prev_state = state;
         state = t.next;
         set_motion_commands_enabled_for_state(state);
-        apply_track_output_for_state(state, &mut track_output);
+        apply_hbridge_enable_for_state(state, &mut track_output);
         if state != prev_state {
             state_sender.send(state);
             defmt::warn!(

@@ -21,10 +21,14 @@ pub enum RailcomWindowCommand {
 
 /// Pure cutout-edge to UART-window bridge.
 ///
-/// Translates observed physical cutout edge counters into the logical
-/// `Open/Close` commands consumed by the UART-side reader. Contains no async
-/// runtime code and no hardware access so the invariants can be exercised
-/// end-to-end in host tests.
+/// This module intentionally contains no async runtime code and no hardware
+/// access. It translates observed physical cutout edge counters into the
+/// logical `Open/Close` commands needed by the UART-side reader.
+///
+/// The actual runtime trigger source is left separate on purpose: before the
+/// detector hardware is connected we do not want to pretend that a polling task
+/// has final timing quality. What we can lock down now is the bridge logic and
+/// its invariants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RailcomWindowBridge {
     last_started_count: u32,
@@ -70,14 +74,6 @@ impl RailcomWindowBridge {
         }
 
         out
-    }
-
-    /// Realign the bridge state to externally observed counters without
-    /// emitting commands. Useful after a dropped runtime event.
-    pub fn resync(&mut self, edges: RailcomCutoutEdges) {
-        self.last_started_count = edges.started_count;
-        self.last_ended_count = edges.ended_count;
-        self.window_open = edges.started_count > edges.ended_count;
     }
 
     #[must_use]
@@ -162,16 +158,5 @@ mod tests {
             ]
         );
         assert!(bridge.window_open());
-    }
-
-    #[test]
-    fn test_bridge_resync_tracks_observed_edge_state() {
-        let mut bridge = RailcomWindowBridge::new();
-        bridge.resync(edges(4, 3));
-        assert!(bridge.window_open());
-
-        let out = bridge.update(edges(4, 4));
-        assert_eq!(out.as_slice(), &[RailcomWindowCommand::Close]);
-        assert!(!bridge.window_open());
     }
 }

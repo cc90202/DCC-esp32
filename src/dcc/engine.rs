@@ -4,7 +4,8 @@ use crate::dcc::encoder::{PulseCode as DccPulseCode, encode_dcc_data_portion};
 use crate::dcc::rmt_driver;
 use crate::dcc::timing::{IDLE_RMT_SIZE, MAX_DATA_PULSES, RMT_CLOCK_HZ};
 use crate::dcc::{DccFrame, DccPacket, encode_dcc_packet};
-use crate::system_status::{FaultCause, FaultEvent};
+use crate::fault_manager::FaultEvent;
+use crate::system_status::FaultCause;
 
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -23,7 +24,7 @@ const ISR_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(50);
 const ISR_RESET_GRACE_PERIOD: Duration = Duration::from_millis(100);
 
 /// DCC packet channel type for sending packets to the engine.
-pub type DccPacketChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, DccPacket, 16>;
+pub type DccPacketChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, DccFrame, 16>;
 
 /// Pre-encoded idle waveform used to bootstrap continuous RMT loop mode.
 pub type IdleRmtBuffer = Vec<PulseCode, IDLE_RMT_SIZE>;
@@ -54,7 +55,7 @@ pub fn build_idle_rmt_buffer() -> Result<IdleRmtBuffer, IdleWaveformBuildError> 
 
 /// Pure async feeder paced by the ISR ACK.
 pub async fn dcc_engine_task(
-    receiver: Receiver<'static, CriticalSectionRawMutex, DccPacket, 16>,
+    receiver: Receiver<'static, CriticalSectionRawMutex, DccFrame, 16>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
 ) -> ! {
     defmt::info!("DCC engine feeder started");
@@ -81,8 +82,8 @@ pub async fn dcc_engine_task(
             yield_now().await;
         }
 
-        let packet = receiver.receive().await;
-        let next_rmt = match encode_packet_to_rmt_data(&packet) {
+        let frame = receiver.receive().await;
+        let next_rmt = match encode_packet_to_rmt_data(&frame.packet) {
             Some(buf) => buf,
             None => {
                 defmt::warn!("packet encoding failed, skipping");
@@ -90,11 +91,7 @@ pub async fn dcc_engine_task(
             }
         };
 
-        rmt_driver::submit_packet(
-            next_rmt.as_slice(),
-            frame.cutout_allowed(),
-            frame.pom_requested(),
-        );
+        rmt_driver::submit_packet(next_rmt.as_slice(), frame.cutout_allowed);
     }
 }
 

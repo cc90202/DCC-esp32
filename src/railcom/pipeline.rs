@@ -3,29 +3,16 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use heapless::Vec;
 
 use crate::railcom::parser::{
-    ParseError, RailcomDatagram, RailcomItem, RailcomParseResult, RailcomParseStatus,
-    parse_channel1, parse_channel2,
+    Channel2ParseStatus, ParseError, RailcomChannel2Item, parse_channel2,
 };
 
-// Per-outcome counters. Every window lands in exactly one bucket:
-// empty, parsed, parse-error, or corrupted.
+static RX_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_EMPTY_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_PARSE_OK_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_PARSE_ERR_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_CORRUPTED_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
-// Within-parsed counters (not mutually exclusive; derived from items).
 static RX_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_NACK_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_ADR_HIGH_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_ADR_LOW_COUNT: AtomicU32 = AtomicU32::new(0);
-// Capture-level overflow counter (dropped ring entries or windows too long).
-static RX_OVERFLOW_COUNT: AtomicU32 = AtomicU32::new(0);
-
-const RAILCOM_CHANNEL_COUNT: usize = 2;
-static RX_CHANNEL_WINDOW_COUNTS: [AtomicU32; RAILCOM_CHANNEL_COUNT] =
-    [const { AtomicU32::new(0) }; RAILCOM_CHANNEL_COUNT];
-static RX_CHANNEL_EMPTY_COUNTS: [AtomicU32; RAILCOM_CHANNEL_COUNT] =
-    [const { AtomicU32::new(0) }; RAILCOM_CHANNEL_COUNT];
+static RX_UNSUPPORTED_CHANNEL_COUNT: AtomicU32 = AtomicU32::new(0);
 
 const MAX_CHANNEL2_WINDOW_BYTES: usize = 6;
 
@@ -44,8 +31,8 @@ pub enum RailcomRxWindowError {
 
 /// One logical RailCom receive window.
 ///
-/// At most 6 raw bytes: the largest supported CH2 datagram spans 6 encoded
-/// 4/8 symbols.
+/// In the current CH2-first phase we store at most 6 raw bytes because the
+/// largest supported CH2 datagram spans 6 encoded symbols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct RailcomRxWindow {
@@ -98,6 +85,7 @@ pub enum RailcomRxOutcome {
     Parsed,
     ParseError(ParseError),
     PartialUnsupportedDatagram(u8),
+    UnsupportedChannel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,131 +93,51 @@ pub enum RailcomRxOutcome {
 pub struct RailcomRxResult {
     pub window: RailcomRxWindow,
     pub outcome: RailcomRxOutcome,
-    pub items: Vec<RailcomItem, 6>,
+    pub items: Vec<RailcomChannel2Item, 6>,
 }
 
-/// Snapshot of RX pipeline counters.
-///
-/// The persisted atomics cover only orthogonal outcomes; `rx_window_count`
-/// and `rx_windows_with_bytes_count` are derived at snapshot time so the
-/// totals stay exactly consistent with their parts regardless of ISR racing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct RailcomRxStats {
+    pub rx_window_count: u32,
     pub rx_empty_window_count: u32,
     pub rx_parse_ok_count: u32,
     pub rx_parse_err_count: u32,
-    pub rx_corrupted_window_count: u32,
     pub rx_ack_count: u32,
     pub rx_nack_count: u32,
-    pub rx_adr_high_count: u32,
-    pub rx_adr_low_count: u32,
-    pub rx_overflow_count: u32,
-    pub ch1_window_count: u32,
-    pub ch1_empty_count: u32,
-    pub ch2_window_count: u32,
-    pub ch2_empty_count: u32,
-}
-
-impl RailcomRxStats {
-    #[must_use]
-    pub fn rx_windows_with_bytes_count(&self) -> u32 {
-        self.rx_parse_ok_count + self.rx_parse_err_count + self.rx_corrupted_window_count
-    }
-
-    #[must_use]
-    pub fn rx_window_count(&self) -> u32 {
-        self.rx_empty_window_count + self.rx_windows_with_bytes_count()
-    }
+    pub rx_unsupported_channel_count: u32,
 }
 
 #[must_use]
 pub fn railcom_rx_stats() -> RailcomRxStats {
     RailcomRxStats {
+        rx_window_count: RX_WINDOW_COUNT.load(Ordering::Acquire),
         rx_empty_window_count: RX_EMPTY_WINDOW_COUNT.load(Ordering::Acquire),
         rx_parse_ok_count: RX_PARSE_OK_COUNT.load(Ordering::Acquire),
         rx_parse_err_count: RX_PARSE_ERR_COUNT.load(Ordering::Acquire),
-        rx_corrupted_window_count: RX_CORRUPTED_WINDOW_COUNT.load(Ordering::Acquire),
         rx_ack_count: RX_ACK_COUNT.load(Ordering::Acquire),
         rx_nack_count: RX_NACK_COUNT.load(Ordering::Acquire),
-        rx_adr_high_count: RX_ADR_HIGH_COUNT.load(Ordering::Acquire),
-        rx_adr_low_count: RX_ADR_LOW_COUNT.load(Ordering::Acquire),
-        rx_overflow_count: RX_OVERFLOW_COUNT.load(Ordering::Acquire),
-        ch1_window_count: RX_CHANNEL_WINDOW_COUNTS[RailcomChannel::Channel1.index()]
-            .load(Ordering::Acquire),
-        ch1_empty_count: RX_CHANNEL_EMPTY_COUNTS[RailcomChannel::Channel1.index()]
-            .load(Ordering::Acquire),
-        ch2_window_count: RX_CHANNEL_WINDOW_COUNTS[RailcomChannel::Channel2.index()]
-            .load(Ordering::Acquire),
-        ch2_empty_count: RX_CHANNEL_EMPTY_COUNTS[RailcomChannel::Channel2.index()]
-            .load(Ordering::Acquire),
+        rx_unsupported_channel_count: RX_UNSUPPORTED_CHANNEL_COUNT.load(Ordering::Acquire),
     }
 }
 
 #[cfg(test)]
 pub fn reset_railcom_rx_stats() {
+    RX_WINDOW_COUNT.store(0, Ordering::Release);
     RX_EMPTY_WINDOW_COUNT.store(0, Ordering::Release);
     RX_PARSE_OK_COUNT.store(0, Ordering::Release);
     RX_PARSE_ERR_COUNT.store(0, Ordering::Release);
-    RX_CORRUPTED_WINDOW_COUNT.store(0, Ordering::Release);
     RX_ACK_COUNT.store(0, Ordering::Release);
     RX_NACK_COUNT.store(0, Ordering::Release);
-    RX_ADR_HIGH_COUNT.store(0, Ordering::Release);
-    RX_ADR_LOW_COUNT.store(0, Ordering::Release);
-    RX_OVERFLOW_COUNT.store(0, Ordering::Release);
-    for index in 0..RAILCOM_CHANNEL_COUNT {
-        RX_CHANNEL_WINDOW_COUNTS[index].store(0, Ordering::Release);
-        RX_CHANNEL_EMPTY_COUNTS[index].store(0, Ordering::Release);
-    }
-}
-
-pub fn record_oversized_window() {
-    RX_OVERSIZED_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn record_rx_overflows(count: u32) {
-    RX_OVERFLOW_COUNT.fetch_add(count, Ordering::Relaxed);
-}
-
-impl RailcomChannel {
-    const fn index(self) -> usize {
-        match self {
-            RailcomChannel::Channel1 => 0,
-            RailcomChannel::Channel2 => 1,
-        }
-    }
-}
-
-fn record_channel_window(channel: RailcomChannel) {
-    RX_CHANNEL_WINDOW_COUNTS[channel.index()].fetch_add(1, Ordering::Relaxed);
-}
-
-fn record_channel_empty(channel: RailcomChannel) {
-    RX_CHANNEL_EMPTY_COUNTS[channel.index()].fetch_add(1, Ordering::Relaxed);
-}
-
-fn parsed_result(window: RailcomRxWindow, parsed: RailcomParseResult) -> RailcomRxResult {
-    RX_PARSE_OK_COUNT.fetch_add(1, Ordering::Relaxed);
-    record_parsed_items(parsed.items.as_slice());
-
-    RailcomRxResult {
-        window,
-        outcome: match parsed.status {
-            RailcomParseStatus::Complete => RailcomRxOutcome::Parsed,
-            RailcomParseStatus::PartialUnsupportedDatagram(id) => {
-                RailcomRxOutcome::PartialUnsupportedDatagram(id)
-            }
-        },
-        items: parsed.items,
-    }
+    RX_UNSUPPORTED_CHANNEL_COUNT.store(0, Ordering::Release);
 }
 
 #[must_use]
 pub fn process_rx_window(window: RailcomRxWindow) -> RailcomRxResult {
-    record_channel_window(window.channel);
+    RX_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
+
     if window.is_empty() {
         RX_EMPTY_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
-        record_channel_empty(window.channel);
         return RailcomRxResult {
             window,
             outcome: RailcomRxOutcome::Empty,
@@ -238,8 +146,40 @@ pub fn process_rx_window(window: RailcomRxWindow) -> RailcomRxResult {
     }
 
     match window.channel {
-        RailcomChannel::Channel1 => match parse_channel1(window.raw_slice()) {
-            Ok(parsed) => parsed_result(window, parsed),
+        RailcomChannel::Channel1 => {
+            RX_UNSUPPORTED_CHANNEL_COUNT.fetch_add(1, Ordering::Relaxed);
+            RailcomRxResult {
+                window,
+                outcome: RailcomRxOutcome::UnsupportedChannel,
+                items: Vec::new(),
+            }
+        }
+        RailcomChannel::Channel2 => match parse_channel2(window.raw_slice()) {
+            Ok(parsed) => {
+                RX_PARSE_OK_COUNT.fetch_add(1, Ordering::Relaxed);
+                for item in parsed.items.iter() {
+                    match item {
+                        RailcomChannel2Item::Ack => {
+                            RX_ACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        RailcomChannel2Item::Nack => {
+                            RX_NACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                        }
+                        RailcomChannel2Item::Datagram(_) => {}
+                    }
+                }
+
+                RailcomRxResult {
+                    window,
+                    outcome: match parsed.status {
+                        Channel2ParseStatus::Complete => RailcomRxOutcome::Parsed,
+                        Channel2ParseStatus::PartialUnsupportedDatagram(id) => {
+                            RailcomRxOutcome::PartialUnsupportedDatagram(id)
+                        }
+                    },
+                    items: parsed.items,
+                }
+            }
             Err(err) => {
                 RX_PARSE_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
                 RailcomRxResult {
@@ -249,51 +189,13 @@ pub fn process_rx_window(window: RailcomRxWindow) -> RailcomRxResult {
                 }
             }
         },
-        RailcomChannel::Channel2 => match parse_channel2(window.raw_slice()) {
-            Ok(parsed) => parsed_result(window, parsed),
-            Err(err) => {
-                RX_PARSE_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
-                RailcomRxResult {
-                    window,
-                    outcome: RailcomRxOutcome::ParseError(err),
-                    items: Vec::new(),
-                }
-            }
-            RailcomItem::Datagram(RailcomDatagram::AdrHigh(_)) => {
-                RX_ADR_HIGH_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            RailcomItem::Datagram(RailcomDatagram::AdrLow(_)) => {
-                RX_ADR_LOW_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            RailcomItem::Datagram(_) => {}
-        }
-    }
-}
-
-fn record_parsed_items(items: &[RailcomItem]) {
-    for item in items {
-        match item {
-            RailcomItem::Ack => {
-                RX_ACK_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            RailcomItem::Nack => {
-                RX_NACK_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            RailcomItem::Datagram(RailcomDatagram::AdrHigh(_)) => {
-                RX_ADR_HIGH_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            RailcomItem::Datagram(RailcomDatagram::AdrLow(_)) => {
-                RX_ADR_LOW_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            RailcomItem::Datagram(_) => {}
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE, RailcomDatagram};
+    use crate::railcom::parser::{ACK_1_CODE, RailcomDatagram};
 
     const TEST_ID0_CODE_0X42: [u8; 2] = [0b1010_1010, 0b1010_1001];
 
@@ -306,10 +208,18 @@ mod tests {
 
         assert_eq!(result.outcome, RailcomRxOutcome::Empty);
         assert!(result.items.is_empty());
-        let stats = railcom_rx_stats();
-        assert_eq!(stats.rx_window_count(), 1);
-        assert_eq!(stats.rx_empty_window_count, 1);
-        assert_eq!(stats.rx_windows_with_bytes_count(), 0);
+        assert_eq!(
+            railcom_rx_stats(),
+            RailcomRxStats {
+                rx_window_count: 1,
+                rx_empty_window_count: 1,
+                rx_parse_ok_count: 0,
+                rx_parse_err_count: 0,
+                rx_ack_count: 0,
+                rx_nack_count: 0,
+                rx_unsupported_channel_count: 0,
+            }
+        );
     }
 
     #[test]
@@ -324,15 +234,22 @@ mod tests {
         assert_eq!(
             result.items.as_slice(),
             &[
-                RailcomItem::Ack,
-                RailcomItem::Datagram(RailcomDatagram::CvData(0x42)),
+                RailcomChannel2Item::Ack,
+                RailcomChannel2Item::Datagram(RailcomDatagram::CvData(0x42)),
             ]
         );
-        let stats = railcom_rx_stats();
-        assert_eq!(stats.rx_window_count(), 1);
-        assert_eq!(stats.rx_windows_with_bytes_count(), 1);
-        assert_eq!(stats.rx_parse_ok_count, 1);
-        assert_eq!(stats.rx_ack_count, 1);
+        assert_eq!(
+            railcom_rx_stats(),
+            RailcomRxStats {
+                rx_window_count: 1,
+                rx_empty_window_count: 0,
+                rx_parse_ok_count: 1,
+                rx_parse_err_count: 0,
+                rx_ack_count: 1,
+                rx_nack_count: 0,
+                rx_unsupported_channel_count: 0,
+            }
+        );
     }
 
     #[test]
@@ -347,7 +264,7 @@ mod tests {
             result.outcome,
             RailcomRxOutcome::PartialUnsupportedDatagram(4)
         );
-        assert_eq!(result.items.as_slice(), &[RailcomItem::Ack]);
+        assert_eq!(result.items.as_slice(), &[RailcomChannel2Item::Ack]);
         assert_eq!(railcom_rx_stats().rx_parse_ok_count, 1);
         assert_eq!(railcom_rx_stats().rx_parse_err_count, 0);
     }
@@ -382,66 +299,17 @@ mod tests {
     }
 
     #[test]
-    fn test_process_rx_window_channel1_parses_address_datagram() {
+    fn test_process_rx_window_channel1_is_explicitly_unsupported_for_now() {
         reset_railcom_rx_stats();
-        let raw = [0b1001_1001, 0b1100_1001];
-        let window = RailcomRxWindow::try_new(19, RailcomChannel::Channel1, &raw)
-            .expect("CH1 address window must fit");
-        let result = process_rx_window(window);
-
-        assert_eq!(result.outcome, RailcomRxOutcome::Parsed);
-        assert_eq!(
-            result.items.as_slice(),
-            &[RailcomItem::Datagram(RailcomDatagram::AdrLow(42))]
-        );
-        let stats = railcom_rx_stats();
-        assert_eq!(stats.rx_windows_with_bytes_count(), 1);
-        assert_eq!(stats.rx_parse_ok_count, 1);
-        assert_eq!(stats.rx_parse_err_count, 0);
-        assert_eq!(stats.ch1_window_count, 1);
-        assert_eq!(stats.rx_adr_low_count, 1);
-    }
-
-    #[test]
-    fn test_process_rx_window_channel1_accepts_ack() {
-        reset_railcom_rx_stats();
-        let window = RailcomRxWindow::try_new(19, RailcomChannel::Channel1, &[ACK_2_CODE])
+        let window = RailcomRxWindow::try_new(19, RailcomChannel::Channel1, &[ACK_1_CODE])
             .expect("single-byte CH1 window must fit");
         let result = process_rx_window(window);
 
-        assert_eq!(result.outcome, RailcomRxOutcome::Parsed);
-        assert_eq!(result.items.as_slice(), &[RailcomItem::Ack]);
+        assert_eq!(result.outcome, RailcomRxOutcome::UnsupportedChannel);
+        assert!(result.items.is_empty());
         let stats = railcom_rx_stats();
-        assert_eq!(stats.rx_parse_ok_count, 1);
+        assert_eq!(stats.rx_parse_ok_count, 0);
         assert_eq!(stats.rx_parse_err_count, 0);
-        assert_eq!(stats.ch1_window_count, 1);
-        assert_eq!(stats.rx_ack_count, 1);
-    }
-
-    #[test]
-    fn test_process_rx_window_channel1_accepts_ack() {
-        reset_railcom_rx_stats();
-        let window = RailcomRxWindow::try_new(19, RailcomChannel::Channel1, &[ACK_2_CODE])
-            .expect("single-byte CH1 window must fit");
-        let result = process_rx_window(window);
-
-        assert_eq!(result.outcome, RailcomRxOutcome::Parsed);
-        assert_eq!(result.items.as_slice(), &[RailcomItem::Ack]);
-        let stats = railcom_rx_stats();
-        assert_eq!(stats.rx_parse_ok_count, 1);
-        assert_eq!(stats.rx_parse_err_count, 0);
-        assert_eq!(stats.ch1_window_count, 1);
-        assert_eq!(stats.rx_ack_count, 1);
-    }
-
-    #[test]
-    fn test_record_oversized_window_updates_aggregate_stats() {
-        reset_railcom_rx_stats();
-        record_oversized_window();
-
-        let stats = railcom_rx_stats();
-        assert_eq!(stats.rx_window_count(), 1);
-        assert_eq!(stats.rx_windows_with_bytes_count(), 1);
-        assert_eq!(stats.rx_oversized_window_count, 1);
+        assert_eq!(stats.rx_unsupported_channel_count, 1);
     }
 }

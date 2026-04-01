@@ -24,7 +24,10 @@ pub mod dcc;
 pub mod display;
 pub mod fault_manager;
 pub mod net;
+pub mod railcom;
 pub mod short_detector;
 #[cfg(target_arch = "riscv32")]
 pub mod status_led;
 pub mod system_status;
+#[cfg(target_arch = "riscv32")]
+pub mod track_output;
