@@ -19,9 +19,10 @@
 //! use esp_hal::gpio::Input;
 //! use dcc_esp32::control_buttons::{stop_button_task, resume_button_task};
 //!
-//! // Assuming button GPIO pins already configured as Input
-//! let stop_button = Input::new(unsafe { core::mem::zeroed() }, esp_hal::gpio::Pull::Up);
-//! let resume_button = Input::new(unsafe { core::mem::zeroed() }, esp_hal::gpio::Pull::Up);
+//! // Assuming button GPIO pins were already split from `peripherals.GPIO`
+//! // and configured as Input with pull-ups enabled:
+//! // let stop_button: Input<'static> = ...;
+//! // let resume_button: Input<'static> = ...;
 //!
 //! // Get the fault event channel sender from fault_manager_task setup
 //! // let fault_sender = ...;
