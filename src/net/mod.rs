@@ -9,9 +9,13 @@ pub mod z21_proto;
 // EXTERN/PROVIDE in the linker script; without them the release build fails.
 #[cfg(target_arch = "riscv32")]
 mod esp_radio_stubs {
+    // SAFETY: The WiFi library expects this exact unmangled symbol at link time.
+    // The stub intentionally performs no deinit work on ESP32-C6.
     #[unsafe(no_mangle)]
     unsafe extern "C" fn __esp_radio_misc_nvs_deinit() {}
 
+    // SAFETY: The WiFi library expects this exact unmangled symbol at link time.
+    // Returning 0 preserves the "success" contract used by the precompiled blob.
     #[unsafe(no_mangle)]
     unsafe extern "C" fn __esp_radio_misc_nvs_init() -> i32 {
         0

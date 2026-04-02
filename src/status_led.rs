@@ -20,9 +20,10 @@
 //! use dcc_esp32::status_led::status_led_task;
 //! use esp_hal::gpio::Output;
 //!
-//! // Assuming GPIO14 and GPIO15 already configured as Output
-//! let green_led = Output::new(unsafe { core::mem::zeroed() }, esp_hal::gpio::Level::Low);
-//! let red_led = Output::new(unsafe { core::mem::zeroed() }, esp_hal::gpio::Level::Low);
+//! // Assuming GPIO14 and GPIO15 were already split from `peripherals.GPIO`
+//! // and configured as outputs:
+//! // let green_led: Output<'static> = ...;
+//! // let red_led: Output<'static> = ...;
 //!
 //! // Get the status event receiver from status_model_task setup
 //! // let status_receiver = ...;
