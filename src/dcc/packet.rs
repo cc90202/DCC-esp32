@@ -59,51 +59,6 @@ pub enum DccAddressKind {
     Long,
 }
 
-/// Compact crate-internal representation for atomics and ISR metadata.
-///
-/// Raw layout:
-/// - `0` = no address
-/// - `1..=127` = short address
-/// - `0x8000 | value` = long address, with `value` in `128..=10239`
-#[cfg(any(test, target_arch = "riscv32"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct PackedDccAddress(u16);
-
-#[cfg(any(test, target_arch = "riscv32"))]
-impl PackedDccAddress {
-    const LONG_TAG: u16 = 0x8000;
-    const LONG_VALUE_MASK: u16 = 0x3fff;
-
-    pub(crate) const fn from_raw(raw: u16) -> Self {
-        Self(raw)
-    }
-
-    pub(crate) const fn raw(self) -> u16 {
-        self.0
-    }
-
-    pub(crate) fn from_address(address: Option<DccAddress>) -> Self {
-        match address {
-            Some(address) if address.is_short() => Self(address.value()),
-            Some(address) => Self(Self::LONG_TAG | address.value()),
-            None => Self(0),
-        }
-    }
-
-    pub(crate) fn address(self) -> Option<DccAddress> {
-        if self.0 == 0 {
-            return None;
-        }
-
-        if (self.0 & Self::LONG_TAG) != 0 {
-            DccAddress::new_long(self.0 & Self::LONG_VALUE_MASK)
-        } else {
-            let value = u8::try_from(self.0).ok()?;
-            DccAddress::new_short(value)
-        }
-    }
-}
-
 impl DccAddress {
     /// Create a new short address (1-127)
     ///
@@ -139,6 +94,14 @@ impl DccAddress {
     /// Returns `true` if this is a long address
     pub fn is_long(&self) -> bool {
         matches!(self.kind, AddressKind::Long(_))
+    }
+
+    /// Returns the addressing mode (short vs long) as a typed enum.
+    pub fn kind(&self) -> DccAddressKind {
+        match self.kind {
+            AddressKind::Short(_) => DccAddressKind::Short,
+            AddressKind::Long(_) => DccAddressKind::Long,
+        }
     }
 
     /// Returns the numeric address value
@@ -590,9 +553,15 @@ impl DccPacket {
         0b0100_0001 | direction_bit
     }
 
-    /// Encodes a validated 1-based CV number into the two on-wire bytes used by
-    /// Direct Mode (S-9.2.2) and POM (S-9.2.1) packets.
-    fn encode_cv_addr(cv: u16, op_prefix: u8) -> (u8, u8) {
+    /// Encodes a 1-based CV number into the two on-wire bytes used by Direct
+    /// Mode (S-9.2.2) and POM (S-9.2.1) packets: `op_prefix` carries the op
+    /// selector bits, OR'd with the top 2 bits of `(cv - 1)`; the low 8 bits
+    /// become the second byte. `max_cv` enforces the mode-specific upper bound
+    /// (256 for Service Mode, 1024 for POM).
+    fn encode_cv_addr(cv: u16, op_prefix: u8, max_cv: u16) -> Result<(u8, u8), PacketEncodeError> {
+        if !(1..=max_cv).contains(&cv) {
+            return Err(PacketEncodeError::InvalidCvAddress { cv });
+        }
         let wire_cv = cv - 1;
         let cv_high = op_prefix | (((wire_cv >> 8) & 0b11) as u8);
         let cv_low = (wire_cv & 0xFF) as u8;

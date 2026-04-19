@@ -28,19 +28,34 @@
 //! - 21-28 = F21-F28 (Function Group 4)
 
 use crate::dcc::packet::{DccAddress, DccPacket, Direction};
+use crate::dcc::speed28::logical_to_nmra_packet_speed;
 #[cfg(target_arch = "riscv32")]
 use crate::dcc::{CutoutMode, DccFrame};
-#[cfg(target_arch = "riscv32")]
-use embassy_time::Instant;
+use core::sync::atomic::{AtomicU32, Ordering};
+use heapless::Vec;
 
-#[cfg(target_arch = "riscv32")]
-use railcom_discovery::RailcomDiscovery;
-#[cfg(target_arch = "riscv32")]
-use railcom_policy::record_track_search_throttled;
-#[cfg(target_arch = "riscv32")]
-use railcom_policy::{PacketClass, RailcomCutoutBudget};
-#[cfg(target_arch = "riscv32")]
-use slot_manager::allowed_slot_visits_without_function;
+/// Maximum number of active locomotive slots
+const MAX_SLOTS: usize = 12;
+/// Maximum number of consists managed in software
+const MAX_CONSISTS: usize = 8;
+/// Maximum members per consist
+const MAX_CONSIST_MEMBERS: usize = 8;
+/// Scheduler target period to revisit one slot in normal conditions.
+const TARGET_SLOT_PERIOD_MS: u64 = 120;
+/// Minimum scheduler tick to avoid tight loops under high slot count.
+const MIN_TICK_MS: u64 = 5;
+/// Maximum allowed interval between refreshes of active function groups.
+const MAX_FUNCTION_REFRESH_MS: u64 = 400;
+/// Additional immediate retransmissions after a function state change.
+const DIRTY_FUNCTION_RETRY_COUNT: u8 = 6;
+/// Additional immediate retransmissions after a stop command.
+const DIRTY_STOP_RETRY_COUNT: u8 = 4;
+/// Minimum number of transmitted packets between two RailCom cutouts on
+/// non-Programming traffic. Caps telemetry cutouts at roughly 1 every 45 ms
+/// (6 × ~7.5 ms/packet) so the detector has time to settle between windows
+/// and refresh/idle packets still make measurable forward progress.
+#[cfg_attr(not(target_arch = "riscv32"), allow(dead_code))]
+const RAILCOM_MIN_PACKET_GAP: u8 = 6;
 
 #[cfg(target_arch = "riscv32")]
 mod railcom_discovery;
@@ -244,23 +259,7 @@ pub async fn packet_scheduler_task(
                 allowed_slot_visits_without_function(slot_count.max(1)),
             )
             .unwrap_or((DccPacket::Idle, PacketClass::Idle));
-        let now = Instant::now();
-        let idle_discovery_due = matches!(class, PacketClass::Idle) && discovery.is_due(now);
-        let cutout_requested = !matches!(class, PacketClass::Idle) || idle_discovery_due;
-        let cutout_allowed = if cutout_requested {
-            railcom_budget.allow_cutout_for(class)
-        } else {
-            railcom_budget.note_packet_without_cutout();
-            false
-        };
-        if idle_discovery_due {
-            if cutout_allowed {
-                packet = discovery.take_next_idle_packet(now);
-            } else {
-                record_track_search_throttled();
-            }
-        }
-        let cutout = match (cutout_allowed, class) {
+        let cutout = match (railcom_budget.allow_cutout_for(class), class) {
             (true, PacketClass::Programming) => CutoutMode::Pom,
             (true, _) => CutoutMode::Telemetry,
             (false, _) => CutoutMode::None,

@@ -584,6 +584,256 @@ where
         Err(CvWriteError::PacketTransportUnavailable)
     }
 }
+
+// --- POM runtime transport (riscv32 only) ---
+
+#[cfg(target_arch = "riscv32")]
+const POM_TX_START_TIMEOUT: Duration = Duration::from_millis(100);
+#[cfg(target_arch = "riscv32")]
+const POM_RESPONSE_TIMEOUT: Duration = Duration::from_millis(120);
+#[cfg(target_arch = "riscv32")]
+const POM_MAX_ATTEMPTS: u8 = 2;
+
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum PomRequest {
+    Read {
+        request_id: u32,
+        address: DccAddress,
+        cv: u16,
+    },
+    Write {
+        request_id: u32,
+        address: DccAddress,
+        cv: u16,
+        value: u8,
+    },
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum PomResponse {
+    Value { request_id: u32, value: u8 },
+    Ack { request_id: u32 },
+    Nack { request_id: u32 },
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum PomRailcomResult {
+    Window {
+        packet_sequence: u32,
+        value: Option<u8>,
+        ack: bool,
+        nack: bool,
+    },
+}
+
+#[cfg(target_arch = "riscv32")]
+pub type PomRequestChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRequest, 1>;
+#[cfg(target_arch = "riscv32")]
+pub type PomResponseChannel =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomResponse, 1>;
+#[cfg(target_arch = "riscv32")]
+pub type PomTxStartedChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, u32, 1>;
+#[cfg(target_arch = "riscv32")]
+pub type PomRailcomResultChannel =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRailcomResult, 4>;
+
+#[cfg(target_arch = "riscv32")]
+fn pom_packet_from_request(request: PomRequest) -> DccPacket {
+    match request {
+        PomRequest::Read { address, cv, .. } => DccPacket::PomReadByte { address, cv },
+        PomRequest::Write {
+            address, cv, value, ..
+        } => DccPacket::PomWriteByte { address, cv, value },
+    }
+}
+
+/// Drain any pending items from a `Receiver` without awaiting.
+///
+/// Used before dispatching a new request on a single-slot channel to make sure
+/// the next response the caller observes is actually for its new request, not
+/// a stale leftover. `Copy` keeps the helper allocation-free for the small POM
+/// types that flow through these channels.
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn drain_channel<T: Copy, const N: usize>(
+    receiver: &Receiver<'static, CriticalSectionRawMutex, T, N>,
+) {
+    while receiver.try_receive().is_ok() {}
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+fn match_pom_result(
+    request: PomRequest,
+    packet_sequence: u32,
+    result: PomRailcomResult,
+) -> Option<PomResponse> {
+    let PomRailcomResult::Window {
+        packet_sequence: seq,
+        value,
+        ack,
+        nack,
+        ..
+    } = result;
+    if seq != packet_sequence {
+        return None;
+    }
+    match request {
+        PomRequest::Read { request_id, .. } => {
+            if let Some(value) = value {
+                Some(PomResponse::Value { request_id, value })
+            } else if nack {
+                Some(PomResponse::Nack { request_id })
+            } else {
+                None
+            }
+        }
+        PomRequest::Write { request_id, .. } => {
+            if ack {
+                Some(PomResponse::Ack { request_id })
+            } else if nack {
+                Some(PomResponse::Nack { request_id })
+            } else {
+                None
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+async fn await_matching_pom_result(
+    request: PomRequest,
+    packet_sequence: u32,
+    railcom_results: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
+) -> PomResponse {
+    loop {
+        let result = railcom_results.receive().await;
+        if let Some(response) = match_pom_result(request, packet_sequence, result) {
+            return response;
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PomAttemptOutcome {
+    Response(PomResponse),
+    TxTimeout,
+    ResponseTimeout,
+}
+
+#[cfg(target_arch = "riscv32")]
+async fn run_pom_attempt(
+    request: PomRequest,
+    tx_started_receiver: &Receiver<'static, CriticalSectionRawMutex, u32, 1>,
+    railcom_result_receiver: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
+    scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+) -> PomAttemptOutcome {
+    drain_channel(tx_started_receiver);
+    drain_channel(railcom_result_receiver);
+
+    let packet = pom_packet_from_request(request);
+    scheduler_sender
+        .send(SchedulerCommand::ProgramOnMain { packet })
+        .await;
+
+    let packet_sequence =
+        match with_timeout(POM_TX_START_TIMEOUT, tx_started_receiver.receive()).await {
+            Ok(packet_sequence) => packet_sequence,
+            Err(_) => return PomAttemptOutcome::TxTimeout,
+        };
+
+    match with_timeout(
+        POM_RESPONSE_TIMEOUT,
+        await_matching_pom_result(request, packet_sequence, railcom_result_receiver),
+    )
+    .await
+    {
+        Ok(response) => PomAttemptOutcome::Response(response),
+        Err(_) => PomAttemptOutcome::ResponseTimeout,
+    }
+}
+
+/// Single-flight POM actor.
+///
+/// This actor keeps retry/timeout orchestration outside the scheduler and RMT path.
+#[cfg(target_arch = "riscv32")]
+#[embassy_executor::task]
+pub async fn pom_actor_task(
+    request_receiver: Receiver<'static, CriticalSectionRawMutex, PomRequest, 1>,
+    response_sender: Sender<'static, CriticalSectionRawMutex, PomResponse, 1>,
+    tx_started_receiver: Receiver<'static, CriticalSectionRawMutex, u32, 1>,
+    railcom_result_receiver: Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
+    scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+) -> ! {
+    loop {
+        let request = request_receiver.receive().await;
+        let request_id = match request {
+            PomRequest::Read { request_id, .. } | PomRequest::Write { request_id, .. } => {
+                request_id
+            }
+        };
+        let mut final_response = PomResponse::Nack { request_id };
+
+        for attempt in 1..=POM_MAX_ATTEMPTS {
+            match run_pom_attempt(
+                request,
+                &tx_started_receiver,
+                &railcom_result_receiver,
+                &scheduler_sender,
+            )
+            .await
+            {
+                PomAttemptOutcome::Response(response) => {
+                    final_response = response;
+                    break;
+                }
+                PomAttemptOutcome::TxTimeout | PomAttemptOutcome::ResponseTimeout => {
+                    if attempt == POM_MAX_ATTEMPTS {
+                        final_response = PomResponse::Nack { request_id };
+                    }
+                }
+            }
+        }
+
+        response_sender.send(final_response).await;
+    }
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+pub fn pom_result_from_railcom_items(
+    packet_sequence: u32,
+    items: &[RailcomChannel2Item],
+) -> Option<PomRailcomResult> {
+    let mut value = None;
+    let mut ack = false;
+    let mut nack = false;
+
+    for item in items {
+        match item {
+            RailcomChannel2Item::Ack => ack = true,
+            RailcomChannel2Item::Nack => nack = true,
+            RailcomChannel2Item::Datagram(RailcomDatagram::CvData(cv_value)) => {
+                value.get_or_insert(*cv_value);
+            }
+            RailcomChannel2Item::Datagram(_) => {}
+        }
+    }
+
+    (value.is_some() || ack || nack).then_some(PomRailcomResult::Window {
+        packet_sequence,
+        value,
+        ack,
+        nack,
+    })
+}
+
+// --- Tests ---
+
 #[cfg(test)]
 mod tests {
     use super::*;

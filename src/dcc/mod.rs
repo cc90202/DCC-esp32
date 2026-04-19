@@ -67,19 +67,12 @@ pub enum CutoutMode {
 pub struct DccFrame {
     pub packet: DccPacket,
     pub cutout: CutoutMode,
-    pub railcom_target_address: Option<DccAddress>,
-    pub pom_read_requested: bool,
 }
 
 impl DccFrame {
     #[must_use]
     pub const fn new(packet: DccPacket, cutout: CutoutMode) -> Self {
-        Self {
-            packet,
-            cutout,
-            railcom_target_address: packet.railcom_target_address(),
-            pom_read_requested: matches!(packet, DccPacket::PomReadByte { .. }),
-        }
+        Self { packet, cutout }
     }
 
     #[must_use]
@@ -109,8 +102,7 @@ pub use engine::{IdleWaveformBuildError, build_idle_rmt_buffer, dcc_engine_task}
 pub(crate) use packet::PackedDccAddress;
 #[doc(inline)]
 pub use packet::{
-    BinaryStateAddress, DccAddress, DccAddressKind, DccPacket, Direction, LogonGroup, NmraSpeed28,
-    NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
+    DccAddress, DccAddressKind, DccPacket, Direction, NmraSpeed28, NmraSpeed128, PacketEncodeError,
 };
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]

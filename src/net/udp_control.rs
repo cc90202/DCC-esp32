@@ -28,7 +28,7 @@ use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEv
 
     use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
     use crate::dcc::cv::drain_channel;
-    use crate::dcc::{FunctionIndex, PomCv, PomRequest, PomResponse, SchedulerCommand};
+    use crate::dcc::{FunctionIndex, PomRequest, PomResponse, SchedulerCommand};
     use crate::display::DisplayEvent;
     use crate::fault_manager::FaultEvent;
     const WIFI_SSID: &str = env!("WIFI_SSID");
@@ -560,7 +560,6 @@ pub async fn net_task(
                 encode_current_system_state(ctx.status_model, out)
             }
             Z21Command::GetXBusVersion => z21_proto::encode_xbus_version(out),
-            Z21Command::GetFirmwareVersion => z21_proto::encode_firmware_version(out),
             Z21Command::GetStatus => encode_current_status(ctx.status_model, out),
             Z21Command::SetTrackPowerOn => {
                 ctx.fault_sender.send(FaultEvent::ResumeShortPressed).await;
@@ -632,7 +631,7 @@ pub async fn net_task(
                 handle_cv_pom_write(out, ctx, address, cv, value).await
             }
             Z21Command::CvPomReadByte { address, cv } => {
-                handle_cv_pom_read(loco_slots, out, ctx, address, cv).await
+                handle_cv_pom_read(out, ctx, address, cv).await
             }
             // Turnout info — no accessory decoder support; reply with state=unknown to keep
             // the app in sync and suppress repeated warn logs.
@@ -812,11 +811,6 @@ pub async fn net_task(
         cv: u16,
         value: u8,
     ) -> usize {
-        let Some(cv_addr) = PomCv::new(cv) else {
-            warn!("POM write addr={} invalid cv={}", address.value(), cv);
-            return z21_proto::encode_cv_nack(out);
-        };
-
         if !ctx.status_model.pom_allowed() {
             warn!(
                 "POM write addr={} cv={} rejected (track_on={} estop={} fault={:?})",
@@ -828,10 +822,6 @@ pub async fn net_task(
             );
             return z21_proto::encode_cv_nack(out);
         }
-
-        ctx.scheduler_sender
-            .send(SchedulerCommand::SuspendRailcomDiscovery)
-            .await;
 
         match request_pom(
             ctx.pom_request_sender,
@@ -865,11 +855,6 @@ pub async fn net_task(
         address: crate::dcc::DccAddress,
         cv: u16,
     ) -> usize {
-        let Some(cv_addr) = PomCv::new(cv) else {
-            warn!("POM read addr={} invalid cv={}", address.value(), cv);
-            return z21_proto::encode_cv_nack(out);
-        };
-
         if !ctx.status_model.pom_allowed() {
             warn!(
                 "POM read addr={} cv={} rejected (track_on={} estop={} fault={:?})",
@@ -882,24 +867,13 @@ pub async fn net_task(
             return z21_proto::encode_cv_nack(out);
         }
 
-        ctx.scheduler_sender
-            .send(SchedulerCommand::SuspendRailcomDiscovery)
-            .await;
-
-        let format = z21_proto::find_or_insert(loco_slots, address)
-            .map(|slot| slot.format)
-            .unwrap_or(crate::dcc::SpeedFormat::Speed128);
-        ctx.scheduler_sender
-            .send(SchedulerCommand::EnsureRailcomRefresh { address, format })
-            .await;
-
         match request_pom(
             ctx.pom_request_sender,
             ctx.pom_response_receiver,
             |request_id| PomRequest::Read {
                 request_id,
                 address,
-                cv: cv_addr,
+                cv,
             },
         )
         .await

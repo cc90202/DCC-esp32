@@ -1,8 +1,8 @@
 //! Track output ownership boundary and RailCom cutout driver.
 //!
-//! Sole owner of the DRV8874 `SLEEP` master-enable pin (`GPIO18`) and fast
-//! RailCom cutout pin (`GPIO4`). The RMT boundary ISR starts the cutout
-//! sequence and a hardware TIMG timer opens/closes the physical cutout.
+//! Sole owner of the physical H-bridge enable pin (`GPIO18`) and sole place
+//! where the cutout lifecycle is executed. The RMT boundary ISR starts the
+//! cutout and a hardware TIMG timer closes it after `CUTOUT_DURATION_US`.
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering};
@@ -21,8 +21,6 @@ use esp_hal::timer::OneShotTimer;
 use esp_hal::timer::timg;
 use heapless::Vec;
 use static_cell::StaticCell;
-
-use crate::dcc::{DccAddress, PackedDccAddress};
 
 /// Cutout duration in microseconds. NMRA S-9.3.2 requires 454..=488 µs; 460 µs
 /// sits comfortably in the middle of that window.
