@@ -2,7 +2,7 @@
 
 **Data:** 2026-05-12
 **Branch corrente alla scrittura:** `feat/railcom` (il design è separato dal lavoro RailCom; verrà implementato su branch dedicato)
-**Status:** Approved
+**Status:** In review
 
 ---
 
@@ -12,11 +12,9 @@ Questo documento descrive il design di un sottosistema che sostituisce l'attuale
 
 **Cosa cambia per l'utente.** Al primo boot (o dopo un factory reset), il device accende un hotspot WiFi temporaneo e mostra una pagina di configurazione attraverso un portale captive. L'utente inserisce nome device, password amministratore, e credenziali della rete WiFi a cui far collegare il device. Da quel momento, il device si avvia direttamente in modalità operativa, esponendo un pannello web amministrativo sulla rete di casa per cambiare configurazione, riconfigurare la WiFi, fare factory reset, e (in futuro) caricare nuovo firmware.
 
-**Cosa cambia per il firmware.** Vengono introdotti quattro nuovi moduli (`provisioning/`, `web_panel/`, `storage/`, `reset_button/`) e viene modificato `net/udp_control.rs` per leggere le credenziali da memoria flash invece che da `env!()`. Il layout della memoria flash riserva spazio per configurazione utente e per una futura strategia OTA, ma il dual-slot OTA non viene considerato valido finché non è dimostrato con lo stack `esp-hal`/`no_std` del progetto.
+**Cosa cambia per il firmware.** Vengono introdotti quattro nuovi moduli (`provisioning/`, `web_panel/`, `storage/`, `reset_button/`) e viene modificato `net/udp_control.rs` per leggere le credenziali da memoria flash invece che da `env!()`. Il layout della memoria flash viene ridefinito con due slot firmware (predisposizione aggiornamenti OTA) e una zona configurazione utente non-volatile.
 
 **Scope:** Livello 1 (configurazione di rete e identità). **Fuori scope:** dashboard operativa con stato locomotive, upload firmware (predisposto ma non implementato), programmazione CV via web, mDNS.
-
-**Piano figlio iniziale:** `docs/superpowers/plans/2026-05-12-wifi-setup-softap-spike.md` — spike minimo per validare SoftAP + HTTP su `esp-hal` prima del resto del provisioning.
 
 ---
 
@@ -58,21 +56,19 @@ In ogni momento il device si trova in uno di tre stati di rete mutuamente esclus
 | Decisione | Scelta | Motivazione |
 |---|---|---|
 | Modalità di rete | Solo client (joins existing) | Caso d'uso: device si sposta tra reti diverse (casa, club, fiera, hotspot) |
-| Persistenza credenziali | Storage persistente astratto | Dettagli flash/record rimandati al piano implementativo |
-| Trigger provisioning | Automatico (config assente o 5 fallimenti) + tasto GPIO0 hold 5s | Combinazione standard prodotti commerciali |
+| Persistenza credenziali | Memoria flash chiave-valore (NVS) | Standard ESP, supporto transazionale atomico |
+| Trigger provisioning | Automatico (NVS vuota o 5 fallimenti) + tasto GPIO0 hold 5s | Combinazione standard prodotti commerciali |
 | Reti ricordate | Una sola (l'ultima configurata) | Scelta minimal; multi-rete rimandata se servirà |
 | Pannello web | Permanente (sempre attivo in stato Operativo) | Necessario per cambiare WiFi senza factory reset |
 | Scope pannello | Livello 1: stato base + cambio rete + cambio nome | Anti-scope-creep, OTA esplicitamente predisposto ma non implementato |
 | Autenticazione | Login form + cookie di sessione (`HttpOnly`, `SameSite=Strict`) | Esperienza più "prodotto", costo accettabile |
-| Sicurezza provisioning | SoftAP WPA2 con PIN per-device mostrato su OLED | Evita invio di password admin/WiFi su rete aperta |
 | Hardware setup | Tasto su GPIO0 con condensatore 100 nF + pull-up interno | Stesso pattern dei tasti stop/resume esistenti |
 | Discovery sulla rete | IP visualizzato sull'OLED del device | Semplicità; mDNS rimandato |
 | Lingua pannello | Italiano (con variabile per estensione futura) | Mercato di partenza italiano |
 | Display OLED | Mostra stato + IP in operativo, nome hotspot + IP fisso in provisioning | Riusa display esistente, niente nuovo hardware |
 | Web server library | `picoserve` (Embassy-native, supporta streaming upload) | Predisposto per OTA |
 | HTTPS | No nel Livello 1 | LAN domestica con WPA2/WPA3, costo certificati troppo alto per il valore |
-| Layout flash | Zona config + spazio firmware/OTA riservato | Decisione da validare con `esp-hal`, non con assunzioni ESP-IDF |
-| OTA security | Firmware OTA solo firmato crittograficamente | Requisito architetturale, anche se upload non è nel Livello 1 |
+| Layout flash | 2 slot firmware da 3 MB (predisposizione OTA) | Decisione irreversibile da prendere ora |
 
 ---
 
@@ -87,14 +83,14 @@ In ogni momento il device si trova in uno di tre stati di rete mutuamente esclus
 | `Provisioning` | Stabile | Hotspot + DHCP + DNS + Web server limitato | No (H-bridge OFF) |
 | `OperationalConnected` | Stabile | WiFi client + Web server completo + Z21 + DCC | Sì |
 | `OperationalOffline` | Stabile | DCC + Z21 (irraggiungibile) + tentativi riconnessione | Sì |
-| `FactoryResetting` | Transiente | Cancellazione configurazione persistente in corso | No |
+| `FactoryResetting` | Transiente | Cancellazione NVS in corso | No |
 
 ### 2.2 Tabella delle transizioni
 
 | Da → A | Trigger |
 |---|---|
-| `Boot` → `WifiConnecting` | Init completo **e** configurazione persistente valida |
-| `Boot` → `Provisioning` | Init completo **e** configurazione assente |
+| `Boot` → `WifiConnecting` | Init completo **e** NVS contiene credenziali valide |
+| `Boot` → `Provisioning` | Init completo **e** NVS vuota |
 | `WifiConnecting` → `OperationalConnected` | Collegamento WiFi riuscito entro 5 tentativi |
 | `WifiConnecting` → `Provisioning` | 5 fallimenti consecutivi (credenziali obsolete) |
 | `OperationalConnected` → `OperationalOffline` | Evento `WifiDisconnected` da `esp-radio` |
@@ -113,8 +109,8 @@ Indipendentemente da quanto resta giù la WiFi, il device continua a fare DCC e 
 **P2. L'entrata in `Provisioning` da uno stato operativo ferma DCC in modo ordinato.**
 Quando il tasto GPIO0 forza il provisioning, il `provisioning::supervisor` chiama prima una procedura di shutdown ordinato: invia un e-stop packet alle locomotive attive (le ferma in modo controllato), disabilita l'H-bridge, **poi** avvia l'hotspot. Non è uno spegnimento brutale.
 
-**P3. Durante il primo provisioning post-boot (config assente), DCC non parte mai.**
-Il device esce dalla fabbrica senza configurazione utente → prima accensione → entra subito in `Provisioning` senza aver mai energizzato i binari. È solo dopo la conferma dell'utente che si passa a `WifiConnecting` → `OperationalConnected` e DCC parte per la prima volta.
+**P3. Durante il primo provisioning post-boot (NVS vuota), DCC non parte mai.**
+Il device esce dalla fabbrica con NVS vuota → prima accensione → entra subito in `Provisioning` senza aver mai energizzato i binari. È solo dopo la conferma dell'utente che si passa a `WifiConnecting` → `OperationalConnected` e DCC parte per la prima volta.
 
 ### 2.4 Concorrenza
 
@@ -125,17 +121,6 @@ La macchina a stati vive in **un singolo Embassy task** (`provisioning_superviso
 
 Single-threaded logicamente. Nessun lock, nessuna race condition.
 
-### 2.5 Ownership dello stack di rete
-
-Il firmware attuale concentra WiFi, `embassy-net`, connection task e UDP Z21 dentro `src/net/udp_control.rs`. Con il pannello web permanente questa responsabilità viene separata:
-
-- `src/net/runtime.rs` diventa il proprietario esclusivo di `esp_radio`, `WifiController`, interfacce STA/AP, `embassy_net::Stack`, runner e transizioni Client/SoftAP.
-- `src/net/udp_control.rs` diventa un servizio Z21 sopra uno `Stack` già avviato: apre solo la socket UDP 21105 e traduce pacchetti Z21 in comandi DCC.
-- `src/web_panel/server.rs` diventa un servizio HTTP sopra lo stesso `Stack`, senza inizializzare radio o DHCP.
-- `src/provisioning/supervisor.rs` decide lo stato operativo e invia comandi al runtime di rete (`StartProvisioningAp`, `StartClient`, `Reconnect`, `StopNetworkForReboot`), ma non possiede direttamente il controller WiFi.
-
-Regola di progetto: **un solo modulo possiede il driver radio e lo stack IP**. Tutto il resto riceve handle, eventi o comandi bounded via channel. Questo evita doppi runner, doppie configurazioni WiFi e ownership ambigua tra Z21, pannello web e provisioning.
-
 ---
 
 ## 3. Layout della memoria flash
@@ -144,37 +129,36 @@ Regola di progetto: **un solo modulo possiede il driver radio e lo stack IP**. T
 
 L'ESP32-C6 di riferimento è `ESP32-C6-WROOM-1-N8` con **8 MB di flash**. **Da verificare** che il modulo in uso sia effettivamente la variante N8 (lettura con `espflash board-info`). Se il modulo dovesse essere a 4 MB, gli slot firmware si riducono a 1.8 MB ciascuno, sufficiente per la dimensione attuale del firmware (~500 KB) con ampio margine, ma stretti per uno scenario di crescita futuro significativo.
 
-Il progetto usa `esp-hal`/`no_std`, non ESP-IDF. Quindi il piano non assume semantiche ESP-IDF per partition table, `otadata`, boot-and-rollback o selezione automatica dello slot. Nel Livello 1 il requisito concreto è avere una zona persistente per configurazione utente e non bloccare una futura OTA firmata. Il layout dual-slot diventa una **decisione gated**: si abilita solo dopo uno spike hardware che dimostra boot, switch slot e rollback con lo stack effettivamente usato dal progetto.
+Questo layout viene flashato **una sola volta** alla prima programmazione del nuovo firmware. Successive scritture (incluse quelle via OTA in futuro) toccano solo le partizioni dati e/o gli slot firmware, mai la tabella partizioni stessa.
 
-### 3.2 Layout proposto per il Livello 1
+### 3.2 Le partizioni
 
-| Area | Offset | Dimensione | Cosa contiene | Stato |
+| Nome | Tipo | Offset | Dimensione | Cosa contiene |
 |---|---|---|---|---|
-| Boot/app corrente | Da layout `esp-hal`/`espflash` corrente | Da confermare con build reale | Firmware Livello 1 | In scope |
-| Config persistente | Da scegliere dopo verifica flash map | Da stimare | Credenziali WiFi, password admin hash, nome device | In scope come capability, non come formato |
-| OTA reserved | Da scegliere dopo spike | Resto flash disponibile | Spazio riservato per futura immagine firmata o storage firmware | Riservato, non usato nel Livello 1 |
-| Storage esteso | Da scegliere dopo spike | Opzionale | Backup/log/asset futuri | Fuori scope |
+| `bootloader` | bootloader | 0x0000 | 32 KB | Bootloader ESP-IDF. Decide quale slot firmware caricare in base a `otadata`. |
+| `partition-table` | partition | 0x8000 | 4 KB | Tabella che descrive questo layout. |
+| `nvs` | data/nvs | 0x9000 | 24 KB | **Zona configurazione utente.** Credenziali WiFi, password admin hash, nome device. |
+| `phy_init` | data/phy | 0xF000 | 4 KB | Calibrazione radio WiFi (gestita da `esp-radio`). |
+| `otadata` | data/ota | 0x10000 | 8 KB | Indice degli slot OTA (quale è attivo). |
+| `ota_0` | app/ota_0 | 0x20000 | 3 MB | **Slot firmware A.** Oggi il firmware gira da qui. |
+| `ota_1` | app/ota_1 | 0x320000 | 3 MB | **Slot firmware B.** Oggi vuoto. Destinazione futura per aggiornamenti OTA. |
+| `storage` | data/fat | 0x620000 | ~1.9 MB | Zona riservata per dati estesi (backup, log persistenti, asset statici). Non usata nel Livello 1. |
 
-Il piano di implementazione deve produrre una flash map concreta per `espflash` e validarla su hardware. Non si introducono nomi `partition-table`, `otadata`, `ota_0` o `ota_1` come requisiti finché non esiste una prova funzionante in `esp-hal`.
+Totale: 8 MB.
 
-### 3.2.1 Spike obbligatorio prima del dual-slot OTA
+### 3.3 Chiavi nella partizione `nvs` (Livello 1)
 
-Prima di approvare qualsiasi implementazione OTA dual-slot:
+| Chiave | Tipo | Esempio | Note |
+|---|---|---|---|
+| `wifi.ssid` | string | `"CasaMia"` | SSID rete |
+| `wifi.psk` | string | `"miapassword"` | Password rete. Salvata in chiaro (deve essere ricostruibile per il collegamento). |
+| `admin.password_hash` | bytes (32) | `<hash>` | Hash bcrypt della password admin |
+| `admin.password_salt` | bytes (16) | `<salt>` | Salt unico per device |
+| `device.name` | string | `"DCC-Soggiorno"` | Nome utente-configurabile |
+| `device.language` | string | `"it"` | `it` o `en`, per estensione futura del pannello multilingua |
+| `device.first_boot_done` | bool | `true` | Flag che indica se il provisioning è già stato completato |
 
-1. Build firmware `esp-hal` con layout flash esplicito.
-2. Flash via `espflash` su slot/app corrente e verifica boot.
-3. Scrittura controllata di una seconda immagine in area riservata.
-4. Meccanismo verificato per selezionare quale immagine avviare, senza appoggiarsi a semantiche IDF non presenti.
-5. Rollback verificato dopo boot fallito o watchdog.
-6. Test su modulo reale N8 e, se supportato, variante 4 MB.
-
-Se uno di questi punti fallisce, il Livello 1 resta single-app con config persistente e spazio riservato; OTA viene ripianificata come fase separata.
-
-### 3.3 Persistenza configurazione (rimandata)
-
-Il Livello 1 richiede una capability: caricare, salvare e cancellare credenziali WiFi, password admin hash e nome device. Il formato flash, la strategia erase/write, l'eventuale uso della partizione esistente e la recovery da reset durante scrittura sono dettagli del piano implementativo.
-
-Regola per ora sufficiente: il dominio non conosce il backend. Il resto del firmware vede solo `ConfigRepository` con operazioni ad alto livello (`load`, `save_after_verified_wifi`, `wipe_all`). Niente dettagli NVS/record/checksum in questo design.
+Tutte queste chiavi vengono cancellate da un factory reset, lasciando `nvs` vuota.
 
 ### 3.4 Password admin: hash con bcrypt
 
@@ -182,7 +166,7 @@ La password admin **non viene mai salvata in chiaro**. Quando l'utente la scegli
 
 1. Il firmware genera un salt casuale di 16 byte usando il generatore hardware ESP32-C6.
 2. Calcola `hash = bcrypt(password, salt, cost=8)`. Cost factor 8 è scelto per impiegare ~50ms sull'hardware: abbastanza da rendere impraticabile la forza bruta, abbastanza veloce da non rallentare il login utente. **Il cost factor andrà tarato empiricamente** durante l'implementazione.
-3. Salva `salt` e `hash` nello storage persistente.
+3. Salva `salt` e `hash` in NVS.
 
 In login: lo stesso calcolo viene ripetuto sulla password ricevuta e confrontato con l'hash salvato.
 
@@ -190,14 +174,14 @@ Conseguenza: anche un attaccante che smonta fisicamente il device e legge la fla
 
 ### 3.5 Password WiFi: in chiaro
 
-A differenza della password admin, la password della rete WiFi deve essere conservata in chiaro perché il firmware deve passarla al collegamento WiFi (non è autenticabile via hash). È lo standard di tutti i device WiFi del mondo. Per scenari futuri ad alta sensibilità si valuterà una protezione flash compatibile con `esp-hal` e con il flusso di provisioning scelto. Non in scope per il Livello 1.
+A differenza della password admin, la password della rete WiFi deve essere conservata in chiaro perché il firmware deve passarla al collegamento WiFi (non è autenticabile via hash). È lo standard di tutti i device WiFi del mondo. Per scenari futuri ad alta sensibilità si può abilitare la **Flash Encryption** di ESP-IDF (cifra tutta la flash con chiave da eFuse non leggibile). Non in scope per il Livello 1.
 
 ### 3.6 Migrazione dal codice attuale
 
 Il firmware attuale gira con un layout single-app senza predisposizione OTA. La transizione richiede:
 
-1. **Riflash una tantum via USB** con il nuovo firmware e la nuova flash map `esp-hal` validata.
-2. Le credenziali WiFi che erano in `.env` vengono **perse** in questo passaggio (la configurazione persistente parte vuota). Atteso e voluto.
+1. **Riflash una tantum via USB** con la nuova tabella partizioni.
+2. Le credenziali WiFi che erano in `.env` vengono **perse** in questo passaggio (NVS è vuota dopo il riflash). Atteso e voluto.
 3. Primo boot post-migrazione: device entra in `Provisioning`, utente completa la configurazione dal portale captive.
 4. Dopo la prima programmazione del nuovo firmware, `.env` non serve più. `WIFI_SSID`/`WIFI_PASS` vengono rimossi da `udp_control.rs` e dalle eventuali variabili `.cargo/config.toml`.
 
@@ -257,9 +241,9 @@ spawner.spawn(setup_button_task(setup_btn, provisioning_event_sender)).unwrap();
 
 Quattro task Embassy che girano contemporaneamente dentro il modulo `provisioning/`:
 
-1. **Hotspot WiFi (modalità access point)** — Nome rete: `DCC-Setup-XXXX` (XXXX = ultime 4 cifre hex del MAC). Rete protetta WPA2-Personal con PIN temporaneo per-device visualizzato sull'OLED (`PIN: 12345678`). Il PIN viene generato dal RNG hardware a ogni ingresso in provisioning, non viene salvato in modo persistente, e scade quando il device esce da `Provisioning`. Se il display non è disponibile, il provisioning resta bloccato e mostra errore via LED: non si apre mai una rete non cifrata che riceve password admin/WiFi.
+1. **Hotspot WiFi (modalità access point)** — Nome rete: `DCC-Setup-XXXX` (XXXX = ultime 4 cifre hex del MAC). Rete aperta (no password). L'hotspot è temporaneo (solo durante il setup): la mancanza di password è accettabile per uno scenario di pochi minuti, ed evita il problema della "password generica stampata su etichetta" che è un problema di produzione.
 
-2. **Server DHCP interno** — Assegna IP nell'intervallo `192.168.4.2-192.168.4.10` ai client che si collegano. Device stesso ha IP fisso `192.168.4.1`, convenzione comune negli esempi ESP SoftAP ma implementata qui con `esp-radio`/`embassy-net`, non con IDF.
+2. **Server DHCP interno** — Assegna IP nell'intervallo `192.168.4.2-192.168.4.10` ai client che si collegano. Device stesso ha IP fisso `192.168.4.1` (standard ESP-IDF SoftAP). Implementazione tramite la libreria DHCP integrata in `esp-radio`/`embassy-net`.
 
 3. **Server DNS "trasversale"** — Risponde con `192.168.4.1` a **qualsiasi** query DNS. Il telefono che si collega all'hotspot, quando il suo OS prova a contattare `captive.apple.com` / `connectivitycheck.gstatic.com` / `www.msftconnecttest.com` per testare l'accesso internet, riceve come risposta l'IP del device, e il sistema operativo riconosce la situazione come "portale captive" aprendo automaticamente la pagina di configurazione in vista modale.
 
@@ -288,18 +272,18 @@ Unico bottone: **Salva e collega**.
 Disegnato per non salvare nulla finché non sappiamo che le credenziali WiFi funzionano:
 
 1. **Validazione lato server**: vincoli di lunghezza/caratteri/match password. Se fallisce → pagina riproposta con messaggio inline.
-2. **Test del collegamento WiFi**: il firmware usa le credenziali ricevute come configurazione temporanea, riavvia se necessario per resettare radio e stack IP tra SoftAP e Client, poi tenta il collegamento con timeout di 15 secondi e massimo 5 tentativi.
-3. **Esito positivo**: solo dopo la verifica salva la configurazione persistente, entra in `OperationalConnected`, aggiorna OLED con il nuovo IP.
-4. **Esito negativo**: non salva nulla, rientra in `Provisioning` con nuovo PIN SoftAP e mostra errore sull'OLED.
+2. **Test del collegamento WiFi**: il device tenta il collegamento con timeout di 15 secondi. Durante questo tempo l'hotspot resta acceso e il browser riceve una pagina "in corso" con polling su `/api/provisioning-status`.
+3. **Esito positivo**: salvataggio atomico in NVS (`wifi.ssid`, `wifi.psk`, `device.name`, `admin.password_hash`, `admin.password_salt`, `device.first_boot_done = true`). Pagina di successo che mostra "Configurazione salvata. Collegati alla tua rete WiFi e apri http://<IP>". Transizione a `OperationalConnected`. OLED aggiornato con nuovo IP.
+4. **Esito negativo**: pagina con messaggio d'errore. Nessun salvataggio. Stato resta `Provisioning`. Utente può ritentare.
 
-La forma concreta del salvataggio persistente è fuori da questo design. Il requisito funzionale è semplice: non rendere attiva una configurazione WiFi mai verificata.
+Il salvataggio in NVS usa la primitiva transazionale di `esp-storage` per garantire atomicità.
 
 ### 5.4 Out of scope nel Livello 1
 
 - Configurazione IP statica
 - Wizard multi-step
 - Recupero password (utente fa factory reset col GPIO0)
-- Configurazione fuso orario/locale
+- Configurazione fuso orario/locale (lingua sì, come flag in NVS)
 
 ---
 
@@ -381,26 +365,20 @@ Logout: `POST /api/logout` rimuove la sessione dalla tabella + risponde con cook
 
 Niente flag `Secure` perché non serviamo HTTPS nel Livello 1.
 
-### 6.4 Protezione anti-CSRF
+### 6.4 Protezione anti-CSRF sugli endpoint distruttivi
 
-Tutti gli endpoint `POST` autenticati richiedono:
-
-1. Cookie di sessione valido.
-2. Token CSRF per-sessione generato al login e inserito nei form o nell'header `X-DCC-CSRF`.
-
-Gli endpoint marcati "password nel body" applicano un terzo controllo: password admin riconfermata nel body JSON. La password è richiesta per cambio password, cambio WiFi, reprovision, factory reset e, in futuro, operazioni OTA.
+Gli endpoint marcati "password nel body" applicano un secondo controllo: cookie di sessione valido **e** password admin riconfermata nel body JSON.
 
 Esempio:
 ```
 POST /api/factory-reset
 Cookie: dcc_session=abc123...
-X-DCC-CSRF: def456...
 Content-Type: application/json
 
 { "admin_password": "lamiapassword" }
 ```
 
-Difende dal caso in cui un sito web malevolo, visitato dall'utente in un'altra tab, tenta richieste verso il device sfruttando i cookie già attivi. Il sito malevolo non conosce il token CSRF, e per le operazioni sensibili non conosce la password admin.
+Difende dal caso in cui un sito web malevolo, visitato dall'utente in un'altra tab, tenta richieste verso il device sfruttando i cookie già attivi: il sito malevolo non conosce la password admin.
 
 ### 6.5 Rate limiting
 
@@ -411,14 +389,12 @@ Tabella in RAM con max 16 IP tracciati: `{ ip, failed_attempts, last_attempt_ts 
 Caso particolare con interazione di rete complessa.
 
 1. Utente compila form `Cambia rete...` e clicca "Cambia".
-2. Server valida cookie, token CSRF e password admin, poi avvia un cambio rete controllato senza sovrascrivere subito la configurazione attiva.
-3. Server risponde subito con pagina "Cambio rete in corso. Il device si riavvia; leggi il nuovo IP sull'OLED o attendi il ritorno sulla rete precedente."
-4. Firmware ferma DCC in modo ordinato, spegne l'H-bridge, esegue shutdown del runtime di rete e riavvia il device. Il reboot è breve e viene annunciato all'utente come operazione amministrativa.
-5. Al boot successivo il runtime tenta la nuova rete con timeout 15 secondi e massimo 5 tentativi.
-6. **Successo**: salva la nuova configurazione come attiva, OLED mostra nuovo nome rete e nuovo IP.
-7. **Fallimento**: ripristina la configurazione precedente e torna su `OperationalConnected` con la rete vecchia. L'OLED mostra "Cambio rete fallito".
+2. Server valida, risponde subito con pagina "Sto cambiando rete... attendi ~30 secondi e ricarica." (il messaggio mostra 30s — abbondante margine — anche se il timeout server effettivo è 15s; i 15s aggiuntivi servono all'utente per trovare il nuovo IP sull'OLED).
+3. Firmware si scollega dalla rete attuale e tenta la nuova con timeout 15s.
+4. **Successo**: salva nuove credenziali in NVS. OLED mostra nuovo nome rete e nuovo IP. L'utente attende, ricarica la pagina nel browser (che è morta perché device non più sulla stessa rete), passa al WiFi nuovo dal suo dispositivo, legge nuovo IP dall'OLED, accede al pannello sul nuovo IP.
+5. **Fallimento**: dopo 15s di tentativi falliti, firmware torna alle credenziali precedenti e riconnette alla rete vecchia (presumibilmente stesso IP). L'utente che ricarica trova la pagina viva con messaggio "Cambio rete fallito".
 
-Questa scelta evita di dipendere da AP+STA simultaneo e da transizioni live del driver radio. AP+STA potrà essere ottimizzato in futuro solo dopo test hardware esplicito; non è un requisito del Livello 1.
+Durante i 15s di transizione il device è temporaneamente irraggiungibile. DCC continua a girare (è stato `OperationalOffline` temporaneo).
 
 ### 6.7 Web server library
 
@@ -429,8 +405,6 @@ Configurazione: max 4 connessioni TCP concorrenti.
 ### 6.8 HTTPS: rimandato
 
 HTTPS richiederebbe certificati auto-firmati gestiti dal device + TLS stack (`embedded-tls` o `rustls`) + esperienza utente del "certificato non sicuro" nel browser. Su rete WiFi domestica con WPA2/WPA3, il rischio reale di intercettazione passiva è basso. HTTPS resta nice-to-have per il futuro.
-
-Eccezione importante: durante il provisioning il link WiFi deve essere cifrato tramite WPA2 SoftAP con PIN per-device, perché in quella fase transitano credenziali WiFi e password admin. La decisione "no HTTPS" non autorizza mai un provisioning su rete aperta.
 
 ### 6.9 Display OLED durante uso normale
 
@@ -447,8 +421,8 @@ Durante provisioning:
 
 ```
 SETUP NECESSARIO
+Rete WiFi:
 DCC-Setup-A4F2
-PIN: 12345678
 IP: 192.168.4.1
 ```
 
@@ -476,45 +450,28 @@ LED rosso/verde mantengono il loro ruolo (feedback hold del tasto GPIO0, stato o
 
 ### 7.1 Cosa blocchiamo adesso per essere OTA-ready
 
-Sette decisioni che pagano ora un costo basso per ripagare in fase OTA:
+Cinque decisioni che pagano ora un costo basso per ripagare in fase OTA:
 
-1. **Flash map esplicita `esp-hal`** (Sezione 3) — config store in scope, spazio OTA solo riservato finché lo spike dual-slot non passa.
+1. **Layout flash con 2 slot firmware** (Sezione 3) — già definito, lo slot B oggi è vuoto.
 2. **Web server con supporto streaming upload** (`picoserve`) — già scelto.
 3. **Endpoint riservati `/api/firmware/*`** — dichiarati, rispondono `501`.
 4. **Middleware autenticazione condivisa** — sessioni e CSRF già pronti per proteggere upload firmware.
 5. **`/api/status` con campo `firmware_version`** — da `env!("CARGO_PKG_VERSION")`. In futuro estenderemo con `active_slot` e `firmware_hash`.
-6. **Formato manifesto firmware firmato** — ogni immagine OTA futura dovrà arrivare con manifest contenente versione, dimensione, hash SHA-256 e firma Ed25519/ECDSA.
-7. **Chiave pubblica verificatore compilata nel firmware** — il Livello 1 non implementa upload, ma riserva già il punto architetturale in cui la verifica firma diventerà obbligatoria.
 
-### 7.2 Invarianti di sicurezza OTA
-
-Queste regole sono parte del design anche se l'upload firmware è fuori scope nel Livello 1:
-
-- Nessun firmware può essere scritto nello slot inattivo se manifest, hash e firma non sono validi.
-- Nessun `/api/firmware/commit` può marcare uno slot attivo se l'immagine non è stata verificata.
-- Il rollback è permesso solo verso immagini già verificate e firmate.
-- La chiave privata di firma non sta mai nel device; il firmware contiene solo la chiave pubblica di verifica o un suo digest protetto.
-- `/api/firmware/info` dovrà esporre `active_slot`, `pending_slot`, `firmware_version`, `firmware_hash` e stato di verifica.
-- Le operazioni OTA richiedono sessione valida, token CSRF e password admin riconfermata.
-
-### 7.3 Cosa rimandiamo esplicitamente
+### 7.2 Cosa rimandiamo esplicitamente
 
 Fuori scope Livello 1, riferimento per iterazione futura:
 
 - Implementazione `/api/firmware/upload`, `/commit`, `/rollback`
-- Logica di scrittura in area firmware inattiva o riservata
+- Logica di scrittura nello slot inattivo (`esp-storage` + wrapper)
 - Boot-and-rollback automatico in caso di crash post-OTA
-- Tooling concreto per firmare `.bin` e generare manifest
+- Firma crittografica del firmware
 - Utility desktop per generare/firmare `.bin`
 
-### 7.4 Struttura dei moduli (con Clean Architecture pragmatica — vedi Sezione 8)
+### 7.3 Struttura dei moduli (con Clean Architecture pragmatica — vedi Sezione 8)
 
 ```
 src/
-├── net/
-│   ├── runtime.rs       # Owner di radio, WiFi controller, stack, runner
-│   ├── events.rs        # Eventi e comandi rete bounded
-│   └── udp_control.rs   # Servizio Z21 UDP sopra stack già inizializzato
 ├── provisioning/
 │   ├── mod.rs           # API pubblica + spawn supervisor
 │   ├── state.rs         # Macchina a stati pura (domain)
@@ -532,13 +489,12 @@ src/
 │   │   ├── status.rs
 │   │   ├── admin.rs
 │   │   └── recovery.rs
-│   ├── view_models.rs   # Dati puri per le pagine, testabili su host
-│   ├── pages.rs         # Rendering HTML (presentation adapter)
+│   ├── pages.rs         # Template HTML puri (domain)
 │   └── csrf.rs          # Verifica password nel body (domain)
 ├── storage/
-│   ├── mod.rs           # ConfigRepository trait (port)
+│   ├── mod.rs           # ConfigStore trait (port)
 │   ├── schema.rs        # Tipi dato persistente (domain)
-│   ├── flash.rs         # Adapter produzione, backend da decidere nel piano impl
+│   ├── nvs.rs           # NvsConfigStore: ConfigStore (infrastructure)
 │   └── password_hash.rs # bcrypt wrapper (domain puro)
 └── reset_button/
     ├── mod.rs
@@ -546,75 +502,63 @@ src/
     └── task.rs          # Task Embassy su GPIO0 (infrastructure)
 ```
 
-### 7.5 Nuove dipendenze
+### 7.4 Nuove dipendenze
 
 Da aggiungere a `Cargo.toml`:
 
 - `picoserve` (web server)
 - `embassy-net` (stack TCP/IP — possibile sia già presente)
-- storage flash compatibile `esp-hal` da selezionare nel piano implementativo
+- `esp-storage` (accesso flash a livello partizione)
 - `embedded-storage` (trait comuni)
 - `serde` + `serde-json-core` (JSON)
 - `heapless-bytes` o equivalente per body bounded
 - `bcrypt-no-std` (o equivalente `no_std` compatibile)
 - `hmac` + `sha2`
-- `ed25519-dalek` o alternativa no_std verificata per firme firmware future
 - `getrandom` configurato con il generatore hardware ESP32-C6
 
 Versioni esatte e feature flags da definire nel piano di implementazione.
 
-### 7.6 Strategia di test
+### 7.5 Strategia di test
 
 **Test host** (`cargo test-host`) per:
 - `provisioning::state` — macchina a stati pura, transizioni esaustive
 - `storage::password_hash` — bcrypt round-trip, validità con password sbagliate
 - `storage::schema` — serializzazione/deserializzazione
-- `storage` con fake backend — load/save/wipe e recovery definita dal piano implementativo
 - `web_panel::auth` — rate limiter, generazione/scadenza sessioni (con `MockClock`)
 - `web_panel::csrf` — confronto password nel body
-- `web_panel::view_models` — mapping da `StatusModel` mock a dati pagina
-- `web_panel::pages` — generazione HTML con escaping dai view model
+- `web_panel::pages` — generazione HTML da `StatusModel` mock
 - `reset_button::detector` — logica timing da sequenze sintetiche
-- `ota::manifest` futuro — parsing manifesto e verifica hash/firma su test vector
 
 **Test su dispositivo** (checklist di accettazione del Livello 1):
 
-- [ ] Primo boot con configurazione assente → `Provisioning`, hotspot WPA2 visibile dal telefono, PIN mostrato su OLED, portale si apre dopo connessione, configurazione si completa.
-- [ ] Sniff passivo durante provisioning → non sono leggibili password admin o password WiFi perché il link SoftAP è cifrato.
+- [ ] Primo boot con NVS vuota → `Provisioning`, hotspot visibile dal telefono, portale si apre da sé, configurazione si completa.
 - [ ] Boot con credenziali valide salvate → `OperationalConnected`, IP sull'OLED, pannello raggiungibile.
 - [ ] Boot con credenziali obsolete → 5 fallimenti → `Provisioning`.
 - [ ] Login con password corretta → dashboard accessibile.
 - [ ] Login con password sbagliata 5 volte → blocco per 5 minuti.
-- [ ] POST autenticato senza token CSRF → rifiutato.
 - [ ] Cambio nome device → persistito, mostrato sull'OLED dopo riavvio.
 - [ ] Cambio password admin → vecchia password rifiutata, nuova accettata.
-- [ ] Cambio password admin → sessioni esistenti invalidate.
-- [ ] Cambio rete WiFi via pannello → prova nuova rete, salva solo se funziona, OLED aggiornato.
-- [ ] Cambio rete WiFi fallito → rete precedente ripristinata, OLED mostra errore.
+- [ ] Cambio rete WiFi via pannello → device si scollega, prova nuova, OK riconnette, OLED aggiornato.
 - [ ] GPIO0 hold 5s → `Provisioning` (LED rosso lampeggia durante hold).
 - [ ] GPIO0 hold 10s → factory reset (LED rosso fisso durante hold), riavvio in stato vergine.
 - [ ] DCC continua in `OperationalOffline` → spegnere router mentre loco in moto, verifica che continua.
 - [ ] Z21 app perde connessione in `OperationalOffline`, la riacquista quando router torna.
 
-### 7.7 Integrazione con codice esistente
+### 7.6 Integrazione con codice esistente
 
-**`src/net/runtime.rs`** — nuovo proprietario di radio, WiFi controller, `embassy-net::Stack`, runner e transizioni Client/SoftAP. Espone eventi e comandi bounded al supervisor.
-
-**`src/net/udp_control.rs`** — riceve uno stack già configurato dal runtime rete e credenziali/stato rete come eventi runtime invece che da `env!()`. La responsabilità diventa solo UDP Z21.
+**`src/net/udp_control.rs`** — riceve credenziali come parametri runtime invece che da `env!()`. API esposta (task UDP per Z21) invariata.
 
 **`src/boot.rs`** — sequenza di init riorganizzata:
 ```
 peripherals → RMT → I2C OLED → H-bridge (held off) →
-storage::init (legge configurazione persistente) →
+storage::init (legge NVS) →
 provisioning::supervisor (decide stato iniziale) →
   IF first_boot_done == false OR creds_missing:
-    net_runtime::start_softap(pin_from_rng)
-    spawn provisioning tasks (dns + web_panel limited)
+    spawn provisioning tasks (softap + dhcp + dns + web_panel limited)
     DCC NON parte
   ELSE:
-    net_runtime::start_client (con creds da storage)
-    udp_control::start (con stack da net_runtime)
-    web_panel::start_full (con stack da net_runtime)
+    udp_control::start (con creds da storage)
+    spawn web_panel full (modalità OperationalConnected)
     spawn dcc_engine_task, packet_scheduler_task (come oggi)
     H-bridge enabled
 spawn LEDs, OLED, control buttons, short detector, reset button GPIO0
@@ -622,9 +566,9 @@ spawn LEDs, OLED, control buttons, short detector, reset button GPIO0
 
 **`src/system_status.rs`** — aggiungere stati `WifiConnecting`, `Provisioning`, `OfflineDegraded`. Pattern matching su LED e OLED estesi di conseguenza.
 
-### 7.8 Piano di migrazione
+### 7.7 Piano di migrazione
 
-1. Riflash via USB con flash map `esp-hal` validata (operazione una tantum).
+1. Riflash via USB con nuova tabella partizioni (operazione una tantum).
 2. Credenziali in `.env` vengono perse (atteso).
 3. Primo boot post-migrazione → `Provisioning` → configurazione utente.
 4. Rimuovere `WIFI_SSID`/`WIFI_PASS` da `udp_control.rs` e da eventuali `.cargo/config.toml`.
@@ -637,22 +581,26 @@ spawn LEDs, OLED, control buttons, short detector, reset button GPIO0
 
 Una sola, leggera: **la logica non sa niente del mondo**.
 
-- I moduli di logica pura (macchine a stati, validazioni, hash, view model, contatori rate limit) non importano `esp-hal`, `esp-radio`, `embassy-net`, `picoserve`. Usano solo `core` e al massimo `heapless`.
+- I moduli di logica pura (macchine a stati, validazioni, hash, generazione HTML, contatori rate limit) non importano `esp-hal`, `esp-radio`, `embassy-net`, `picoserve`. Usano solo `core` e al massimo `heapless`.
 - I moduli che parlano col mondo (hotspot, GPIO, flash, server HTTP) sono adapter sottili che chiamano la logica pura.
 
 Quando una dipendenza esterna è un'astrazione che vale la pena testare con mock, introduciamo un **trait** (port). Quando non lo è, evitiamo cerimonia.
 
 ### 8.2 Dove applichiamo
 
-**`storage` → trait `ConfigRepository` + adapter flash**
+**`storage` → trait `ConfigStore` + `NvsConfigStore`**
 ```rust
-pub trait ConfigRepository {
-    fn load(&self) -> Result<Option<DeviceConfig>, StorageError>;
-    fn save_after_verified_wifi(&mut self, cfg: &DeviceConfig) -> Result<(), StorageError>;
+pub trait ConfigStore {
+    fn load_wifi_creds(&self) -> Result<Option<WifiCreds>, StorageError>;
+    fn save_wifi_creds(&mut self, creds: &WifiCreds) -> Result<(), StorageError>;
+    fn load_admin(&self) -> Result<Option<AdminCredentials>, StorageError>;
+    fn save_admin(&mut self, admin: &AdminCredentials) -> Result<(), StorageError>;
+    fn load_device_config(&self) -> Result<DeviceConfig, StorageError>;
+    fn save_device_config(&mut self, cfg: &DeviceConfig) -> Result<(), StorageError>;
     fn wipe_all(&mut self) -> Result<(), StorageError>;
 }
 ```
-Impl produzione: adapter flash da scegliere nel piano implementativo. Impl test: `InMemoryConfigRepository`. Il dominio non espone setter separati per WiFi/admin/device name durante il provisioning: salva solo una configurazione completa dopo WiFi verificata.
+Impl produzione: `NvsConfigStore` (usa `esp-storage`). Impl test: `InMemoryConfigStore` (HashMap).
 
 **`provisioning::state` → macchina a stati pura**
 ```rust
@@ -688,17 +636,13 @@ pub struct MockClock(u64);     // test
 ```
 Tutta la logica di sessione e rate limiting riceve `&dyn Clock` come parametro, testabile con time mockato.
 
-**`web_panel::view_models` + `pages` → Humble Object**
-- `view_models.rs`: costruisce dati puri e già validati per dashboard/form, testabile senza HTTP.
-- `pages.rs`: rendering HTML e escaping. È presentation adapter, non domain.
-
 **`reset_button` → detector logico + task hardware**
 - `detector.rs`: riceve `Pressed{ts}` / `Released{ts}` e produce `ShortPress` / `ForceProvisioning` / `FactoryReset` in base ai delta. Testabile su host.
 - `task.rs`: task Embassy su GPIO0 che traduce eventi pin in chiamate al detector.
 
 ### 8.3 Dove NON applichiamo
 
-1. **Niente directory top-level `domain/` `application/` `infrastructure/`** — separazione vive dentro ogni modulo (es. `state.rs` vs `softap.rs`).
+1. **Niente directory `domain/` `application/` `infrastructure/`** — separazione vive dentro ogni modulo (es. `state.rs` vs `softap.rs`).
 2. **Niente DI containers** — generics + traits di Rust bastano.
 3. **Niente CQRS, Event Sourcing, aggregati DDD** — sproporzionati per la scala del firmware.
 4. **Niente refactoring del dominio DCC/Z21 esistente** — fuori scope.
@@ -706,8 +650,8 @@ Tutta la logica di sessione e rate limiting riceve `&dyn Clock` come parametro, 
 ### 8.4 Bilancio costo/beneficio
 
 **Costo aggiuntivo rispetto a un design non-CA:**
-- 2 trait nuovi (`ConfigRepository`, `Clock`), ~30-40 righe totali
-- 2 mock impl (`InMemoryConfigRepository`, `MockClock`), solo in `#[cfg(test)]`
+- 2 trait nuovi (`ConfigStore`, `Clock`), ~30-40 righe totali
+- 2 mock impl (`InMemoryConfigStore`, `MockClock`), solo in `#[cfg(test)]`
 - 1-2 file separati per modulo dove avremmo potuto averne uno (es. `reset_button/detector.rs` + `reset_button/task.rs`)
 
 **Beneficio:**
@@ -725,13 +669,13 @@ Lista deliberatamente fuori dallo scope del Livello 1, da rivisitare in iterazio
 - **Dashboard operativa** con stato locomotive live, corrente assorbita, log eventi.
 - **Programmazione CV via web** (resta solo via Z21 app).
 - **mDNS / Bonjour** (`dcc-station.local`) — solo IP sull'OLED.
-- **Lista multi-rete** ricordata (una sola rete salvata).
+- **Lista multi-rete** ricordata (una sola rete in NVS).
 - **Configurazione IP statica** (DHCP only).
 - **HTTPS** con certificati gestiti dal device.
 - **Wizard multi-step** nel provisioning.
 - **Recupero password admin** via email/SMS (solo factory reset hardware).
-- **Tooling e implementazione completa della firma firmware**. Il requisito architetturale di firma OTA è invece già in scope e non va rimosso.
-- **Protezione flash hardware/software avanzata** (la password WiFi viene salvata recuperabile dal firmware).
+- **Firma crittografica del firmware**.
+- **Flash Encryption** di ESP-IDF (la password WiFi viene salvata in chiaro).
 - **Internazionalizzazione completa** (`it`/`en` come flag salvato ma testi solo italiani nel Livello 1).
 - **Telemetria/log persistenti** nella zona `storage` della flash.
 
@@ -741,12 +685,12 @@ Lista deliberatamente fuori dallo scope del Livello 1, da rivisitare in iterazio
 
 Cose che dal design non si possono blindare completamente e che andranno verificate in implementazione:
 
-**R1. Compatibilità di `picoserve` con `esp-radio` nelle due modalità.**
+**R1. Compatibilità di `picoserve` con `esp-radio` in modalità mista.**
 `picoserve` lavora sopra `embassy-net`, che parla col driver WiFi di `esp-radio`. Da verificare:
-- Funzionamento stabile in modalità client.
-- Funzionamento stabile in modalità SoftAP.
+- Funzionamento stabile sia in modalità client che in modalità SoftAP.
+- Transizione pulita tra `Provisioning` (SoftAP) e `OperationalConnected` (client) senza stati inconsistenti.
 
-La transizione SoftAP → Client non è live nel Livello 1: avviene tramite riavvio controllato. AP+STA simultaneo resta una possibile ottimizzazione futura, non un prerequisito.
+Mitigazione possibile: riavvio software dopo il provisioning, per resettare lo stack di rete in modo pulito.
 
 **R2. Coesistenza WiFi + UDP Z21 + TCP HTTP.**
 Aggiungendo TCP HTTP allo stack esistente di UDP Z21, da verificare il budget di socket di `embassy-net` (N socket TCP + M socket UDP, con N+M nei limiti supportati).
@@ -754,8 +698,8 @@ Aggiungendo TCP HTTP allo stack esistente di UDP Z21, da verificare il budget di
 **R3. Tempi di hashing della password.**
 Bcrypt sull'ESP32-C6 va misurato. Cost factor 8 è un'ipotesi iniziale. Taratura empirica per bilanciare UX di login (deve essere < 500 ms) e difesa anti-bruteforce (deve essere > 10 ms).
 
-**R4. Storage persistente credenziali.**
-Il backend flash non è progettato in questo documento. Il piano implementativo deve scegliere l'adapter `esp-hal` compatibile, definire erase/write/recovery, e dimostrare che un reset durante scrittura non lascia il device in uno stato non recuperabile.
+**R4. Limiti di scrittura della flash NVS.**
+La flash ha cicli di scrittura finiti (~100k per cella). Per le credenziali WiFi non è un problema (cambi rari). Da considerare se in futuro aggiungeremo logging persistente.
 
 **R5. Pinmap GPIO0.**
 Da verificare che GPIO0 sia disponibile (non usato da nessun'altra funzione futura) e che il pull-up interno sia sufficiente. Il device verrà programmato/flashato via USB anche dopo l'introduzione di GPIO0 come tasto — verificare nessuna interferenza con la procedura di flash (l'ESP32-C6 usa USB-Serial-JTAG nativo, non condivide pin con GPIO0).
@@ -763,20 +707,17 @@ Da verificare che GPIO0 sia disponibile (non usato da nessun'altra funzione futu
 **R6. Dimensione effettiva della flash.**
 Confermare con `espflash board-info` che il modulo in uso ha 8 MB. Layout alternativo per 4 MB da preparare in subordine.
 
-**R7. Libreria di firma no_std.**
-La scelta Ed25519/ECDSA va validata su `riscv32` no_std per dimensione codice, RAM e tempi di verifica. Se la libreria scelta è troppo pesante, l'invariante resta invariato: cambia l'algoritmo/libreria, non il requisito di verifica firma.
-
 ---
 
 ## 11. Riferimenti
 
 - NMRA Standards `docs/specs/NMRA-STANDARDS.md` (compatibilità DCC esistente — non impattata da questo design)
 - Z21 LAN Protocol `docs/specs/z21-lan-protokoll-en.pdf` (compatibilità Z21 esistente — non impattata)
-- `esp-hal`, `esp-radio`, `embassy-net`, `espflash` — documentazione ufficiale dei crate/tool usati dal firmware
+- ESP-IDF Partition Tables — documentazione ufficiale Espressif
 - Bcrypt RFC — funzione di hashing scelta per password admin
 - RFC 6585 (HTTP 429 Too Many Requests) — per il rate limiting di login
 - OWASP Authentication Cheat Sheet — riferimento generale per le scelte di sicurezza
 
 ---
 
-**Documento approvato dall'utente?** Sì, confermato il 2026-05-12.
+**Documento approvato dall'utente?** *(da segnare quando l'utente conferma la review)*

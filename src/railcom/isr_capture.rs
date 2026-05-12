@@ -2,15 +2,8 @@
 //!
 //! The active ESP32-C6 runtime uses the cutout ISR to delimit a UART1 FIFO
 //! snapshot, then this task drains those snapshots into the normal RailCom
-//! parser.
-//!
-//! Honesty note: this path does not detect UART framing errors or line
-//! glitches. It only classifies a window as "oversized" when the captured
-//! FIFO snapshot exceeds `MAX_CAPTURE_BYTES`, which is an overflow condition,
-//! not evidence of corrupted data. If framing-error detection is ever needed,
-//! it must be read from the UART1 hardware status/interrupt flags (e.g.
-//! `RXFIFO_OVF`, parity/frame error bits) at capture time — no such logic
-//! exists in this module today.
+//! parser. `uart_adapter` remains the pure event-stream adapter for tests and
+//! for a future interrupt/async reader that can emit byte/error events directly.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
@@ -22,9 +15,10 @@ use heapless::Vec;
 
 use crate::railcom::pipeline::{
     RailcomChannel, RailcomRxWindow, RailcomRxWindowError, process_rx_window,
-    record_oversized_window, record_rx_overflows,
+    record_corrupted_window, record_rx_overflows,
 };
-use crate::railcom::uart_reader::{RailcomRxOutput, RailcomUartWindowError};
+use crate::railcom::uart_adapter::RailcomUartWindowError;
+use crate::railcom::uart_reader::RailcomRxOutput;
 use crate::track_output::CutoutRailcomChannel;
 
 const CAPTURE_RING_CAPACITY: usize = 64;
@@ -57,19 +51,24 @@ struct RailcomIsrCaptureUart {
 }
 
 impl RailcomIsrCaptureUart {
-    /// # Panics
-    ///
-    /// Panics if called more than once: this type owns the sole UART1 RX
-    /// data path (see the SAFETY comments on the ISR-side register helpers
-    /// below), so a second instance would race the first over FIFO access.
-    /// Mirrors the double-init guard in `TrackOutput::new`.
     fn new(uart_rx: UartRx<'static, Async>) -> Self {
-        let was_ready = CAPTURE_READY.swap(true, Ordering::AcqRel);
-        assert!(
-            !was_ready,
-            "RailcomIsrCaptureUart must be initialized only once"
-        );
+        CAPTURE_READY.store(true, Ordering::Release);
         Self { _uart_rx: uart_rx }
+    }
+}
+
+fn channel_to_id(channel: CutoutRailcomChannel) -> u8 {
+    match channel {
+        CutoutRailcomChannel::Channel1 => 1,
+        CutoutRailcomChannel::Channel2 => 2,
+    }
+}
+
+fn channel_from_id(id: u8) -> Option<RailcomChannel> {
+    match id {
+        1 => Some(RailcomChannel::Channel1),
+        2 => Some(RailcomChannel::Channel2),
+        _ => None,
     }
 }
 
@@ -79,10 +78,8 @@ fn uart1_rx_fifo_count() -> Option<u16> {
         return None;
     }
     // SAFETY: `RailcomIsrCaptureUart` consumes the HAL UART1 RX owner before
-    // setting CAPTURE_READY. After that, this module is the only UART1 RX
-    // data path. The ISR-side helpers touch the RX FIFO data/count registers
-    // and (in `uart1_reset_rx_fifo`) the `conf0.rxfifo_rst` control bit that
-    // resets that same FIFO — no other UART1 register is written.
+    // setting CAPTURE_READY. After that, this module is the only UART1 RX data
+    // path and the ISR-side helpers only touch RX FIFO registers.
     let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
     Some(regs.status().read().rxfifo_cnt().bits() as u16)
 }
@@ -113,26 +110,15 @@ pub fn open_window_from_isr() {
     uart1_reset_rx_fifo();
 }
 
-// Publication protocol note (contrast with the seqlock pattern documented on
-// `track_output::record_railcom_packet_metadata_from_isr`): this ring does
-// *not* need a zero-sentinel pre-store. All per-slot fields below are written
-// with `Relaxed` ordering, but the single `CAPTURE_WRITE_COUNT` store that
-// follows them uses `Release`, and `drain_captured_windows` only reads a slot
-// after an `Acquire` load of `CAPTURE_WRITE_COUNT` proves that slot's writes
-// already happened (single ISR-side writer, so program order plus one
-// Release/Acquire pair on the counter is enough to publish the whole slot
-// atomically as a unit). Do not "harmonize" this with the other ring by
-// adding a zero pre-store here, and do not drop the final `Release` store
-// order relative to the per-field stores above it.
 #[inline(always)]
-pub fn close_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
+pub fn close_window_from_isr(packet_sequence: u32, channel: CutoutRailcomChannel) {
     let write_count = CAPTURE_WRITE_COUNT.load(Ordering::Relaxed);
     let slot = write_count as usize % CAPTURE_RING_CAPACITY;
     let Some(fifo_len) = uart1_rx_fifo_count().map(|len| len as usize) else {
         return;
     };
     CAPTURE_SEQUENCES[slot].store(packet_sequence, Ordering::Relaxed);
-    CAPTURE_CHANNELS[slot].store(u8::from(channel), Ordering::Relaxed);
+    CAPTURE_CHANNELS[slot].store(channel_to_id(channel), Ordering::Relaxed);
     CAPTURE_LENS[slot].store(fifo_len.min(u8::MAX as usize) as u8, Ordering::Relaxed);
     for cell in &CAPTURE_BYTES[slot][..fifo_len.min(MAX_CAPTURE_BYTES)] {
         let Some(byte) = uart1_read_byte() else {
@@ -145,9 +131,6 @@ pub fn close_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
     let _ = CAPTURE_NOTIFY.sender().try_send(0);
 }
 
-// See `track_output::drain_cutout_runtime_events` for the sibling ring-drain
-// implementation and why the two are kept separate instead of merged into one
-// generic helper (different overflow arithmetic and per-slot verification).
 fn drain_captured_windows(
     next_read: &mut u32,
     out: &mut Vec<CapturedWindow, CAPTURE_RING_CAPACITY>,
@@ -165,8 +148,7 @@ fn drain_captured_windows(
         .min(CAPTURE_RING_CAPACITY as u32);
     while remaining > 0 && out.len() < CAPTURE_RING_CAPACITY {
         let slot = *next_read as usize % CAPTURE_RING_CAPACITY;
-        let Ok(channel) = RailcomChannel::try_from(CAPTURE_CHANNELS[slot].load(Ordering::Acquire))
-        else {
+        let Some(channel) = channel_from_id(CAPTURE_CHANNELS[slot].load(Ordering::Acquire)) else {
             *next_read = next_read.wrapping_add(1);
             remaining -= 1;
             continue;
@@ -194,7 +176,7 @@ async fn send_captured_window(
 ) {
     if window.len > MAX_CAPTURE_BYTES {
         record_rx_overflows(1);
-        record_oversized_window();
+        record_corrupted_window();
         sender
             .send(RailcomRxOutput::WindowError(
                 RailcomUartWindowError::WindowTooLong {

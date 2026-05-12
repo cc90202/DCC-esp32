@@ -16,17 +16,13 @@ fn pom_cv(cv: u16) -> PomCv {
     PomCv::new(cv).expect("test POM CV must be valid")
 }
 
-fn ls(value: u8, format: SpeedFormat) -> LogicalSpeed {
-    LogicalSpeed::new(value, format).expect("test speed value must be valid for format")
-}
-
 #[test]
 fn test_new_slot_defaults() {
     let mut mgr = SlotManager::new();
     assert!(mgr.is_empty());
     assert_eq!(mgr.slot_count(), 0);
 
-    let _ = mgr.set_speed(addr(3), ls(0, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 0, Direction::Forward);
     assert_eq!(mgr.slot_count(), 1);
 }
 
@@ -34,38 +30,28 @@ fn test_new_slot_defaults() {
 fn test_set_speed_creates_or_updates() {
     let mut mgr = SlotManager::new();
 
-    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward));
+    assert!(mgr.set_speed(addr(3), 10, Direction::Forward));
     assert_eq!(mgr.slot_count(), 1);
 
-    assert!(mgr.set_speed(addr(3), ls(20, SpeedFormat::Speed28), Direction::Reverse));
+    assert!(mgr.set_speed(addr(3), 20, Direction::Reverse));
     assert_eq!(mgr.slot_count(), 1);
 
-    assert!(mgr.set_speed(addr(5), ls(15, SpeedFormat::Speed28), Direction::Forward));
+    assert!(mgr.set_speed(addr(5), 15, Direction::Forward));
     assert_eq!(mgr.slot_count(), 2);
 }
 
 #[test]
 fn test_set_speed_rejects_out_of_range() {
-    // Range validation now lives solely in `LogicalSpeed::new` — an
-    // out-of-range value never becomes a `LogicalSpeed`, so it can no longer
-    // reach `SlotManager` at all. This replaces the old
-    // `SlotManager::set_speed_with_format` rejection path.
-    assert!(LogicalSpeed::new(30, SpeedFormat::Speed28).is_none());
-    assert!(LogicalSpeed::new(128, SpeedFormat::Speed128).is_none());
-
-    let mgr = SlotManager::new();
+    let mut mgr = SlotManager::new();
+    assert!(!mgr.set_speed_with_format(addr(3), 30, Direction::Forward, SpeedFormat::Speed28));
+    assert!(!mgr.set_speed_with_format(addr(3), 128, Direction::Forward, SpeedFormat::Speed128));
     assert_eq!(mgr.slot_count(), 0);
 }
 
 #[test]
 fn test_speed28_step_one_maps_to_nmra_step_one_not_estop() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.set_speed_with_format(
-        addr(3),
-        ls(1, SpeedFormat::Speed28),
-        Direction::Forward,
-        SpeedFormat::Speed28
-    ));
+    assert!(mgr.set_speed_with_format(addr(3), 1, Direction::Forward, SpeedFormat::Speed28));
 
     let packet = mgr.build_next_packet().expect("expected speed packet");
     let DccPacket::Speed28 {
@@ -89,12 +75,7 @@ fn test_speed28_step_one_maps_to_nmra_step_one_not_estop() {
 #[test]
 fn test_speed28_logical_max_maps_to_nmra_max() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.set_speed_with_format(
-        addr(3),
-        ls(28, SpeedFormat::Speed28),
-        Direction::Forward,
-        SpeedFormat::Speed28
-    ));
+    assert!(mgr.set_speed_with_format(addr(3), 28, Direction::Forward, SpeedFormat::Speed28));
 
     let packet = mgr.build_next_packet().expect("expected speed packet");
     let DccPacket::Speed28 { speed, .. } = packet else {
@@ -133,19 +114,19 @@ fn test_safety_send_timeout_streak_transitions() {
 fn test_capacity_limit() {
     let mut mgr = SlotManager::new();
     for i in 1..=12 {
-        assert!(mgr.set_speed(addr(i), ls(0, SpeedFormat::Speed28), Direction::Forward));
+        assert!(mgr.set_speed(addr(i), 0, Direction::Forward));
     }
     assert_eq!(mgr.slot_count(), 12);
 
-    assert!(!mgr.set_speed(addr(13), ls(0, SpeedFormat::Speed28), Direction::Forward));
+    assert!(!mgr.set_speed(addr(13), 0, Direction::Forward));
     assert_eq!(mgr.slot_count(), 12);
 }
 
 #[test]
 fn test_emergency_stop_all() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(2), ls(15, SpeedFormat::Speed28), Direction::Reverse);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Forward);
+    let _ = mgr.set_speed(addr(2), 15, Direction::Reverse);
 
     mgr.build_next_packet();
     mgr.build_next_packet();
@@ -173,8 +154,8 @@ fn test_emergency_stop_all() {
 #[test]
 fn test_emergency_stop_single() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(2), ls(15, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Forward);
+    let _ = mgr.set_speed(addr(2), 15, Direction::Forward);
 
     mgr.build_next_packet();
     mgr.build_next_packet();
@@ -197,14 +178,14 @@ fn test_build_next_packet_empty() {
 #[test]
 fn test_dirty_priority() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(10, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(2), ls(20, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 10, Direction::Forward);
+    let _ = mgr.set_speed(addr(2), 20, Direction::Forward);
 
     for _ in 0..2 {
         let _ = mgr.build_next_packet();
     }
 
-    let _ = mgr.set_speed(addr(2), ls(25, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(2), 25, Direction::Forward);
 
     let p = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 { address, speed, .. } = p else {
@@ -219,7 +200,7 @@ fn test_round_robin_fairness() {
     let mut mgr = SlotManager::new();
     let n = 4;
     for i in 1..=(n as u8) {
-        let _ = mgr.set_speed(addr(i), ls(i * 5, SpeedFormat::Speed28), Direction::Forward);
+        let _ = mgr.set_speed(addr(i), i * 5, Direction::Forward);
     }
 
     for _ in 0..n {
@@ -247,8 +228,8 @@ fn test_round_robin_fairness() {
 #[test]
 fn test_remove_slot() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(10, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(2), ls(20, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 10, Direction::Forward);
+    let _ = mgr.set_speed(addr(2), 20, Direction::Forward);
 
     assert!(mgr.remove_slot(addr(1)));
     assert_eq!(mgr.slot_count(), 1);
@@ -265,12 +246,7 @@ fn test_remove_slot() {
 #[test]
 fn test_speed128_format() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed_with_format(
-        addr(3),
-        ls(100, SpeedFormat::Speed128),
-        Direction::Forward,
-        SpeedFormat::Speed128,
-    );
+    let _ = mgr.set_speed_with_format(addr(3), 100, Direction::Forward, SpeedFormat::Speed128);
 
     let p = mgr.build_next_packet().unwrap();
     let DccPacket::Speed128 {
@@ -289,7 +265,7 @@ fn test_speed128_format() {
 #[test]
 fn test_dirty_cleared_after_build() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 10, Direction::Forward);
 
     let p1 = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 { address, .. } = p1 else {
@@ -303,7 +279,7 @@ fn test_dirty_cleared_after_build() {
     };
     assert_eq!(address, addr(1));
 
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Reverse);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Reverse);
     let p3 = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 {
         speed, direction, ..
@@ -339,7 +315,7 @@ fn test_set_function_generates_function_packets() {
 #[test]
 fn test_function_refresh_fairness_speed_then_function() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Forward);
     let _ = mgr.set_function(addr(1), 1, true);
 
     // Drain dirty speed + dirty function groups.
@@ -371,7 +347,7 @@ fn test_consist_base_direction_mapping() {
     assert!(mgr.add_to_consist(1, addr(3), false));
     assert!(mgr.add_to_consist(1, addr(4), true));
 
-    let updated = mgr.set_consist_speed(1, ls(18, SpeedFormat::Speed28), Direction::Forward);
+    let updated = mgr.set_consist_speed(1, 18, Direction::Forward);
     assert_eq!(updated, 2);
 
     let mut seen_fwd = false;
@@ -404,8 +380,8 @@ fn test_consist_base_direction_mapping() {
 #[test]
 fn test_emergency_stop_preempts_dirty_queue() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(2), ls(15, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Forward);
+    let _ = mgr.set_speed(addr(2), 15, Direction::Forward);
     let _ = mgr.set_function(addr(1), 1, true);
 
     // Queue a global e-stop after normal dirty traffic exists.
@@ -419,8 +395,8 @@ fn test_emergency_stop_preempts_dirty_queue() {
 #[test]
 fn test_emergency_stop_single_does_not_target_others() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(2), ls(15, SpeedFormat::Speed28), Direction::Reverse);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Forward);
+    let _ = mgr.set_speed(addr(2), 15, Direction::Reverse);
 
     // Drain initial dirty speed packets.
     let _ = mgr.build_next_packet();
@@ -445,14 +421,14 @@ fn test_emergency_stop_single_does_not_target_others() {
 #[test]
 fn test_request_emergency_stop_unknown_address_is_rejected() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Forward);
     assert!(!mgr.request_emergency_stop(addr(2)));
 }
 
 #[test]
 fn test_recovery_after_emergency_stop() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(1), 20, Direction::Forward);
     let _ = mgr.build_next_packet(); // drain initial dirty
 
     assert!(mgr.request_emergency_stop(addr(1)));
@@ -460,7 +436,7 @@ fn test_recovery_after_emergency_stop() {
     assert!(matches!(p, DccPacket::EmergencyStop { .. }));
 
     // New command after e-stop should be emitted as dirty speed update.
-    let _ = mgr.set_speed(addr(1), ls(12, SpeedFormat::Speed28), Direction::Reverse);
+    let _ = mgr.set_speed(addr(1), 12, Direction::Reverse);
     let p2 = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 {
         address,
@@ -519,7 +495,7 @@ fn test_function_index_validation() {
 fn test_function_refresh_bound_under_12_slots() {
     let mut mgr = SlotManager::new();
     for i in 1..=12 {
-        assert!(mgr.set_speed(addr(i), ls(10, SpeedFormat::Speed28), Direction::Forward));
+        assert!(mgr.set_speed(addr(i), 10, Direction::Forward));
         assert!(mgr.set_function(addr(i), 13, true));
         assert!(mgr.set_function(addr(i), 21, true));
     }
@@ -584,7 +560,7 @@ fn test_pause_stops_emission() {
     let mut mgr = SlotManager::new();
     assert!(!mgr.is_paused());
 
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
 
     // Normal emission works
     assert!(mgr.build_next_packet().is_some());
@@ -599,7 +575,7 @@ fn test_pause_stops_emission() {
 #[test]
 fn test_resume_restarts_emission() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
 
     mgr.pause();
     assert!(mgr.build_next_packet().is_none());
@@ -612,13 +588,13 @@ fn test_resume_restarts_emission() {
 #[test]
 fn test_pause_preserves_slot_state() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
     let _ = mgr.build_next_packet(); // Drain dirty
 
     mgr.pause();
 
     // Update state during pause
-    let _ = mgr.set_speed(addr(3), ls(20, SpeedFormat::Speed28), Direction::Reverse);
+    let _ = mgr.set_speed(addr(3), 20, Direction::Reverse);
     assert_eq!(mgr.slot_count(), 1);
 
     // No emission during pause
@@ -644,15 +620,15 @@ fn test_pause_preserves_slot_state() {
 #[test]
 fn test_pause_resume_emits_dirty_first() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(5), ls(15, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
+    let _ = mgr.set_speed(addr(5), 15, Direction::Forward);
     let _ = mgr.build_next_packet(); // Drain one dirty
     let _ = mgr.build_next_packet(); // Drain second dirty
 
     mgr.pause();
 
     // Make addr(3) dirty during pause
-    let _ = mgr.set_speed(addr(3), ls(20, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 20, Direction::Forward);
 
     mgr.resume();
 
@@ -668,7 +644,7 @@ fn test_pause_resume_emits_dirty_first() {
 #[test]
 fn test_dirty_speed_retries_non_zero_speed() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
 
     let packet = mgr.build_next_packet().expect("expected speed packet");
     let DccPacket::Speed28 { address, speed, .. } = packet else {
@@ -681,10 +657,10 @@ fn test_dirty_speed_retries_non_zero_speed() {
 #[test]
 fn test_dirty_speed_retries_stop_longer() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(20, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 20, Direction::Forward);
     let _ = mgr.build_next_packet();
 
-    let _ = mgr.set_speed(addr(3), ls(0, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 0, Direction::Forward);
 
     for i in 0..=DIRTY_STOP_RETRY_COUNT {
         let packet = mgr.build_next_packet().expect("expected stop speed packet");
@@ -699,7 +675,7 @@ fn test_dirty_speed_retries_stop_longer() {
 #[test]
 fn test_pause_via_apply_command() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
 
     assert!(mgr.apply_command(SchedulerCommand::Pause));
     assert!(mgr.is_paused());
@@ -713,7 +689,7 @@ fn test_pause_via_apply_command() {
 #[test]
 fn test_multiple_pause_resume_cycles() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
     let _ = mgr.build_next_packet(); // Drain dirty
 
     // Cycle 1
@@ -732,7 +708,7 @@ fn test_multiple_pause_resume_cycles() {
 #[test]
 fn test_program_on_main_emits_once_before_normal_traffic() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
+    let _ = mgr.set_speed(addr(3), 10, Direction::Forward);
 
     assert!(mgr.program_on_main(DccPacket::PomReadByte {
         address: addr(3),
@@ -817,12 +793,7 @@ fn test_ensure_railcom_refresh_slot_creates_non_dirty_refresh() {
 #[test]
 fn test_ensure_railcom_refresh_slot_does_not_modify_existing_slot() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.set_speed_with_format(
-        addr(3),
-        ls(42, SpeedFormat::Speed128),
-        Direction::Reverse,
-        SpeedFormat::Speed128
-    ));
+    assert!(mgr.set_speed_with_format(addr(3), 42, Direction::Reverse, SpeedFormat::Speed128));
     let _ = mgr.build_next_packet();
 
     assert!(mgr.ensure_railcom_refresh_slot(addr(3), SpeedFormat::Speed28));
@@ -995,7 +966,7 @@ fn test_railcom_budget_preserves_priority_during_command_burst_then_recovers() {
 #[test]
 fn test_scheduler_classifies_dirty_speed_as_command() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward));
+    assert!(mgr.set_speed(addr(3), 10, Direction::Forward));
 
     let (packet, class) = mgr
         .build_next_packet_classified_with_function_budget(allowed_slot_visits_without_function(1))
@@ -1008,7 +979,7 @@ fn test_scheduler_classifies_dirty_speed_as_command() {
 #[test]
 fn test_scheduler_classifies_following_packet_as_refresh_after_dirty_command() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward));
+    assert!(mgr.set_speed(addr(3), 10, Direction::Forward));
 
     let (_, first_class) = mgr
         .build_next_packet_classified_with_function_budget(allowed_slot_visits_without_function(1))

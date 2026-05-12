@@ -29,6 +29,8 @@ const POM_TX_START_TIMEOUT: Duration = Duration::from_millis(500);
 // pending app:pom response.
 const POM_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
 #[cfg(target_arch = "riscv32")]
+const POM_MAX_ATTEMPTS: u8 = 1;
+#[cfg(target_arch = "riscv32")]
 const POM_READ_PACKET_REPETITIONS: u8 = 4;
 // All repetitions are enqueued in one burst (see `run_pom_attempt`) so they
 // reach the wire consecutively per NMRA S-9.2.1. The scheduler's
@@ -45,36 +47,17 @@ const _: () = assert!(
 #[cfg(any(test, target_arch = "riscv32"))]
 const POM_RESPONSE_SEQUENCE_WINDOW: u32 = 64;
 
-/// Identifies one POM request/response round-trip on the single-slot request
-/// and response channels between the Z21 network task and the POM actor.
-///
-/// A newtype (rather than a bare `u32`) keeps request/response matching from
-/// being confused with unrelated `u32` values (CV numbers, packet sequence
-/// counters) flowing through the same call sites.
-#[cfg(any(test, target_arch = "riscv32"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct PomRequestId(u32);
-
-#[cfg(any(test, target_arch = "riscv32"))]
-impl PomRequestId {
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-}
-
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum PomRequest {
     Read {
-        request_id: PomRequestId,
+        request_id: u32,
         address: DccAddress,
         cv: PomCv,
     },
     Write {
-        request_id: PomRequestId,
+        request_id: u32,
         address: DccAddress,
         cv: PomCv,
         value: u8,
@@ -85,9 +68,9 @@ pub enum PomRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum PomResponse {
-    Value { request_id: PomRequestId, value: u8 },
-    Ack { request_id: PomRequestId },
-    Nack { request_id: PomRequestId },
+    Value { request_id: u32, value: u8 },
+    Ack { request_id: u32 },
+    Nack { request_id: u32 },
 }
 
 #[cfg(any(test, target_arch = "riscv32"))]
@@ -283,24 +266,35 @@ pub async fn pom_actor_task(
                 request_id
             }
         };
-        let final_response = match run_pom_attempt(
-            request,
-            &tx_started_receiver,
-            &railcom_result_receiver,
-            &scheduler_sender,
-        )
-        .await
-        {
-            PomAttemptOutcome::Response(response) => response,
-            PomAttemptOutcome::TxTimeout => {
-                defmt::warn!("POM request timed out before tx-start");
-                PomResponse::Nack { request_id }
+        let mut final_response = PomResponse::Nack { request_id };
+
+        for attempt in 1..=POM_MAX_ATTEMPTS {
+            match run_pom_attempt(
+                request,
+                &tx_started_receiver,
+                &railcom_result_receiver,
+                &scheduler_sender,
+            )
+            .await
+            {
+                PomAttemptOutcome::Response(response) => {
+                    final_response = response;
+                    break;
+                }
+                PomAttemptOutcome::TxTimeout => {
+                    defmt::warn!("POM request timed out before tx-start");
+                    if attempt == POM_MAX_ATTEMPTS {
+                        final_response = PomResponse::Nack { request_id };
+                    }
+                }
+                PomAttemptOutcome::ResponseTimeout => {
+                    defmt::warn!("POM request timed out waiting for RailCom CV data");
+                    if attempt == POM_MAX_ATTEMPTS {
+                        final_response = PomResponse::Nack { request_id };
+                    }
+                }
             }
-            PomAttemptOutcome::ResponseTimeout => {
-                defmt::warn!("POM request timed out waiting for RailCom CV data");
-                PomResponse::Nack { request_id }
-            }
-        };
+        }
 
         response_sender.send(final_response).await;
     }
@@ -343,10 +337,6 @@ mod tests {
 
     fn pom_cv(cv: u16) -> PomCv {
         PomCv::new(cv).expect("test POM CV must be valid")
-    }
-
-    fn pom_id(value: u32) -> PomRequestId {
-        PomRequestId::new(value)
     }
 
     #[test]
@@ -410,7 +400,7 @@ mod tests {
     #[test]
     fn test_pom_read_accepts_followup_packet_value() {
         let request = PomRequest::Read {
-            request_id: pom_id(7),
+            request_id: 7,
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
         };
@@ -425,7 +415,7 @@ mod tests {
         assert_eq!(
             match_pom_result(request, 42, result),
             Some(PomResponse::Value {
-                request_id: pom_id(7),
+                request_id: 7,
                 value: 151,
             })
         );
@@ -434,7 +424,7 @@ mod tests {
     #[test]
     fn test_pom_write_accepts_matching_ack() {
         let request = PomRequest::Write {
-            request_id: pom_id(11),
+            request_id: 11,
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(29),
             value: 6,
@@ -449,16 +439,14 @@ mod tests {
 
         assert_eq!(
             match_pom_result(request, 50, result),
-            Some(PomResponse::Ack {
-                request_id: pom_id(11)
-            })
+            Some(PomResponse::Ack { request_id: 11 })
         );
     }
 
     #[test]
     fn test_pom_read_rejects_stale_followup_packet_value() {
         let request = PomRequest::Read {
-            request_id: pom_id(7),
+            request_id: 7,
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
         };
@@ -476,7 +464,7 @@ mod tests {
     #[test]
     fn test_pom_read_rejects_followup_packet_from_other_loco() {
         let request = PomRequest::Read {
-            request_id: pom_id(7),
+            request_id: 7,
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
         };

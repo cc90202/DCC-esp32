@@ -1,7 +1,7 @@
 //! Track output ownership boundary and RailCom cutout driver.
 //!
-//! Sole owner of the track `SLEEP` master-enable pin (`GPIO18`) and fast
-//! RailCom cutout/run pin (`GPIO4`). The RMT boundary ISR starts the cutout
+//! Sole owner of the DRV8874 `SLEEP` master-enable pin (`GPIO18`) and fast
+//! RailCom cutout pin (`GPIO4`). The RMT boundary ISR starts the cutout
 //! sequence and a hardware TIMG timer opens/closes the physical cutout.
 
 use core::cell::UnsafeCell;
@@ -23,7 +23,6 @@ use heapless::Vec;
 use static_cell::StaticCell;
 
 use crate::dcc::{DccAddress, PackedDccAddress};
-use crate::railcom::pipeline::RailcomChannel;
 
 /// Cutout duration in microseconds. NMRA S-9.3.2 requires 454..=488 µs; 460 µs
 /// sits comfortably in the middle of that window.
@@ -72,13 +71,6 @@ static CUTOUT_EVENT_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 static CUTOUT_EVENT_DROPPED_COUNT: AtomicU32 = AtomicU32::new(0);
 static CUTOUT_EVENT_NOTIFY_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 
-// Ring size for the packet_sequence -> RailCom metadata side channel.
-//
-// TODO(tuning): no recorded derivation for `64`. Observable constraint: a
-// consumer (e.g. `pom_dispatch`) must read back a given `packet_sequence`'s
-// metadata before that slot is recycled by 64 further cutouts; at typical
-// scheduler cadence that is on the order of seconds of slack, which is ample
-// for an Embassy task woken by a channel notification rather than polling.
 const RAILCOM_PACKET_META_CAPACITY: usize = 64;
 static RAILCOM_PACKET_META_SEQUENCES: [AtomicU32; RAILCOM_PACKET_META_CAPACITY] =
     [const { AtomicU32::new(0) }; RAILCOM_PACKET_META_CAPACITY];
@@ -89,6 +81,13 @@ static RAILCOM_PACKET_META_WORDS: [AtomicU32; RAILCOM_PACKET_META_CAPACITY] =
 type CutoutEventNotifyChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, u8, 1>;
 #[cfg(target_arch = "riscv32")]
 static CUTOUT_EVENT_NOTIFY: CutoutEventNotifyChannel = CutoutEventNotifyChannel::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum CutoutRailcomChannel {
+    Channel1,
+    Channel2,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -106,16 +105,8 @@ static CUTOUT_STATE: AtomicU8 = AtomicU8::new(CUTOUT_STATE_IDLE);
 static PENDING_CUTOUT_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_METADATA: AtomicU32 = AtomicU32::new(0);
 
-// `RAILCOM_WINDOW_PACKET_SEQUENCE`/`RAILCOM_WINDOW_CHANNEL` are a functional
-// guard, not telemetry: `close_realtime_window_from_isr` uses them to confirm
-// the window it is about to close still belongs to the window
-// `open_realtime_window_from_isr` most recently opened, before forwarding the
-// close to `isr_capture`'s FIFO read. A previously-existing
-// `RAILCOM_WINDOW_GENERATION`/`RAILCOM_WINDOW_ACTIVE` pair (plus a
-// `railcom_realtime_window_snapshot()` public accessor) tracked the same
-// open/close transitions purely for external observability and had no
-// callers anywhere in the crate (confirmed by grep before removal); it was
-// deleted here without touching this guard.
+static RAILCOM_WINDOW_GENERATION: AtomicU32 = AtomicU32::new(0);
+static RAILCOM_WINDOW_ACTIVE: AtomicBool = AtomicBool::new(false);
 static RAILCOM_WINDOW_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static RAILCOM_WINDOW_CHANNEL: AtomicU8 = AtomicU8::new(0);
 static TRACK_OUTPUT_HW: StaticCell<TrackOutputHwCell> = StaticCell::new();
@@ -154,7 +145,7 @@ pub struct RailcomRealtimeWindowSnapshot {
     pub generation: u32,
     pub active: bool,
     pub packet_sequence: u32,
-    pub channel: Option<RailcomChannel>,
+    pub channel: Option<CutoutRailcomChannel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,23 +155,20 @@ pub struct RailcomPacketMetadata {
     pub pom_read_requested: bool,
 }
 
-/// Bit-packed cutout metadata: `PackedAddressFlags` carries the target
-/// address plus two flags (`pom_requested`, `pom_read_requested`). See
-/// `PackedAddressFlags` for the shared layout also used by
-/// `railcom::pom_dispatch::PendingPomRailcomMetadata`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PackedRailcomPacketMetadata(PackedAddressFlags);
+struct PackedRailcomPacketMetadata(u32);
 
 impl PackedRailcomPacketMetadata {
-    const POM_REQUESTED_BIT: u32 = 0;
-    const POM_READ_REQUESTED_BIT: u32 = 1;
+    const ADDRESS_MASK: u32 = 0xffff;
+    const POM_REQUESTED: u32 = 1 << 16;
+    const POM_READ_REQUESTED: u32 = 1 << 17;
 
     const fn from_raw(raw: u32) -> Self {
-        Self(PackedAddressFlags::from_raw(raw))
+        Self(raw)
     }
 
     const fn raw(self) -> u32 {
-        self.0.raw()
+        self.0
     }
 
     fn new(
@@ -188,23 +176,26 @@ impl PackedRailcomPacketMetadata {
         pom_requested: bool,
         pom_read_requested: bool,
     ) -> Self {
-        Self(
-            PackedAddressFlags::new(target_address)
-                .with_flag(Self::POM_REQUESTED_BIT, pom_requested)
-                .with_flag(Self::POM_READ_REQUESTED_BIT, pom_read_requested),
-        )
+        let mut raw = u32::from(PackedDccAddress::from_address(target_address).raw());
+        if pom_requested {
+            raw |= Self::POM_REQUESTED;
+        }
+        if pom_read_requested {
+            raw |= Self::POM_READ_REQUESTED;
+        }
+        Self(raw)
     }
 
     fn target_address(self) -> Option<DccAddress> {
-        self.0.address()
+        PackedDccAddress::from_raw((self.0 & Self::ADDRESS_MASK) as u16).address()
     }
 
     const fn pom_requested(self) -> bool {
-        self.0.flag(Self::POM_REQUESTED_BIT)
+        (self.0 & Self::POM_REQUESTED) != 0
     }
 
     const fn pom_read_requested(self) -> bool {
-        self.0.flag(Self::POM_READ_REQUESTED_BIT)
+        (self.0 & Self::POM_READ_REQUESTED) != 0
     }
 
     fn runtime_event(self, packet_sequence: u32) -> CutoutRuntimeEvent {
@@ -229,7 +220,6 @@ impl PackedRailcomPacketMetadata {
 ///
 /// The actual hardware state lives in a singleton so tasks and ISRs reach the
 /// same physical owner without duplicating GPIO18/SLEEP control.
-#[derive(Debug)]
 pub struct TrackOutput;
 
 impl TrackOutput {
@@ -249,9 +239,8 @@ impl TrackOutput {
 
         let hw = TRACK_OUTPUT_HW.init(TrackOutputHwCell(UnsafeCell::new(TrackOutputHw {
             enable: Output::new(gpio18, Level::Low, OutputConfig::default()),
-            // GPIO4 is HIGH for normal DCC output and LOW for the timed
-            // RailCom cutout. Hardware may wire it directly to DRV8874 EN/IN1
-            // in PH/EN mode or use it as DCC_RUN for external PWM-mode logic.
+            // GPIO4 drives the DRV8874 EN/IN1 cutout path: HIGH is normal DCC
+            // output, LOW is the timed RailCom cutout.
             cutout: Output::new(gpio4, Level::High, OutputConfig::default()),
             cutout_timer,
         })));
@@ -262,6 +251,8 @@ impl TrackOutput {
 
         TRACK_ENABLED.store(false, Ordering::Release);
         CUTOUT_STATE.store(CUTOUT_STATE_IDLE, Ordering::Release);
+        RAILCOM_WINDOW_ACTIVE.store(false, Ordering::Release);
+        RAILCOM_WINDOW_GENERATION.store(0, Ordering::Release);
         CUTOUT_EVENT_WRITE_COUNT.store(0, Ordering::Release);
         CUTOUT_EVENT_DROPPED_COUNT.store(0, Ordering::Release);
         CUTOUT_EVENT_NOTIFY_FAIL_COUNT.store(0, Ordering::Release);
@@ -348,9 +339,26 @@ fn stop_cutout_timer_fast(hw: &mut TrackOutputHw) {
 }
 
 #[inline(always)]
-fn open_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
+fn channel_to_id(channel: CutoutRailcomChannel) -> u8 {
+    match channel {
+        CutoutRailcomChannel::Channel1 => 1,
+        CutoutRailcomChannel::Channel2 => 2,
+    }
+}
+
+#[inline(always)]
+fn channel_from_id(id: u8) -> Option<CutoutRailcomChannel> {
+    match id {
+        1 => Some(CutoutRailcomChannel::Channel1),
+        2 => Some(CutoutRailcomChannel::Channel2),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn open_realtime_window_from_isr(packet_sequence: u32, channel: CutoutRailcomChannel) {
     RAILCOM_WINDOW_PACKET_SEQUENCE.store(packet_sequence, Ordering::Release);
-    RAILCOM_WINDOW_CHANNEL.store(u8::from(channel), Ordering::Release);
+    RAILCOM_WINDOW_CHANNEL.store(channel_to_id(channel), Ordering::Release);
     RAILCOM_WINDOW_ACTIVE.store(true, Ordering::Release);
     RAILCOM_WINDOW_GENERATION.fetch_add(1, Ordering::AcqRel);
     #[cfg(target_arch = "riscv32")]
@@ -358,10 +366,12 @@ fn open_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel) 
 }
 
 #[inline(always)]
-fn close_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
+fn close_realtime_window_from_isr(packet_sequence: u32, channel: CutoutRailcomChannel) {
     if RAILCOM_WINDOW_PACKET_SEQUENCE.load(Ordering::Acquire) == packet_sequence
-        && RAILCOM_WINDOW_CHANNEL.load(Ordering::Acquire) == u8::from(channel)
+        && RAILCOM_WINDOW_CHANNEL.load(Ordering::Acquire) == channel_to_id(channel)
     {
+        RAILCOM_WINDOW_ACTIVE.store(false, Ordering::Release);
+        RAILCOM_WINDOW_GENERATION.fetch_add(1, Ordering::AcqRel);
         #[cfg(target_arch = "riscv32")]
         crate::railcom::isr_capture::close_window_from_isr(packet_sequence, channel);
     }
@@ -372,7 +382,7 @@ pub fn railcom_realtime_window_snapshot() -> RailcomRealtimeWindowSnapshot {
     let generation = RAILCOM_WINDOW_GENERATION.load(Ordering::Acquire);
     let active = RAILCOM_WINDOW_ACTIVE.load(Ordering::Acquire);
     let packet_sequence = RAILCOM_WINDOW_PACKET_SEQUENCE.load(Ordering::Acquire);
-    let channel = RailcomChannel::try_from(RAILCOM_WINDOW_CHANNEL.load(Ordering::Acquire)).ok();
+    let channel = channel_from_id(RAILCOM_WINDOW_CHANNEL.load(Ordering::Acquire));
 
     RailcomRealtimeWindowSnapshot {
         generation,
@@ -397,9 +407,6 @@ fn record_railcom_packet_metadata_from_isr(
     RAILCOM_PACKET_META_SEQUENCES[slot].store(packet_sequence, Ordering::Release);
 }
 
-// Same seqlock-style publication as `record_railcom_packet_metadata_from_isr`
-// above (zero -> payload -> real sequence); see that function's comment for
-// why the zero pre-store must not be dropped.
 #[inline(always)]
 fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
     let write_count = CUTOUT_EVENT_WRITE_COUNT.load(Ordering::Relaxed);
@@ -499,9 +506,6 @@ pub fn stats() -> TrackOutputStats {
     }
 }
 
-// Reader half of the seqlock-style publication documented on
-// `record_railcom_packet_metadata_from_isr` above: do not drop the
-// `sequence_after` re-check, it is what actually detects a torn read.
 #[must_use]
 pub fn railcom_packet_metadata(packet_sequence: u32) -> Option<RailcomPacketMetadata> {
     let slot = packet_sequence as usize % RAILCOM_PACKET_META_CAPACITY;
@@ -604,7 +608,7 @@ fn cutout_timer_interrupt() {
             let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
             if schedule_timer_us_fast(hw, RAILCOM_CH1_DURATION_US) {
                 CUTOUT_STATE.store(CUTOUT_STATE_CH1_OPEN, Ordering::Release);
-                open_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
+                open_realtime_window_from_isr(packet_sequence, CutoutRailcomChannel::Channel1);
             } else {
                 cutout_off_fast(hw);
                 CUTOUT_SCHEDULE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -615,10 +619,10 @@ fn cutout_timer_interrupt() {
             let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
             if schedule_timer_us_fast(hw, RAILCOM_CH1_TO_CH2_GAP_US) {
                 CUTOUT_STATE.store(CUTOUT_STATE_WAITING_CH2_OPEN, Ordering::Release);
-                close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
+                close_realtime_window_from_isr(packet_sequence, CutoutRailcomChannel::Channel1);
             } else {
                 cutout_off_fast(hw);
-                close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
+                close_realtime_window_from_isr(packet_sequence, CutoutRailcomChannel::Channel1);
                 CUTOUT_SCHEDULE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
                 CUTOUT_STATE.store(CUTOUT_STATE_IDLE, Ordering::Release);
             }
@@ -627,7 +631,7 @@ fn cutout_timer_interrupt() {
             let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
             if schedule_timer_us_fast(hw, RAILCOM_CH2_DURATION_US) {
                 CUTOUT_STATE.store(CUTOUT_STATE_CH2_OPEN, Ordering::Release);
-                open_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
+                open_realtime_window_from_isr(packet_sequence, CutoutRailcomChannel::Channel2);
             } else {
                 cutout_off_fast(hw);
                 CUTOUT_SCHEDULE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -636,7 +640,7 @@ fn cutout_timer_interrupt() {
         }
         CUTOUT_STATE_CH2_OPEN => {
             let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
-            close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
+            close_realtime_window_from_isr(packet_sequence, CutoutRailcomChannel::Channel2);
 
             if schedule_timer_us_fast(hw, RAILCOM_POST_CH2_CLOSE_US) {
                 CUTOUT_STATE.store(CUTOUT_STATE_WAITING_TO_CLOSE, Ordering::Release);

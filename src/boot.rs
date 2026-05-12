@@ -10,7 +10,7 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer, with_timeout};
-use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::gpio::{Flex, Level, Output};
 use esp_hal::rmt::{Rmt, TxChannelConfig, TxChannelCreator};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
@@ -31,17 +31,15 @@ use crate::fault_manager::{
     fault_manager_task,
 };
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
-use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
-use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
+use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
+use crate::railcom::pipeline::{RailcomChannel, RailcomRxOutcome};
+use crate::railcom::pom_dispatch::{evaluate_pom_window, pom_cutout_monitor_task};
 use crate::railcom::uart_reader::{
     RailcomRxOutput, RailcomUartRuntimeResultChannel, railcom_uart_rx_config,
 };
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, status_led_task};
-use crate::system_status::{
-    BootReadyChannel, BootReadyEvent, NetStatusChannel, OptionalPeripheralInit,
-    SystemStatusChannel, SystemStatusEvent,
-};
+use crate::system_status::{NetStatusChannel, SystemStatusChannel, SystemStatusEvent};
 use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.
@@ -54,6 +52,12 @@ static FAULT_STATE: FaultStateWatch = FaultStateWatch::new_with(FaultManagerStat
 static DISPLAY_CHANNEL: DisplayChannel = DisplayChannel::new();
 static BOOT_READY: BootReadyChannel = BootReadyChannel::new();
 static BOOT_FAILURE: BootFailureChannel = BootFailureChannel::new();
+static RAILCOM_RUNTIME_RESULTS: RailcomUartRuntimeResultChannel =
+    RailcomUartRuntimeResultChannel::new();
+static POM_REQUESTS: PomRequestChannel = PomRequestChannel::new();
+static POM_RESPONSES: PomResponseChannel = PomResponseChannel::new();
+static POM_TX_STARTED: PomTxStartedChannel = PomTxStartedChannel::new();
+static POM_RAILCOM_RESULTS: PomRailcomResultChannel = PomRailcomResultChannel::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -98,6 +102,11 @@ pub enum CriticalTask {
     DccEngine,
     StatusLed,
     Scheduler,
+    RailcomDiag,
+    PomActor,
+    PomCutoutMonitor,
+    RailcomIsrCapture,
+    RailcomUartDispatch,
     Net,
     FaultManager,
     StopButton,
@@ -179,6 +188,19 @@ impl BootError {
             Self::CriticalTaskSpawn(CriticalTask::DccEngine) => "failed to spawn dcc_engine_task",
             Self::CriticalTaskSpawn(CriticalTask::StatusLed) => "failed to spawn status_led_task",
             Self::CriticalTaskSpawn(CriticalTask::Scheduler) => "failed to spawn scheduler_task",
+            Self::CriticalTaskSpawn(CriticalTask::RailcomDiag) => {
+                "failed to spawn railcom_diag_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::PomActor) => "failed to spawn pom_actor_task",
+            Self::CriticalTaskSpawn(CriticalTask::PomCutoutMonitor) => {
+                "failed to spawn pom_cutout_monitor_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::RailcomIsrCapture) => {
+                "failed to spawn railcom_isr_capture_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::RailcomUartDispatch) => {
+                "failed to spawn railcom_uart_runtime_dispatch_task"
+            }
             Self::CriticalTaskSpawn(CriticalTask::Net) => "failed to spawn net_task",
             Self::CriticalTaskSpawn(CriticalTask::FaultManager) => {
                 "failed to spawn fault_manager_task"
@@ -193,7 +215,7 @@ impl BootError {
             Self::CriticalTaskInit(CriticalTaskInit::FaultStateReceiverUnavailable) => {
                 "fault-state watch receiver already taken"
             }
-            Self::CriticalTaskInit(CriticalTaskInit::Net(error)) => error.message(),
+            Self::CriticalTaskInit(CriticalTaskInit::Net(error)) => error.as_str(),
             Self::CriticalTaskInit(CriticalTaskInit::ReadinessTimeout) => {
                 "critical task readiness timeout"
             }
@@ -325,7 +347,7 @@ fn verify_boot_packet_encoding() -> Result<(), BootError> {
     Ok(())
 }
 
-/// Wrapper task for the DCC engine (single RMT channel, 74HC14 provides inverted signal)
+/// Wrapper task for the DCC engine (single RMT channel on the DRV8874 PH/IN2 input).
 #[embassy_executor::task]
 async fn dcc_engine_task_wrapper(
     receiver: Receiver<'static, CriticalSectionRawMutex, DccPacket, 16>,
@@ -351,7 +373,7 @@ async fn net_task_wrapper(context: NetTaskWrapperContext) {
     match net_task(spawner, wifi, scheduler_sender, fault_sender, channels).await {
         Ok(()) => unreachable!("net_task runs forever after successful initialization"),
         Err(error) => {
-            defmt::error!("boot: network init failed: {}", error.message());
+            defmt::error!("boot: network init failed: {}", error.as_str());
             failure_sender.send(CriticalTaskInit::Net(error)).await;
         }
     }
@@ -371,8 +393,7 @@ async fn display_task_wrapper(
 #[embassy_executor::task]
 async fn scheduler_task_wrapper(
     command_receiver: Receiver<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    sender: Sender<'static, CriticalSectionRawMutex, DccPacket, 16>,
-    status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
+    sender: Sender<'static, CriticalSectionRawMutex, DccFrame, 16>,
     display_sender: Sender<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
 ) -> ! {
@@ -389,6 +410,192 @@ async fn railcom_isr_capture_task_wrapper(
 }
 
 #[embassy_executor::task]
+async fn railcom_uart_runtime_dispatch_task(
+    receiver: Receiver<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
+    pom_result_sender: Sender<'static, CriticalSectionRawMutex, crate::dcc::PomRailcomResult, 4>,
+    scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+) -> ! {
+    let mut pending_logon_ch1: Option<(u32, [u8; 2])> = None;
+    let mut logon_select_sent_for: Option<(u16, u32)> = None;
+
+    loop {
+        let output = receiver.receive().await;
+        match output {
+            RailcomRxOutput::WindowProcessed(result) => {
+                if matches!(result.outcome, RailcomRxOutcome::Parsed) {
+                    debug!(
+                        "railcom rx ok: packet={} channel={:?} raw_len={} raw={:?} items={:?}",
+                        result.window.packet_sequence,
+                        result.window.channel,
+                        result.window.raw_len,
+                        result.window.raw_slice(),
+                        result.items.as_slice(),
+                    );
+                } else if !matches!(result.outcome, RailcomRxOutcome::Empty) {
+                    debug!(
+                        "railcom rx nonempty: packet={} channel={:?} raw_len={} raw={:?} outcome={:?}",
+                        result.window.packet_sequence,
+                        result.window.channel,
+                        result.window.raw_len,
+                        result.window.raw_slice(),
+                        result.outcome,
+                    );
+                }
+
+                let direct_sighting = crate::railcom::loco_tracker::record_loco_identification(
+                    result.window.packet_sequence,
+                    result.items.as_slice(),
+                );
+                let packet_metadata =
+                    crate::track_output::railcom_packet_metadata(result.window.packet_sequence);
+                let target_address = packet_metadata.and_then(|metadata| metadata.target_address);
+                let target_sighting = direct_sighting.or_else(|| {
+                    target_address.and_then(|target| {
+                        crate::railcom::loco_tracker::record_target_from_matching_address_fragment(
+                            result.window.packet_sequence,
+                            target,
+                            result.items.as_slice(),
+                        )
+                    })
+                });
+                if let Some(sighting) = target_sighting {
+                    // First sighting is a state transition (interesting); repeats
+                    // are per-cutout hot-path output and belong at debug level.
+                    if sighting.seen_count == 1 {
+                        info!(
+                            "railcom loco identified: addr={} kind={:?} packet={}",
+                            sighting.address.value(),
+                            sighting.address.kind(),
+                            sighting.packet_sequence,
+                        );
+                    } else {
+                        debug!(
+                            "railcom loco: addr={} kind={:?} packet={} seen={}",
+                            sighting.address.value(),
+                            sighting.address.kind(),
+                            sighting.packet_sequence,
+                            sighting.seen_count,
+                        );
+                    }
+                }
+
+                match result.window.channel {
+                    RailcomChannel::Channel1 if result.window.raw_len == 2 => {
+                        let raw = result.window.raw_slice();
+                        pending_logon_ch1 = Some((result.window.packet_sequence, [raw[0], raw[1]]));
+                    }
+                    RailcomChannel::Channel2 => {
+                        if let Some((packet_sequence, channel1_raw)) = pending_logon_ch1
+                            && packet_sequence == result.window.packet_sequence
+                        {
+                            if let Ok(response) =
+                                parse_logon_response_48(&channel1_raw, result.window.raw_slice())
+                            {
+                                match response {
+                                    RailcomLogonResponse::DecoderId(logon_id) => {
+                                        info!(
+                                            "railcom logon id: manufacturer={} decoder_id={} packet={}",
+                                            logon_id.manufacturer_id,
+                                            logon_id.decoder_id,
+                                            result.window.packet_sequence,
+                                        );
+                                        let selected =
+                                            (logon_id.manufacturer_id, logon_id.decoder_id);
+                                        if logon_select_sent_for != Some(selected) {
+                                            let packet = DccPacket::LogonSelect {
+                                                manufacturer_id: logon_id.manufacturer_id,
+                                                decoder_id: logon_id.decoder_id,
+                                                subcommand: 0xff,
+                                            };
+                                            if scheduler_sender
+                                                .try_send(SchedulerCommand::RailcomTelemetry {
+                                                    packet,
+                                                })
+                                                .is_ok()
+                                            {
+                                                logon_select_sent_for = Some(selected);
+                                                info!(
+                                                    "railcom logon select queued: manufacturer={} decoder_id={}",
+                                                    logon_id.manufacturer_id, logon_id.decoder_id,
+                                                );
+                                            } else {
+                                                warn!(
+                                                    "railcom logon select: scheduler channel full"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    RailcomLogonResponse::Select(logon_select) => {
+                                        let sighting =
+                                            crate::railcom::loco_tracker::record_identified_address(
+                                                result.window.packet_sequence,
+                                                logon_select.address,
+                                            );
+                                        info!(
+                                            "railcom logon address: addr={} kind={:?} packet={} seen={}",
+                                            sighting.address.value(),
+                                            sighting.address.kind(),
+                                            sighting.packet_sequence,
+                                            sighting.seen_count,
+                                        );
+                                    }
+                                }
+                            }
+                            pending_logon_ch1 = None;
+                        }
+                    }
+                    RailcomChannel::Channel1 => {}
+                }
+
+                if let Some(pom_window) = evaluate_pom_window(
+                    result.window.packet_sequence,
+                    result.window.channel,
+                    packet_metadata,
+                    result.items.as_slice(),
+                ) {
+                    debug!(
+                        "railcom pom rx: packet={} channel={:?} metadata_pom={} pom_read={} target={:?} raw_len={} raw={:?} outcome={:?} items={:?}",
+                        result.window.packet_sequence,
+                        result.window.channel,
+                        pom_window.metadata_pom,
+                        pom_window.pom_read_candidate,
+                        pom_window.target_address,
+                        result.window.raw_len,
+                        result.window.raw_slice(),
+                        result.outcome,
+                        result.items.as_slice(),
+                    );
+                    if let Some(pom_result) = pom_window.result {
+                        if pom_window.highlight_result {
+                            info!(">>>> railcom pom result: {:?} <<<<", pom_result);
+                        } else {
+                            info!("railcom pom result: {:?}", pom_result);
+                        }
+                        if pom_result_sender.try_send(pom_result).is_err() {
+                            warn!("railcom uart: pom result channel full");
+                        }
+                    }
+                }
+            }
+            RailcomRxOutput::WindowCorrupted(window) => {
+                info!(
+                    "railcom uart corrupted: packet={} channel={:?} raw_len={} glitches={} framing={} raw={:?}",
+                    window.packet_sequence,
+                    window.channel,
+                    window.raw_len,
+                    window.glitch_count,
+                    window.framing_error_count,
+                    &window.raw_bytes[..window.raw_len]
+                );
+            }
+            other => {
+                warn!("railcom rx window assembly: {:?}", other);
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
 async fn railcom_diag_task() -> ! {
     loop {
         Timer::after(Duration::from_secs(10)).await;
@@ -396,7 +603,7 @@ async fn railcom_diag_task() -> ! {
         let diag = crate::railcom::diagnostics();
 
         info!(
-            "railcom diag: boundary={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_corrupted={} rx_overflow={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
+            "railcom diag: boundary={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} started={} ended={} schedule_fail={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_corrupted={} rx_overflow={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
             diag.boundary.packet_boundary_count,
             diag.scheduler.cutout_granted_count,
             diag.scheduler.cutout_granted_pom_count,
@@ -417,7 +624,7 @@ async fn railcom_diag_task() -> ! {
             diag.rx.rx_windows_with_bytes_count(),
             diag.rx.rx_parse_ok_count,
             diag.rx.rx_parse_err_count,
-            diag.rx.rx_oversized_window_count,
+            diag.rx.rx_corrupted_window_count,
             diag.rx.rx_overflow_count,
             diag.rx.ch1_window_count,
             diag.rx.ch1_empty_count,
@@ -489,18 +696,16 @@ pub async fn run(
 
     // DCC channel: divider=80 -> 80MHz/80 = 1MHz = 1us/tick (NMRA S-9.1 timings unchanged).
     //
-    // memsize: 2 -> 96 RAM slots (2 x 48). Required for transmit_continuously:
-    // the idle packet is 48 DCC pulses + 1 end marker = 49 entries, which
-    // exceeds the single-block limit of 48. Two blocks fit it comfortably.
+    // memsize: 3 -> 144 RAM slots (3 x 48). Two blocks fit idle; the third
+    // gives the ISR backend room for RCN-218 LOGON_SELECT packets.
     let tx_config = TxChannelConfig::default()
         .with_clk_divider(80)
         .with_idle_output_level(Level::Low)
         .with_idle_output(true)
-        .with_memsize(2);
+        .with_memsize(3);
 
-    // Single RMT channel on GPIO2. On the current PH/EN bench wiring GPIO2
-    // drives PH/IN2; on the Option A RailCom rebuild it feeds external logic
-    // that derives the complementary PWM-mode DRV8874 inputs.
+    // Single RMT channel on GPIO2. With DRV8874 PH/EN wiring, GPIO2 drives
+    // PH/IN2 and GPIO4 owns the fast EN/IN1 RailCom cutout.
     let tx_channel = rmt
         .channel0
         .configure_tx(peripherals.GPIO2, tx_config)
@@ -528,13 +733,13 @@ pub async fn run(
     let command_receiver = scheduler_commands.receiver();
     info!("boot: scheduler command channel initialized");
 
-    // Track SLEEP master enable: GPIO18 push-pull, held LOW during init so
+    // DRV8874 SLEEP master enable: GPIO18 push-pull, held LOW during init so
     // the track sees no signal until the DCC waveform is already stable.
-    // RailCom cutout/run: GPIO4 is held HIGH outside timed cutout windows and
-    // driven LOW during the cutout.
+    // RailCom cutout: GPIO4 drives the fast EN/IN1 cutout path and is held
+    // HIGH outside timed cutout windows.
     let timg1 = TimerGroup::new(peripherals.TIMG1);
     let track_output = TrackOutput::new(peripherals.GPIO18, peripherals.GPIO4, timg1.timer0);
-    info!("boot: track SLEEP GPIO18 held LOW; RailCom cutout/run GPIO4 held inactive HIGH");
+    info!("boot: DRV8874 SLEEP GPIO18 held LOW; RailCom cutout GPIO4 held inactive HIGH");
 
     spawner
         .spawn(dcc_engine_task_wrapper(
@@ -560,12 +765,57 @@ pub async fn run(
         .spawn(scheduler_task_wrapper(
             command_receiver,
             sender,
-            SYSTEM_STATUS.sender(),
             DISPLAY_CHANNEL.sender(),
             BOOT_READY.sender(),
         ))
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::Scheduler))?;
     info!("boot: scheduler task spawned");
+
+    spawner
+        .spawn(railcom_diag_task())
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomDiag))?;
+    info!("boot: RailCom diagnostics task spawned");
+
+    spawner
+        .spawn(pom_actor_task(
+            POM_REQUESTS.receiver(),
+            POM_RESPONSES.sender(),
+            POM_TX_STARTED.receiver(),
+            POM_RAILCOM_RESULTS.receiver(),
+            scheduler_commands.sender(),
+        ))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::PomActor))?;
+    spawner
+        .spawn(pom_cutout_monitor_task(POM_TX_STARTED.sender()))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::PomCutoutMonitor))?;
+    info!("boot: POM actor and cutout monitor tasks spawned");
+
+    // RailCom RX wiring: UART RX on GPIO5. The cutout timer opens/closes
+    // ISR-side capture windows and the task below drains UART1 FIFO snapshots.
+    // Gate 6 of the 74HC14 has a weak pull-down; bypass by wiring GPIO5 directly
+    // to pin 10 (gate 5 output) and invert the UART RX polarity in firmware.
+    let railcom_rx_pin = Flex::new(peripherals.GPIO5)
+        .peripheral_input()
+        .with_input_inverter(true);
+    let railcom_uart_rx = UartRx::new(peripherals.UART1, railcom_uart_rx_config())
+        .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RailcomUart))?
+        .with_rx(railcom_rx_pin)
+        .into_async();
+
+    spawner
+        .spawn(railcom_isr_capture_task_wrapper(
+            railcom_uart_rx,
+            RAILCOM_RUNTIME_RESULTS.sender(),
+        ))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomIsrCapture))?;
+    spawner
+        .spawn(railcom_uart_runtime_dispatch_task(
+            RAILCOM_RUNTIME_RESULTS.receiver(),
+            POM_RAILCOM_RESULTS.sender(),
+            scheduler_commands.sender(),
+        ))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomUartDispatch))?;
+    info!("boot: RailCom ISR capture spawned on GPIO5 (POM dispatcher active)");
 
     spawner
         .spawn(net_task_wrapper(NetTaskWrapperContext {
@@ -641,8 +891,8 @@ pub async fn run(
     // Brief delay to let decoder finish reset processing.
     Timer::after(Duration::from_millis(100)).await;
 
-    // Track short detector: GPIO3 monitors the 74HC14 Schmitt trigger output
-    // (direct connection) for overcurrent events from the BTS7960 R_IS/L_IS.
+    // Track short detector: GPIO3 monitors the active-low conditioned
+    // overcurrent/fault output from the external detector.
     // Spawned after reset + stabilization so the decoder is quiescent.
     let short_pin = new_short_detect_input(peripherals.GPIO3);
     let fault_state_receiver = FAULT_STATE.receiver().ok_or(BootError::CriticalTaskInit(

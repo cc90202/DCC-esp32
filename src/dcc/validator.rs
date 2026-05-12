@@ -24,7 +24,7 @@
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
 //!
 //! // Create and encode a valid packet
-//! let addr = DccAddress::short(5).unwrap();
+//! let addr = DccAddress::new_short(5).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 50, Direction::Forward).unwrap();
 //!
 //! let pulses = encode_dcc_packet(&packet).unwrap();
@@ -42,7 +42,7 @@
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
 //!
 //! // Encoded pulses must have: preamble (14+ bits) + start (0) + bytes + separators/end (1)
-//! let addr = DccAddress::short(10).unwrap();
+//! let addr = DccAddress::new_short(10).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 100, Direction::Reverse).unwrap();
 //!
 //! let pulses = encode_dcc_packet(&packet).unwrap();
@@ -56,7 +56,7 @@
 //! use dcc_esp32::dcc::validator;
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
 //!
-//! let addr = DccAddress::short(42).unwrap();
+//! let addr = DccAddress::new_short(42).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
 //!
 //! // Must encode first, then validate
@@ -72,7 +72,7 @@
 //! use dcc_esp32::dcc::validator;
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
 //!
-//! let addr = DccAddress::short(5).unwrap();
+//! let addr = DccAddress::new_short(5).unwrap();
 //! let packet = DccPacket::speed_28step(addr, 15, Direction::Forward).unwrap();
 //!
 //! // Check that address and speed values are in valid NMRA ranges
@@ -85,7 +85,7 @@
 //! use dcc_esp32::dcc::validator;
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
 //!
-//! let addr = DccAddress::short(42).unwrap();
+//! let addr = DccAddress::new_short(42).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
 //!
 //! // Single call: encode packet + validate timing + structure + ranges + checksum
@@ -153,13 +153,114 @@ pub fn validate_timing(pulses: &[PulseCode]) -> Result<(), ValidationError> {
                     actual_us: pulse.length2,
                 });
             }
-        } else if (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length1) {
-            // Valid "0" bit high half — check low half
-            if !(ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length2) {
-                return Err(ValidationError::TimingOutOfRange {
-                    expected_us: DCC_ZERO_HIGH_US,
-                    actual_us: pulse.length2,
-                });
+        }
+        Ok(())
+    }
+
+    /// Returns true if a pulse represents a "1" bit
+    fn is_one_bit(pulse: &PulseCode) -> bool {
+        (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length1)
+            && (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length2)
+    }
+
+    /// Returns true if a pulse represents a "0" bit
+    fn is_zero_bit(pulse: &PulseCode) -> bool {
+        (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length1)
+            && (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length2)
+    }
+
+    /// Validates packet structure (preamble, start/end bits, byte boundaries)
+    ///
+    /// V2: After preamble and first start bit, validates that every 8 pulses
+    /// is followed by a separator "0" (inter-byte) or end bit "1" (last byte).
+    pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationError> {
+        if pulses.len() < 15 {
+            return Err(ValidationError::PacketTooShort {
+                min: 15,
+                actual: pulses.len(),
+            });
+        }
+
+        // Count preamble "1" bits
+        let preamble_count = pulses.iter().take_while(|p| Self::is_one_bit(p)).count();
+
+        if preamble_count < 14 {
+            return Err(ValidationError::InsufficientPreamble {
+                found: preamble_count,
+            });
+        }
+
+        // Check start bit after preamble
+        let mut pos = preamble_count;
+        if pos >= pulses.len() || !Self::is_zero_bit(&pulses[pos]) {
+            return Err(ValidationError::MissingStartBit);
+        }
+        pos += 1; // skip start bit
+
+        // V2: Validate byte structure — each byte is 8 pulses followed by separator/end
+        loop {
+            // Need at least 8 pulses for a data byte + 1 for separator/end
+            if pos + 9 > pulses.len() {
+                return Err(ValidationError::InvalidStructure);
+            }
+
+            pos += 8; // skip 8 data bit pulses
+
+            // After 8 bits: expect "0" (inter-byte separator) or "1" (end bit)
+            if Self::is_one_bit(&pulses[pos]) {
+                // End bit — this should be the last pulse
+                if pos != pulses.len() - 1 {
+                    return Err(ValidationError::InvalidStructure);
+                }
+                break;
+            } else if Self::is_zero_bit(&pulses[pos]) {
+                // Inter-byte separator — continue to next byte
+                pos += 1;
+            } else {
+                return Err(ValidationError::InvalidStructure);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates NMRA S-9.2 packet compliance
+    ///
+    /// V3: Validates address ranges (defense in depth).
+    /// V5: Validates Speed28 interleaved encoding.
+    pub fn validate_nmra_compliance(packet: &DccPacket) -> Result<(), ValidationError> {
+        match packet {
+            DccPacket::Speed28 { address, .. } => {
+                // Speed range guaranteed by NmraSpeed28 newtype (0-29)
+                Self::validate_address(address)?;
+            }
+            DccPacket::Speed128 { address, .. } => {
+                // Speed range guaranteed by NmraSpeed128 newtype (0-126)
+                Self::validate_address(address)?;
+            }
+            DccPacket::FunctionGroup1 { address, .. }
+            | DccPacket::FunctionGroup2A { address, .. }
+            | DccPacket::FunctionGroup2B { address, .. }
+            | DccPacket::FunctionGroup3 { address, .. }
+            | DccPacket::FunctionGroup4 { address, .. }
+            | DccPacket::EmergencyStop { address, .. } => {
+                Self::validate_address(address)?;
+            }
+            DccPacket::PomWriteByte { address, .. } | DccPacket::PomReadByte { address, .. } => {
+                Self::validate_address(address)?;
+            }
+            DccPacket::ServiceModeVerifyByte { .. } | DccPacket::ServiceModeWriteByte { .. } => {}
+            _ => {} // Idle, Reset, BroadcastStop have no address to validate
+        }
+        Ok(())
+    }
+
+    /// V3/V6: Validates address range (defense in depth)
+    fn validate_address(address: &crate::dcc::DccAddress) -> Result<(), ValidationError> {
+        let val = address.value();
+        if address.is_short() {
+            if val == 0 || val > 127 {
+                return Err(ValidationError::InvalidAddress);
             }
         } else {
             // V1: Reject anything not recognizable as "1" or "0"
@@ -305,8 +406,45 @@ pub fn validate_checksum(packet: &DccPacket) -> Result<(), ValidationError> {
         return Err(ValidationError::InvalidChecksum { expected, actual });
     }
 
-    Ok(())
-}
+    /// Complete validation in one step: encode then validate everything
+    ///
+    /// Convenience method that encodes the packet and validates timing, structure,
+    /// NMRA compliance, and checksum in a single call.
+    ///
+    /// # When to use this vs `validate_full()`
+    ///
+    /// - **Use `validate_complete()`** (this function) when:
+    ///   - You have a `DccPacket` and want to validate it end-to-end
+    ///   - You don't already have the encoded pulse sequence
+    ///   - You want the simplest API (one function call)
+    ///   - Example: Z21 server receives a command, creates a packet, validates it immediately
+    ///
+    /// - **Use `validate_full(packet, pulses)`** when:
+    ///   - You already have both the packet AND the pulse sequence
+    ///   - You want to validate a pre-encoded transmission (diagnostic use)
+    ///   - You need to inspect intermediate pulse data
+    ///   - Example: DCC engine loop transmits pulses; validator checks they match spec
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValidationError` if encoding fails, or any validation check fails
+    /// (timing, structure, address/speed ranges, checksum).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dcc_esp32::dcc::{DccValidator, DccPacket, DccAddress, Direction};
+    ///
+    /// let addr = DccAddress::new_short(42).unwrap();
+    /// let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
+    ///
+    /// // Single call validates everything: encode + timing + structure + compliance + checksum
+    /// assert!(DccValidator::validate_complete(&packet).is_ok());
+    /// ```
+    pub fn validate_complete(packet: &DccPacket) -> Result<(), ValidationError> {
+        // Encode packet to pulses; return EncodingError if packet cannot be encoded
+        let pulses =
+            crate::dcc::encode_dcc_packet(packet).map_err(|_| ValidationError::EncodingError)?;
 
 /// Full validation: timing + structure + compliance + checksum
 ///
@@ -381,7 +519,17 @@ pub fn validate_complete(packet: &DccPacket) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dcc::{DccAddress, Direction, NmraSpeed28, NmraSpeed128, encode_dcc_packet};
+    use crate::dcc::{
+        DccAddress, Direction, NmraSpeed28, NmraSpeed128, PomCv, ServiceModeCv, encode_dcc_packet,
+    };
+
+    fn service_cv(cv: u16) -> ServiceModeCv {
+        ServiceModeCv::new(cv).expect("test service-mode CV must be valid")
+    }
+
+    fn pom_cv(cv: u16) -> PomCv {
+        PomCv::new(cv).expect("test POM CV must be valid")
+    }
 
     // --- Positive tests ---
 
@@ -407,14 +555,14 @@ mod tests {
 
     #[test]
     fn test_validate_speed28_range() {
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let valid = DccPacket::speed_28step(addr, 28, Direction::Forward).unwrap();
         assert!(validate_nmra_compliance(&valid).is_ok());
     }
 
     #[test]
     fn test_full_validation() {
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let packet = DccPacket::speed_28step(addr, 15, Direction::Forward).unwrap();
         let pulses = encode_dcc_packet(&packet).unwrap();
         assert!(validate_full(&packet, &pulses).is_ok());
@@ -422,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_full_validation_speed128() {
-        let addr = DccAddress::long(1000).unwrap();
+        let addr = DccAddress::new_long(1000).unwrap();
         let packet = DccPacket::speed_128step(addr, 64, Direction::Reverse).unwrap();
         let pulses = encode_dcc_packet(&packet).unwrap();
         assert!(validate_full(&packet, &pulses).is_ok());
@@ -430,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_full_validation_function_group1() {
-        let addr = DccAddress::short(5).unwrap();
+        let addr = DccAddress::new_short(5).unwrap();
         let packet = DccPacket::FunctionGroup1 {
             address: addr,
             fl: true,
@@ -445,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_full_validation_emergency_stop() {
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let packet = DccPacket::EmergencyStop {
             address: addr,
             direction: Direction::Forward,
@@ -542,7 +690,7 @@ mod tests {
     #[test]
     fn test_checksum_all_packet_types() {
         // Verify checksum is valid for every packet type
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let packets: &[DccPacket] = &[
             DccPacket::Idle,
             DccPacket::Reset,
@@ -587,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_structure_validation_all_packet_types() {
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let packets: &[DccPacket] = &[
             DccPacket::Idle,
             DccPacket::Reset,
@@ -630,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_full_validation_function_group3() {
-        let addr = DccAddress::short(5).unwrap();
+        let addr = DccAddress::new_short(5).unwrap();
         let packet = DccPacket::FunctionGroup3 {
             address: addr,
             f13: true,
@@ -648,7 +796,7 @@ mod tests {
 
     #[test]
     fn test_full_validation_function_group4() {
-        let addr = DccAddress::short(7).unwrap();
+        let addr = DccAddress::new_short(7).unwrap();
         let packet = DccPacket::FunctionGroup4 {
             address: addr,
             f21: false,
@@ -666,7 +814,7 @@ mod tests {
 
     #[test]
     fn test_full_validation_function_group3_long_address() {
-        let addr = DccAddress::long(1000).unwrap();
+        let addr = DccAddress::new_long(1000).unwrap();
         let packet = DccPacket::FunctionGroup3 {
             address: addr,
             f13: true,
@@ -684,7 +832,7 @@ mod tests {
 
     #[test]
     fn test_full_validation_function_group4_long_address() {
-        let addr = DccAddress::long(1000).unwrap();
+        let addr = DccAddress::new_long(1000).unwrap();
         let packet = DccPacket::FunctionGroup4 {
             address: addr,
             f21: false,
@@ -702,14 +850,20 @@ mod tests {
 
     #[test]
     fn test_service_mode_verify_byte_validation() {
-        let packet = DccPacket::ServiceModeVerifyByte { cv: 1, value: 3 };
+        let packet = DccPacket::ServiceModeVerifyByte {
+            cv: service_cv(1),
+            value: 3,
+        };
         let pulses = encode_dcc_packet(&packet).unwrap();
         assert!(validate_full(&packet, &pulses).is_ok());
     }
 
     #[test]
     fn test_service_mode_write_byte_validation() {
-        let packet = DccPacket::ServiceModeWriteByte { cv: 29, value: 6 };
+        let packet = DccPacket::ServiceModeWriteByte {
+            cv: service_cv(29),
+            value: 6,
+        };
         let pulses = encode_dcc_packet(&packet).unwrap();
         assert!(validate_full(&packet, &pulses).is_ok());
     }
@@ -721,27 +875,16 @@ mod tests {
             cv: service_cv(1),
             value: 0,
         };
-        assert!(validate_nmra_compliance(&packet1).is_ok());
+        assert!(DccValidator::validate_nmra_compliance(&packet1).is_ok());
 
         let packet256 = DccPacket::ServiceModeVerifyByte {
             cv: service_cv(256),
             value: 0,
         };
-        assert!(validate_nmra_compliance(&packet256).is_ok());
+        assert!(DccValidator::validate_nmra_compliance(&packet256).is_ok());
 
-        // CV 0 is invalid
-        let packet0 = DccPacket::ServiceModeVerifyByte { cv: 0, value: 0 };
-        assert!(matches!(
-            DccValidator::validate_nmra_compliance(&packet0),
-            Err(ValidationError::InvalidAddress)
-        ));
-
-        // CV > 256 is invalid in V1
-        let packet257 = DccPacket::ServiceModeVerifyByte { cv: 257, value: 0 };
-        assert!(matches!(
-            DccValidator::validate_nmra_compliance(&packet257),
-            Err(ValidationError::InvalidAddress)
-        ));
+        assert!(ServiceModeCv::new(0).is_none());
+        assert!(ServiceModeCv::new(257).is_none());
     }
 
     #[test]
@@ -750,13 +893,13 @@ mod tests {
             cv: service_cv(17),
             value: 192,
         };
-        assert!(validate_checksum(&packet_verify).is_ok());
+        assert!(DccValidator::validate_checksum(&packet_verify).is_ok());
 
         let packet_write = DccPacket::ServiceModeWriteByte {
             cv: service_cv(29),
             value: 6,
         };
-        assert!(validate_checksum(&packet_write).is_ok());
+        assert!(DccValidator::validate_checksum(&packet_write).is_ok());
     }
 
     #[test]
@@ -807,7 +950,7 @@ mod tests {
 
     #[test]
     fn test_validate_complete_speed128() {
-        let addr = DccAddress::short(42).unwrap();
+        let addr = DccAddress::new_short(42).unwrap();
         let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
         // Single call: encode + validate everything
         assert!(validate_complete(&packet).is_ok());
@@ -815,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_validate_complete_speed28() {
-        let addr = DccAddress::long(5000).unwrap();
+        let addr = DccAddress::new_long(5000).unwrap();
         let packet = DccPacket::speed_28step(addr, 20, Direction::Reverse).unwrap();
         assert!(validate_complete(&packet).is_ok());
     }
@@ -828,7 +971,7 @@ mod tests {
 
     #[test]
     fn test_validate_complete_emergency_stop() {
-        let addr = DccAddress::short(10).unwrap();
+        let addr = DccAddress::new_short(10).unwrap();
         let packet = DccPacket::EmergencyStop {
             address: addr,
             direction: Direction::Forward,
@@ -838,7 +981,7 @@ mod tests {
 
     #[test]
     fn test_validate_complete_function_group1() {
-        let addr = DccAddress::short(7).unwrap();
+        let addr = DccAddress::new_short(7).unwrap();
         let packet = DccPacket::FunctionGroup1 {
             address: addr,
             fl: true,
@@ -856,13 +999,13 @@ mod tests {
             cv: service_cv(1),
             value: 42,
         };
-        assert!(validate_complete(&packet).is_ok());
+        assert!(DccValidator::validate_complete(&packet).is_ok());
     }
 
     #[test]
     fn test_validate_complete_all_packet_types() {
         // Test validate_complete on a variety of packet types
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let packets: &[DccPacket] = &[
             DccPacket::Idle,
             DccPacket::Reset,
@@ -881,8 +1024,23 @@ mod tests {
                 f3: true,
                 f4: false,
             },
-            DccPacket::ServiceModeVerifyByte { cv: 29, value: 192 },
-            DccPacket::ServiceModeWriteByte { cv: 17, value: 100 },
+            DccPacket::PomReadByte {
+                address: addr,
+                cv: pom_cv(29),
+            },
+            DccPacket::PomWriteByte {
+                address: addr,
+                cv: pom_cv(17),
+                value: 100,
+            },
+            DccPacket::ServiceModeVerifyByte {
+                cv: service_cv(29),
+                value: 192,
+            },
+            DccPacket::ServiceModeWriteByte {
+                cv: service_cv(17),
+                value: 100,
+            },
         ];
 
         for packet in packets {

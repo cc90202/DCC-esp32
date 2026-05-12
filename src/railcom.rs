@@ -12,8 +12,6 @@ pub mod parser;
 pub mod pipeline;
 #[cfg(target_arch = "riscv32")]
 pub mod pom_dispatch;
-#[cfg(target_arch = "riscv32")]
-pub mod runtime_dispatch;
 pub mod uart_adapter;
 pub mod uart_reader;
 

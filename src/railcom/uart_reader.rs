@@ -4,12 +4,13 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use esp_hal::uart::{Config, Parity, RxConfig, StopBits};
 
 use crate::railcom::pipeline::{RailcomChannel, RailcomRxResult};
+use crate::railcom::uart_adapter::{RailcomUartAdapterError, RailcomUartWindowError};
 
 /// Preferred UART RX pin for RailCom reception.
 ///
 /// The current board review leaves `GPIO5` free and it is the preferred input
 /// for the detector output. `GPIO4` is owned by `track_output` as the fast
-/// RailCom cutout/run control.
+/// DRV8874 EN/IN1 RailCom cutout control.
 pub const RAILCOM_UART_RX_GPIO_NUM: u8 = 5;
 pub const RAILCOM_UART_BAUDRATE: u32 = 250_000;
 
@@ -17,18 +18,20 @@ pub const RAILCOM_UART_BAUDRATE: u32 = 250_000;
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum RailcomRxOutput {
     WindowProcessed(RailcomRxResult),
+    WindowCorrupted(RailcomCorruptedWindow),
     WindowError(RailcomUartWindowError),
+    AdapterError(RailcomUartAdapterError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RailcomUartWindowError {
-    WindowTooLong {
-        packet_sequence: u32,
-        channel: RailcomChannel,
-        provided_len: usize,
-        max_len: usize,
-    },
+pub struct RailcomCorruptedWindow {
+    pub packet_sequence: u32,
+    pub channel: RailcomChannel,
+    pub raw_len: usize,
+    pub raw_bytes: [u8; 6],
+    pub glitch_count: u8,
+    pub framing_error_count: u8,
 }
 
 #[cfg(target_arch = "riscv32")]

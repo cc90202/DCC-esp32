@@ -1,78 +1,18 @@
-//! DCC Packet Types and Encoding
+//! DCC packet types and byte encoding.
 //!
 //! Implements NMRA S-9.2 compliant DCC packet structures and binary encoding.
 //!
-//! # Overview
-//!
-//! This module defines the complete set of DCC packet types (locomotive control,
-//! functions, service mode) and provides encoding to binary format per NMRA S-9.2.
-//! All addresses are validated at construction time using strong types (`DccAddress`),
-//! making it impossible to create invalid packets.
-//!
-//! # Examples
-//!
-//! **Create and encode a Speed128 packet:**
+//! Address, speed, service-mode CV, POM CV, and binary-state address fields use
+//! validated newtypes so invalid ranges are rejected before packet construction.
 //!
 //! ```
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
 //!
-//! // Create a short address (1-127)
-//! let addr = DccAddress::short(42).expect("42 is valid");
-//!
-//! // Create a 128-step speed command: address 42, speed 75, forward
+//! let addr = DccAddress::new_short(42).expect("42 is a valid short address");
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
-//!
-//! // Encode to binary (6 bytes max: address + data + checksum)
-//! let bytes = packet.to_bytes();
+//! let bytes = packet.to_bytes().unwrap();
 //! assert!(!bytes.is_empty());
 //! ```
-//!
-//! **Use a long address (128-10239):**
-//!
-//! ```
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
-//!
-//! // Long addresses for modern decoders (multifunction)
-//! let addr = DccAddress::long(1234).expect("1234 is valid");
-//!
-//! let packet = DccPacket::speed_128step(addr, 50, Direction::Reverse).unwrap();
-//! ```
-//!
-//! **Control functions (headlight, horn, lights):**
-//!
-//! ```
-//! use dcc_esp32::dcc::{DccPacket, DccAddress};
-//!
-//! let addr = DccAddress::short(5).unwrap();
-//!
-//! // Function Group 1: FL (headlight) and F1-F4
-//! let packet = DccPacket::FunctionGroup1 {
-//!     address: addr,
-//!     fl: true,   // Headlight on
-//!     f1: true,   // Horn on
-//!     f2: false,
-//!     f3: false,
-//!     f4: false,
-//! };
-//! ```
-//!
-//! **Service Mode: Verify a CV value:**
-//!
-//! ```
-//! use dcc_esp32::dcc::DccPacket;
-//!
-//! // Check if CV1 (primary address) equals 42
-//! let packet = DccPacket::ServiceModeVerifyByte {
-//!     cv: 1,
-//!     value: 42,
-//! };
-//! // Decoder will send an ACK pulse if CV1 matches.
-//! ```
-//!
-//! # Errors
-//!
-//! Address validation occurs at construction via `DccAddress::short()` and `DccAddress::long()`,
-//! which return `Option`. Invalid CV values in Service Mode packets return `PacketEncodeError`.
 //!
 //! # NMRA Compliance
 //!
@@ -91,7 +31,6 @@ use crate::dcc::speed28::encode_nmra_instruction_speed_bits;
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum PacketEncodeError {
     InvalidSpeed28 { speed: u8 },
-    InvalidCvAddress { cv: u16 },
 }
 
 /// DCC decoder address (opaque type enforcing NMRA address validation)
@@ -165,64 +104,6 @@ impl PackedDccAddress {
     }
 }
 
-/// Shared bit layout for packing a [`PackedDccAddress`] together with a
-/// handful of boolean flags into a single `u32` for atomic-word metadata
-/// side channels.
-///
-/// The address occupies bits `0..=15` (see [`PackedDccAddress`]); flag `n`
-/// (0-based) occupies bit `16 + n`. This is the common backing storage for
-/// `track_output::PackedRailcomPacketMetadata` (2 flags: pom_requested,
-/// pom_read_requested) and `railcom::pom_dispatch::PendingPomRailcomMetadata`
-/// (1 flag: read_requested) — both used to exist as independent copies of the
-/// same mask/shift arithmetic before being unified here.
-#[cfg(any(test, target_arch = "riscv32"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PackedAddressFlags(u32);
-
-#[cfg(any(test, target_arch = "riscv32"))]
-impl PackedAddressFlags {
-    const ADDRESS_MASK: u32 = 0xffff;
-    const FLAG_BASE_BIT: u32 = 16;
-
-    /// Called from ISR-resident code (`track_output` metadata capture); the
-    /// inline attributes keep these helpers out of flash on non-LTO builds.
-    #[inline(always)]
-    pub(crate) fn new(address: Option<DccAddress>) -> Self {
-        Self(u32::from(PackedDccAddress::from_address(address).raw()))
-    }
-
-    #[inline(always)]
-    pub(crate) const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    #[inline(always)]
-    pub(crate) const fn raw(self) -> u32 {
-        self.0
-    }
-
-    pub(crate) fn address(self) -> Option<DccAddress> {
-        PackedDccAddress::from_raw((self.0 & Self::ADDRESS_MASK) as u16).address()
-    }
-
-    /// Sets flag `index` (0-based, added to [`Self::FLAG_BASE_BIT`]) when
-    /// `value` is true; leaves the word unchanged otherwise.
-    #[must_use]
-    #[inline(always)]
-    pub(crate) fn with_flag(self, index: u32, value: bool) -> Self {
-        if value {
-            Self(self.0 | (1 << (Self::FLAG_BASE_BIT + index)))
-        } else {
-            self
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) const fn flag(self, index: u32) -> bool {
-        (self.0 & (1 << (Self::FLAG_BASE_BIT + index))) != 0
-    }
-}
-
 impl DccAddress {
     /// Create a new short address (1-127)
     ///
@@ -247,30 +128,6 @@ impl DccAddress {
             Some(DccAddress {
                 kind: AddressKind::Long(addr),
             })
-        }
-    }
-
-    /// Create an address from its plain numeric magnitude (1-127 short,
-    /// 128-10239 long), picking the addressing mode implied by NMRA's
-    /// non-overlapping short/long ranges.
-    ///
-    /// Returns `None` for 0 or values above 10239.
-    ///
-    /// This differs from the Z21 wire decoding in `wire.rs::parse_loco_address`,
-    /// which reads a 2-byte on-wire field where the addressing mode is tagged by
-    /// the top two bits of the high byte rather than inferred from magnitude —
-    /// a wire long-address encoding could in principle carry a value that also
-    /// fits the short range. `from_magnitude` is for callers that only have a
-    /// plain numeric address (e.g. a RailCom-reported address) and want the
-    /// same short/long split NMRA uses.
-    #[must_use]
-    pub fn from_magnitude(addr: u16) -> Option<Self> {
-        if addr == 0 {
-            None
-        } else if addr <= 127 {
-            Self::new_short(addr as u8)
-        } else {
-            Self::new_long(addr)
         }
     }
 
@@ -361,6 +218,96 @@ impl NmraSpeed128 {
     }
 }
 
+/// Validated service-mode CV address.
+///
+/// Direct service-mode packets encode CVs 1..=256.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct ServiceModeCv(u16);
+
+impl ServiceModeCv {
+    #[must_use]
+    pub const fn new(cv: u16) -> Option<Self> {
+        if cv >= 1 && cv <= 256 {
+            Some(Self(cv))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u16 {
+        self.0
+    }
+}
+
+/// Validated Programming-on-Main CV address.
+///
+/// Long-form POM CV access packets encode CVs 1..=1024.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct PomCv(u16);
+
+impl PomCv {
+    #[must_use]
+    pub const fn new(cv: u16) -> Option<Self> {
+        if cv >= 1 && cv <= 1024 {
+            Some(Self(cv))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u16 {
+        self.0
+    }
+}
+
+/// Validated seven-bit binary-state address used by NMRA feature expansion packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct BinaryStateAddress(u8);
+
+impl BinaryStateAddress {
+    #[must_use]
+    pub const fn new(address: u8) -> Option<Self> {
+        if address <= 0x7F {
+            Some(Self(address))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+/// Validated two-bit RCN-218 automatic-logon group.
+///
+/// Values are 0=all, 1=loco, 2=accessory, 3=now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct LogonGroup(u8);
+
+impl LogonGroup {
+    #[must_use]
+    pub const fn new(group: u8) -> Option<Self> {
+        if group <= 0x03 {
+            Some(Self(group))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
 /// DCC packet types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DccPacket {
@@ -446,25 +393,49 @@ pub enum DccPacket {
     /// Different from Reset: BroadcastStop only stops motors, Reset resets all decoder state
     /// Encoding: 0x00 (broadcast) + 01100001 (fwd e-stop, C=0) + checksum
     BroadcastStop,
+    /// Broadcast feature expansion - binary state short packet.
+    ///
+    /// RailCom/DCC-A track search uses binary state address 2 with state=false
+    /// to invite app:search feedback during the following cutout.
+    BroadcastBinaryStateShort {
+        bin_addr: BinaryStateAddress,
+        state: bool,
+    },
+    /// RCN-218 automatic logon enable packet addressed to 254.
+    ///
+    /// `group` uses the RCN-218 two-bit value: 0=all, 1=loco, 2=accessory, 3=now.
+    LogonEnable {
+        group: LogonGroup,
+        command_station_id: u16,
+        session_id: u8,
+    },
+    /// RCN-218 automatic logon select packet addressed to 254.
+    LogonSelect {
+        manufacturer_id: u16,
+        decoder_id: u32,
+        subcommand: u8,
+    },
     /// Service Mode: Verify Byte (instruction 0b0111_01AA)
     /// Tests if CV equals a specific value (decoder ACKs if match)
     /// CV range: 1-256 (Direct Mode, single-byte addressing)
-    ServiceModeVerifyByte {
-        cv: u16,   // CV address 1-256
-        value: u8, // Expected value 0-255
-    },
+    ServiceModeVerifyByte { cv: ServiceModeCv, value: u8 },
     /// Service Mode: Write Byte (instruction 0b0111_11AA)
     /// Sets CV to a specific value (decoder ACKs on success)
     /// CV range: 1-256 (Direct Mode, single-byte addressing)
-    ServiceModeWriteByte {
-        cv: u16,   // CV address 1-256
-        value: u8, // Value to write 0-255
+    ServiceModeWriteByte { cv: ServiceModeCv, value: u8 },
+    /// Programming on the Main: Write Byte (Long Form CV Access).
+    PomWriteByte {
+        address: DccAddress,
+        cv: PomCv,
+        value: u8,
     },
+    /// Programming on the Main: Read Byte via Verify Byte + RailCom feedback.
+    PomReadByte { address: DccAddress, cv: PomCv },
 }
 
 /// Builder for DCC packet byte sequences with incremental XOR checksum.
 struct PacketBytes {
-    bytes: Vec<u8, 6>,
+    bytes: Vec<u8, 10>,
     checksum: u8,
 }
 
@@ -477,9 +448,9 @@ impl PacketBytes {
     }
 
     fn push(&mut self, byte: u8) {
-        self.bytes
-            .push(byte)
-            .expect("packet payload must fit in ten-byte buffer");
+        if self.bytes.push(byte).is_err() {
+            unreachable!("packet payload must fit in ten-byte buffer");
+        }
         self.checksum ^= byte;
     }
 
@@ -490,27 +461,58 @@ impl PacketBytes {
         }
     }
 
-    /// Appends the Dallas/Maxim CRC8 of the bytes pushed so far.
-    ///
-    /// Used by RCN-218 automatic-logon packets (`LogonSelect`), which carry a
-    /// CRC8 byte ahead of the usual trailing XOR checksum.
-    fn push_crc8(&mut self) {
-        let crc = DccPacket::crc8_dallas_maxim(&self.bytes);
-        self.push(crc);
-    }
-
     fn finalize(mut self) -> Vec<u8, 10> {
-        self.bytes
-            .push(self.checksum)
-            .expect("packet checksum must fit in ten-byte buffer");
+        if self.bytes.push(self.checksum).is_err() {
+            unreachable!("packet checksum must fit in ten-byte buffer");
+        }
         self.bytes
     }
 }
 
 impl DccPacket {
+    /// Address whose decoder may answer in the following RailCom cutout.
+    #[must_use]
+    pub const fn railcom_target_address(&self) -> Option<DccAddress> {
+        match *self {
+            DccPacket::Speed28 { address, .. }
+            | DccPacket::Speed128 { address, .. }
+            | DccPacket::FunctionGroup1 { address, .. }
+            | DccPacket::FunctionGroup2A { address, .. }
+            | DccPacket::FunctionGroup2B { address, .. }
+            | DccPacket::FunctionGroup3 { address, .. }
+            | DccPacket::FunctionGroup4 { address, .. }
+            | DccPacket::EmergencyStop { address, .. }
+            | DccPacket::PomWriteByte { address, .. }
+            | DccPacket::PomReadByte { address, .. } => Some(address),
+            DccPacket::Idle
+            | DccPacket::Reset
+            | DccPacket::BroadcastStop
+            | DccPacket::BroadcastBinaryStateShort { .. }
+            | DccPacket::LogonEnable { .. }
+            | DccPacket::LogonSelect { .. }
+            | DccPacket::ServiceModeVerifyByte { .. }
+            | DccPacket::ServiceModeWriteByte { .. } => None,
+        }
+    }
+
     #[inline]
     fn bool_mask(value: bool, mask: u8) -> u8 {
         if value { mask } else { 0 }
+    }
+
+    fn crc8_dallas_maxim(bytes: &[u8]) -> u8 {
+        let mut crc = 0u8;
+        for &byte in bytes {
+            crc ^= byte;
+            for _ in 0..8 {
+                crc = if crc & 0x01 != 0 {
+                    (crc >> 1) ^ 0x8C
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        crc
     }
 
     fn encode_speed28_instruction(
@@ -588,13 +590,13 @@ impl DccPacket {
         0b0100_0001 | direction_bit
     }
 
-    fn encode_service_mode_cv(cv: u16, op_prefix: u8) -> Result<(u8, u8), PacketEncodeError> {
-        if !(1..=256).contains(&cv) {
-            return Err(PacketEncodeError::InvalidCvAddress { cv });
-        }
-        let cv_high = op_prefix | (((cv >> 8) & 0b11) as u8);
-        let cv_low = (cv & 0xFF) as u8;
-        Ok((cv_high, cv_low))
+    /// Encodes a validated 1-based CV number into the two on-wire bytes used by
+    /// Direct Mode (S-9.2.2) and POM (S-9.2.1) packets.
+    fn encode_cv_addr(cv: u16, op_prefix: u8) -> (u8, u8) {
+        let wire_cv = cv - 1;
+        let cv_high = op_prefix | (((wire_cv >> 8) & 0b11) as u8);
+        let cv_low = (wire_cv & 0xFF) as u8;
+        (cv_high, cv_low)
     }
 
     /// Helper function for tests - create an idle packet
@@ -635,9 +637,10 @@ impl DccPacket {
     /// followed by the error detection checksum byte.
     ///
     /// # Errors
-    /// Returns [`PacketEncodeError::InvalidCvAddress`] when service-mode CV is outside 1..=256.
-    /// Speed ranges are guaranteed valid by [`NmraSpeed28`] and [`NmraSpeed128`] newtypes.
-    pub fn to_bytes(&self) -> Result<Vec<u8, 6>, PacketEncodeError> {
+    /// Returns [`PacketEncodeError::InvalidSpeed28`] only if the internal
+    /// Speed28 encoder receives an impossible value. Public speed and CV ranges
+    /// are guaranteed by newtypes.
+    pub fn to_bytes(&self) -> Result<Vec<u8, 10>, PacketEncodeError> {
         let mut packet = PacketBytes::new();
 
         match *self {
@@ -764,16 +767,31 @@ impl DccPacket {
                 decoder_id,
                 subcommand,
             } => {
+                let mut bytes = Vec::<u8, 10>::new();
                 let logon_instruction = 0xD0 | ((manufacturer_id >> 8) as u8 & 0x0F);
-                packet.push(254);
-                packet.push(logon_instruction);
-                packet.push((manufacturer_id & 0xFF) as u8);
-                packet.push(((decoder_id >> 24) & 0xFF) as u8);
-                packet.push(((decoder_id >> 16) & 0xFF) as u8);
-                packet.push(((decoder_id >> 8) & 0xFF) as u8);
-                packet.push((decoder_id & 0xFF) as u8);
-                packet.push(subcommand);
-                packet.push_crc8();
+                let body = [
+                    254,
+                    logon_instruction,
+                    (manufacturer_id & 0xFF) as u8,
+                    ((decoder_id >> 24) & 0xFF) as u8,
+                    ((decoder_id >> 16) & 0xFF) as u8,
+                    ((decoder_id >> 8) & 0xFF) as u8,
+                    (decoder_id & 0xFF) as u8,
+                    subcommand,
+                ];
+                for byte in body {
+                    bytes
+                        .push(byte)
+                        .expect("logon select body must fit in packet buffer");
+                }
+                bytes
+                    .push(Self::crc8_dallas_maxim(&body))
+                    .expect("logon select crc must fit in packet buffer");
+                let checksum = bytes.iter().fold(0u8, |acc, byte| acc ^ byte);
+                bytes
+                    .push(checksum)
+                    .expect("logon select checksum must fit in packet buffer");
+                return Ok(bytes);
             }
             DccPacket::ServiceModeVerifyByte { cv, value } => {
                 // Service Mode Verify Byte per NMRA S-9.2.2
@@ -784,7 +802,7 @@ impl DccPacket {
                 //
                 // For CV 1-256: CC=00 (bits 9-8), AA AAAAAAAA = bits 7-0
                 // Instruction byte: 0b0111_01AA (bits 3-2 = 01 for Verify)
-                let (cv_high, cv_low) = Self::encode_service_mode_cv(cv, 0b0111_0100)?;
+                let (cv_high, cv_low) = Self::encode_cv_addr(cv.value(), 0b0111_0100);
                 packet.push(cv_high);
                 packet.push(cv_low);
                 packet.push(value);
@@ -793,10 +811,24 @@ impl DccPacket {
                 // Service Mode Write Byte per NMRA S-9.2.2
                 // Packet format: same as Verify, but instruction byte bits 3-2 = 11 (Write)
                 // Instruction byte: 0b0111_11AA (bits 3-2 = 11 for Write)
-                let (cv_high, cv_low) = Self::encode_service_mode_cv(cv, 0b0111_1100)?;
+                let (cv_high, cv_low) = Self::encode_cv_addr(cv.value(), 0b0111_1100);
                 packet.push(cv_high);
                 packet.push(cv_low);
                 packet.push(value);
+            }
+            DccPacket::PomWriteByte { address, cv, value } => {
+                let (cv_high, cv_low) = Self::encode_cv_addr(cv.value(), 0b1110_1100);
+                packet.push_address(address);
+                packet.push(cv_high);
+                packet.push(cv_low);
+                packet.push(value);
+            }
+            DccPacket::PomReadByte { address, cv } => {
+                let (cv_high, cv_low) = Self::encode_cv_addr(cv.value(), 0b1110_0100);
+                packet.push_address(address);
+                packet.push(cv_high);
+                packet.push(cv_low);
+                packet.push(0x00);
             }
         }
 
@@ -825,19 +857,6 @@ mod tests {
     }
 
     #[test]
-    fn test_from_magnitude_picks_short_or_long_by_range() {
-        assert_eq!(DccAddress::from_magnitude(0), None);
-        assert_eq!(DccAddress::from_magnitude(3), DccAddress::new_short(3));
-        assert_eq!(DccAddress::from_magnitude(127), DccAddress::new_short(127));
-        assert_eq!(DccAddress::from_magnitude(128), DccAddress::new_long(128));
-        assert_eq!(
-            DccAddress::from_magnitude(10_239),
-            DccAddress::new_long(10_239)
-        );
-        assert_eq!(DccAddress::from_magnitude(10_240), None);
-    }
-
-    #[test]
     fn test_packed_dcc_address_roundtrip() {
         let short = DccAddress::new_short(3).unwrap();
         let long = DccAddress::new_long(1000).unwrap();
@@ -859,29 +878,6 @@ mod tests {
         assert_eq!(PackedDccAddress::from_raw(128).address(), None);
         assert_eq!(PackedDccAddress::from_raw(0x8000 | 127).address(), None);
         assert_eq!(PackedDccAddress::from_raw(0x8000 | 10_240).address(), None);
-    }
-
-    #[test]
-    fn test_packed_address_flags_roundtrip() {
-        let short = DccAddress::new_short(3).unwrap();
-
-        let packed = PackedAddressFlags::new(Some(short))
-            .with_flag(0, true)
-            .with_flag(1, false);
-
-        assert_eq!(packed.address(), Some(short));
-        assert!(packed.flag(0));
-        assert!(!packed.flag(1));
-        assert_eq!(PackedAddressFlags::from_raw(packed.raw()), packed);
-    }
-
-    #[test]
-    fn test_packed_address_flags_no_flags_set_by_default() {
-        let packed = PackedAddressFlags::new(None);
-
-        assert_eq!(packed.address(), None);
-        assert!(!packed.flag(0));
-        assert!(!packed.flag(1));
     }
 
     #[test]
@@ -1048,6 +1044,67 @@ mod tests {
         assert_eq!(bytes[0], 0x00);
         assert_eq!(bytes[1], 0b0110_0001);
         assert_eq!(bytes[2], 0b0110_0001);
+    }
+
+    #[test]
+    fn test_broadcast_binary_state_short_encoding() {
+        let packet = DccPacket::BroadcastBinaryStateShort {
+            bin_addr: binary_state_addr(2),
+            state: false,
+        };
+        let bytes = packet.to_bytes().unwrap();
+
+        assert_eq!(bytes.as_slice(), &[0x00, 0xDD, 0x02, 0xDF]);
+    }
+
+    #[test]
+    fn test_binary_state_address_validation() {
+        assert!(BinaryStateAddress::new(0).is_some());
+        assert!(BinaryStateAddress::new(127).is_some());
+        assert!(BinaryStateAddress::new(128).is_none());
+    }
+
+    #[test]
+    fn test_logon_enable_now_encoding() {
+        let packet = DccPacket::LogonEnable {
+            group: logon_group(3),
+            command_station_id: 0x0DCC,
+            session_id: 0x42,
+        };
+        let bytes = packet.to_bytes().unwrap();
+
+        assert_eq!(bytes.as_slice(), &[254, 0xFF, 0x0D, 0xCC, 0x42, 0x82]);
+    }
+
+    #[test]
+    fn test_logon_group_validation() {
+        assert!(LogonGroup::new(0).is_some());
+        assert!(LogonGroup::new(3).is_some());
+        assert!(LogonGroup::new(4).is_none());
+    }
+
+    #[test]
+    fn test_logon_select_encoding_uses_dallas_maxim_crc() {
+        let packet = DccPacket::LogonSelect {
+            manufacturer_id: 0x000D,
+            decoder_id: 0x1234_5678,
+            subcommand: 0xFF,
+        };
+        let bytes = packet.to_bytes().unwrap();
+
+        assert_eq!(
+            bytes.as_slice(),
+            &[0xFE, 0xD0, 0x0D, 0x12, 0x34, 0x56, 0x78, 0xFF, 0x99, 0x4D]
+        );
+    }
+
+    #[test]
+    fn test_dallas_maxim_crc_matches_zimo_reference_vector() {
+        let data = [
+            0x0B, 0x0A, 0x00, 0x00, 0x8E, 0x40, 0x00, 0x0D, 0x67, 0x00, 0x01, 0x00,
+        ];
+
+        assert_eq!(DccPacket::crc8_dallas_maxim(&data), 0x4C);
     }
 
     #[test]
@@ -1228,7 +1285,10 @@ mod tests {
     #[test]
     fn test_service_mode_verify_byte_encoding() {
         // Test CV1 verify value 3 (common decoder address verification)
-        let packet = DccPacket::ServiceModeVerifyByte { cv: 1, value: 3 };
+        let packet = DccPacket::ServiceModeVerifyByte {
+            cv: service_cv(1),
+            value: 3,
+        };
         let bytes = packet.to_bytes().unwrap();
 
         // Expected: [0b0111_0100, 0x01, 0x03, checksum]
@@ -1240,13 +1300,16 @@ mod tests {
         assert_eq!(bytes[0], 0b0111_0100);
         assert_eq!(bytes[1], 0x01);
         assert_eq!(bytes[2], 0x03);
-        assert_eq!(bytes[3], 0b0111_0100 ^ 0x01 ^ 0x03);
+        assert_eq!(bytes[3], 0b0111_0100 ^ 0x03);
     }
 
     #[test]
     fn test_service_mode_write_byte_encoding() {
         // Test CV29 write value 6 (common configuration CV)
-        let packet = DccPacket::ServiceModeWriteByte { cv: 29, value: 6 };
+        let packet = DccPacket::ServiceModeWriteByte {
+            cv: service_cv(29),
+            value: 6,
+        };
         let bytes = packet.to_bytes().unwrap();
 
         // Expected: [0b0111_1100, 0x1D, 0x06, checksum]
@@ -1263,8 +1326,14 @@ mod tests {
 
     #[test]
     fn test_service_mode_verify_vs_write_instruction_bits() {
-        let verify = DccPacket::ServiceModeVerifyByte { cv: 1, value: 0 };
-        let write = DccPacket::ServiceModeWriteByte { cv: 1, value: 0 };
+        let verify = DccPacket::ServiceModeVerifyByte {
+            cv: service_cv(1),
+            value: 0,
+        };
+        let write = DccPacket::ServiceModeWriteByte {
+            cv: service_cv(1),
+            value: 0,
+        };
 
         let verify_bytes = verify.to_bytes().unwrap();
         let write_bytes = write.to_bytes().unwrap();
@@ -1280,8 +1349,14 @@ mod tests {
     #[test]
     fn test_service_mode_cv_address_range() {
         // Test boundary cases for CV 1-256
-        let cv1 = DccPacket::ServiceModeVerifyByte { cv: 1, value: 0 };
-        let cv256 = DccPacket::ServiceModeVerifyByte { cv: 256, value: 0 };
+        let cv1 = DccPacket::ServiceModeVerifyByte {
+            cv: service_cv(1),
+            value: 0,
+        };
+        let cv256 = DccPacket::ServiceModeVerifyByte {
+            cv: service_cv(256),
+            value: 0,
+        };
 
         let bytes1 = cv1.to_bytes().unwrap();
         let bytes256 = cv256.to_bytes().unwrap();
@@ -1290,30 +1365,73 @@ mod tests {
         assert_eq!(bytes1[0], 0b0111_0100);
         assert_eq!(bytes1[1], 1);
 
-        // CV256: high byte = 0b0111_0101, low byte = 0x00
-        assert_eq!(bytes256[0], 0b0111_0101);
-        assert_eq!(bytes256[1], 0);
+        // CV256: high byte = 0b0111_0100, low byte = 0xFF
+        assert_eq!(bytes256[0], 0b0111_0100);
+        assert_eq!(bytes256[1], 0xFF);
+    }
+
+    #[test]
+    fn test_pom_write_byte_encoding_short_address() {
+        let packet = DccPacket::PomWriteByte {
+            address: DccAddress::new_short(3).unwrap(),
+            cv: pom_cv(29),
+            value: 6,
+        };
+        let bytes = packet.to_bytes().unwrap();
+
+        assert_eq!(bytes, [0x03, 0xEC, 0x1C, 0x06, 0xF5]);
+    }
+
+    #[test]
+    fn test_pom_read_byte_encoding_long_address() {
+        let packet = DccPacket::PomReadByte {
+            address: DccAddress::new_long(1000).unwrap(),
+            cv: pom_cv(1),
+        };
+        let bytes = packet.to_bytes().unwrap();
+
+        assert_eq!(bytes, [0xC3, 0xE8, 0xE4, 0x00, 0x00, 0xCF]);
+    }
+
+    #[test]
+    fn test_pom_cv_address_range() {
+        let cv1 = DccPacket::PomReadByte {
+            address: DccAddress::new_short(3).unwrap(),
+            cv: pom_cv(1),
+        };
+        let cv1024 = DccPacket::PomReadByte {
+            address: DccAddress::new_short(3).unwrap(),
+            cv: pom_cv(1024),
+        };
+
+        let bytes1 = cv1.to_bytes().unwrap();
+        let bytes1024 = cv1024.to_bytes().unwrap();
+
+        assert_eq!(bytes1[1], 0b1110_0100);
+        assert_eq!(bytes1[2], 0x00);
+        assert_eq!(bytes1024[1], 0b1110_0111);
+        assert_eq!(bytes1024[2], 0xFF);
+    }
+
+    #[test]
+    fn test_pom_cv_out_of_range_rejected() {
+        assert!(PomCv::new(0).is_none());
+        assert!(PomCv::new(1025).is_none());
     }
 
     #[test]
     fn test_service_mode_cv_out_of_range_rejected() {
-        let cv0 = DccPacket::ServiceModeVerifyByte { cv: 0, value: 0 };
-        assert!(matches!(
-            cv0.to_bytes(),
-            Err(PacketEncodeError::InvalidCvAddress { cv: 0 })
-        ));
-
-        let cv257 = DccPacket::ServiceModeWriteByte { cv: 257, value: 0 };
-        assert!(matches!(
-            cv257.to_bytes(),
-            Err(PacketEncodeError::InvalidCvAddress { cv: 257 })
-        ));
+        assert!(ServiceModeCv::new(0).is_none());
+        assert!(ServiceModeCv::new(257).is_none());
     }
 
     #[test]
     fn test_service_mode_checksum_calculation() {
         // Verify checksum is XOR of all data bytes
-        let packet = DccPacket::ServiceModeWriteByte { cv: 17, value: 192 };
+        let packet = DccPacket::ServiceModeWriteByte {
+            cv: service_cv(17),
+            value: 192,
+        };
         let bytes = packet.to_bytes().unwrap();
 
         let expected_checksum = bytes[0] ^ bytes[1] ^ bytes[2];

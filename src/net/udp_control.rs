@@ -28,9 +28,7 @@ use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEv
 
     use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
     use crate::dcc::cv::drain_channel;
-    use crate::dcc::{
-        FunctionIndex, LogicalSpeed, PomCv, PomRequest, PomResponse, SchedulerCommand,
-    };
+    use crate::dcc::{FunctionIndex, PomCv, PomRequest, PomResponse, SchedulerCommand};
     use crate::display::DisplayEvent;
     use crate::fault_manager::FaultEvent;
     const WIFI_SSID: &str = env!("WIFI_SSID");
@@ -41,8 +39,14 @@ use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEv
     use crate::net::{LocoSlots, LocoState, loco_commands_allowed, loco_is_moving};
     use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEvent};
 
-const Z21_PORT: u16 = 21105;
-const DECEL_STEP_MS: u64 = 500;
+    const Z21_PORT: u16 = 21105;
+    const DECEL_STEP_MS: u64 = 500;
+    // Covers the single bounded POM actor attempt: TX-start waits + the
+    // RailCom app:pom attribution window, with margin for task scheduling.
+    const POM_CLIENT_TIMEOUT: Duration = Duration::from_millis(2_700);
+    /// Arbitrary device serial reported to Z21 apps (no real meaning).
+    const DEFAULT_Z21_SERIAL_NUMBER: u32 = 0xC0FFEE01;
+    static NEXT_POM_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
 // Static buffers — avoids heap allocation in the hot UDP path.
 static RX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
@@ -164,19 +168,31 @@ pub async fn net_task(
         .send(crate::system_status::BootReadyEvent::Net)
         .await;
 
-    let mut loco_slots: LocoSlots = [None; 12];
-    let mut client_endpoint: Option<embassy_net::IpEndpoint> = None;
-    let mut last_rx_ms: u64 = 0;
-    let mut last_decel_ms: u64 = 0;
-    let mut all_stopped = false;
-    let mut status_model = StatusModel::new();
-    let next_pom_request_id = Cell::new(1u32);
+    impl NetInitError {
+        pub(crate) const fn as_str(self) -> &'static str {
+            match self {
+                Self::EspRadioInit => "esp-radio init failed",
+                Self::WifiInit => "WiFi init failed",
+                Self::WifiSetConfig => "WiFi set_config failed",
+                Self::WifiStart => "WiFi start failed",
+                Self::WifiRunnerSpawn => "failed to spawn wifi_runner_task",
+                Self::ConnectionSpawn => "failed to spawn connection_task",
+                Self::UdpBind => "UDP bind on Z21 port failed",
+            }
+        }
+    }
 
-    let mut recv_buf = [0u8; 256];
-    let mut send_buf = [0u8; 64];
+    impl core::fmt::Display for NetInitError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str((*self).as_str())
+        }
+    }
 
-    loop {
-        let now_ms = Instant::now().as_millis();
+    /// Runs the embassy-net stack driver — dedicated Embassy task per official example.
+    #[embassy_executor::task]
+    async fn wifi_runner_task(mut runner: embassy_net::Runner<'static, WifiDevice<'static>>) {
+        runner.run().await
+    }
 
     /// Handles WiFi connect and automatic reconnect.
     #[embassy_executor::task]
@@ -585,24 +601,155 @@ pub async fn net_task(
                             "loco info addr={} created DCC refresh slot",
                             address.value()
                         );
-                        if let Some(speed) = LogicalSpeed::new(state.speed, state.format) {
-                            ctx.scheduler_sender
-                                .send(SchedulerCommand::SetSpeed {
-                                    address,
-                                    speed,
-                                    direction: state.direction,
-                                    format: state.format,
-                                })
-                                .await;
-                        } else {
-                            warn!(
-                                "loco info addr={} speed={} invalid for format={:?}, refresh slot not seeded",
-                                address.value(),
-                                state.speed,
-                                state.format
-                            );
-                        }
+                        ctx.scheduler_sender
+                            .send(SchedulerCommand::SetSpeed {
+                                address,
+                                speed: state.speed,
+                                direction: state.direction,
+                                format: state.format,
+                            })
+                            .await;
                     }
+                    len
+                } else {
+                    z21_proto::encode_unknown_command(out)
+                }
+            }
+            Z21Command::SetLocoDrive {
+                address,
+                speed,
+                direction,
+                format,
+            } => {
+                handle_set_loco_drive(loco_slots, out, ctx, address, speed, direction, format).await
+            }
+            Z21Command::SetLocoFunction {
+                address,
+                function,
+                action,
+            } => handle_set_loco_function(loco_slots, out, ctx, address, function, action).await,
+            Z21Command::CvPomWriteByte { address, cv, value } => {
+                handle_cv_pom_write(out, ctx, address, cv, value).await
+            }
+            Z21Command::CvPomReadByte { address, cv } => {
+                handle_cv_pom_read(loco_slots, out, ctx, address, cv).await
+            }
+            // Turnout info — no accessory decoder support; reply with state=unknown to keep
+            // the app in sync and suppress repeated warn logs.
+            Z21Command::GetTurnoutInfo { address } => z21_proto::encode_turnout_info(address, out),
+            Z21Command::RailcomGetData {
+                request_type,
+                address,
+            } => encode_railcom_getdata_response(request_type, address, out),
+            Z21Command::LoconetDetector {
+                request_type: _,
+                report_address: _,
+            } => 0,
+            Z21Command::Unknown => {
+                log_unknown_command(raw_frame);
+                0
+            }
+        }
+    }
+
+    fn railcom_sighting_for_address(
+        address: crate::dcc::DccAddress,
+    ) -> Option<crate::railcom::loco_tracker::RailcomLocoSighting> {
+        let stats = crate::railcom::loco_tracker::railcom_loco_tracker_stats();
+        stats
+            .recent_sightings
+            .iter()
+            .flatten()
+            .find(|sighting| sighting.address == address)
+            .copied()
+    }
+
+    fn latest_railcom_sighting() -> Option<crate::railcom::loco_tracker::RailcomLocoSighting> {
+        let stats = crate::railcom::loco_tracker::railcom_loco_tracker_stats();
+        stats
+            .recent_sightings
+            .iter()
+            .flatten()
+            .max_by_key(|sighting| sighting.packet_sequence)
+            .copied()
+    }
+
+    fn railcom_request_address(raw_address: u16) -> Option<crate::dcc::DccAddress> {
+        if raw_address == 0 {
+            return None;
+        }
+        if raw_address <= 127 {
+            crate::dcc::DccAddress::new_short(raw_address as u8)
+        } else {
+            crate::dcc::DccAddress::new_long(raw_address)
+        }
+    }
+
+    fn encode_railcom_getdata_response(
+        request_type: u8,
+        raw_address: u16,
+        out: &mut [u8],
+    ) -> usize {
+        if request_type != 0x01 {
+            warn!("RailCom GETDATA unsupported type={}", request_type);
+            return 0;
+        }
+
+        let sighting = match railcom_request_address(raw_address) {
+            Some(address) => railcom_sighting_for_address(address),
+            None => latest_railcom_sighting(),
+        };
+
+        if let Some(sighting) = sighting {
+            z21_proto::encode_railcom_data(sighting.address, sighting.seen_count, 0, out)
+        } else {
+            0
+        }
+    }
+
+    fn encode_rejected_loco_info(
+        loco_slots: &LocoSlots,
+        out: &mut [u8],
+        address: crate::dcc::DccAddress,
+    ) -> usize {
+        if let Some(state) = z21_proto::find_slot(loco_slots, address) {
+            return z21_proto::encode_loco_info(state, out);
+        }
+
+        let state = LocoState {
+            address,
+            speed: 0,
+            direction: crate::dcc::Direction::Forward,
+            format: crate::dcc::SpeedFormat::Speed128,
+            functions: 0,
+        };
+        z21_proto::encode_loco_info(&state, out)
+    }
+
+    async fn request_pom(
+        pom_request_sender: &Sender<'static, CriticalSectionRawMutex, PomRequest, 1>,
+        pom_response_receiver: &Receiver<'static, CriticalSectionRawMutex, PomResponse, 1>,
+        build_request: impl FnOnce(u32) -> PomRequest,
+    ) -> Option<PomResponse> {
+        let request_id = NEXT_POM_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        drain_channel(pom_response_receiver);
+
+        if pom_request_sender
+            .try_send(build_request(request_id))
+            .is_err()
+        {
+            return None;
+        }
+
+        let deadline = Instant::now() + POM_CLIENT_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let response = with_timeout(remaining, pom_response_receiver.receive())
+                .await
+                .ok()?;
+            match response {
+                PomResponse::Ack {
+                    request_id: response_request_id,
                 }
             }
             Either3::First(Err(_)) => {

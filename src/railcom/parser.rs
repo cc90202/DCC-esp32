@@ -204,12 +204,8 @@ fn decode_channel2_symbol(code: u8, window_len: usize) -> DecodedSymbol {
     decode_4_of_8(code)
 }
 
-/// Decodes a raw 4/8-coded byte window into symbols, capped at `N` symbols.
-///
-/// `N` is the only difference between the CH1 (2 symbols) and CH2 (6 symbols)
-/// windows; the decode loop itself is shared via [`items_from_symbols`].
-fn decode_symbols<const N: usize>(raw_bytes: &[u8]) -> Result<Vec<DecodedSymbol, N>, ParseError> {
-    let mut symbols = Vec::<DecodedSymbol, N>::new();
+pub fn parse_channel2(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
+    let mut symbols = Vec::<DecodedSymbol, 6>::new();
     let window_len = raw_bytes.len();
     for &byte in raw_bytes {
         let decoded = decode_channel2_symbol(byte, window_len);
@@ -224,8 +220,6 @@ fn decode_symbols<const N: usize>(raw_bytes: &[u8]) -> Result<Vec<DecodedSymbol,
     Ok(symbols)
 }
 
-/// Turns already-decoded symbols into RailCom items (ACK/NACK/datagrams).
-fn items_from_symbols(symbols: &[DecodedSymbol]) -> Result<RailcomParseResult, ParseError> {
     let mut items = Vec::<RailcomItem, 6>::new();
     let mut index = 0usize;
     while index < symbols.len() {
@@ -295,12 +289,87 @@ fn items_from_symbols(symbols: &[DecodedSymbol]) -> Result<RailcomParseResult, P
     })
 }
 
-pub fn parse_channel2(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
-    items_from_symbols(&decode_symbols::<6>(raw_bytes)?)
-}
-
 pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
-    items_from_symbols(&decode_symbols::<2>(raw_bytes)?)
+    let mut symbols = Vec::<DecodedSymbol, 2>::new();
+    let window_len = raw_bytes.len();
+    for &byte in raw_bytes {
+        let decoded = decode_channel2_symbol(byte, window_len);
+        match decoded {
+            DecodedSymbol::Invalid(code) => return Err(ParseError::Invalid4Of8Code(code)),
+            DecodedSymbol::Reserved(code) => return Err(ParseError::Reserved4Of8Code(code)),
+            DecodedSymbol::Ack | DecodedSymbol::Nack | DecodedSymbol::Data6(_) => symbols
+                .push(decoded)
+                .map_err(|_| ParseError::TooManyItems)?,
+        }
+    }
+
+    let mut items = Vec::<RailcomItem, 6>::new();
+    let mut index = 0usize;
+    while index < symbols.len() {
+        match symbols[index] {
+            DecodedSymbol::Ack => {
+                items
+                    .push(RailcomItem::Ack)
+                    .map_err(|_| ParseError::TooManyItems)?;
+                index += 1;
+            }
+            DecodedSymbol::Nack => {
+                items
+                    .push(RailcomItem::Nack)
+                    .map_err(|_| ParseError::TooManyItems)?;
+                index += 1;
+            }
+            DecodedSymbol::Data6(first) => {
+                let id = first >> 2;
+                let symbol_count = match datagram_symbol_count(id) {
+                    Ok(symbol_count) => symbol_count,
+                    Err(ParseError::UnsupportedDatagramId(id)) => {
+                        return Ok(RailcomParseResult {
+                            items,
+                            status: RailcomParseStatus::PartialUnsupportedDatagram(id),
+                        });
+                    }
+                    Err(err) => return Err(err),
+                };
+                let available = symbols.len() - index;
+                if available < symbol_count {
+                    return Err(ParseError::TruncatedDatagram {
+                        id,
+                        needed_symbols: symbol_count,
+                        available_symbols: available,
+                    });
+                }
+
+                let mut useful_bits: u64 = 0;
+                for symbol in &symbols[index..index + symbol_count] {
+                    let DecodedSymbol::Data6(value) = *symbol else {
+                        return Err(ParseError::TruncatedDatagram {
+                            id,
+                            needed_symbols: symbol_count,
+                            available_symbols: available,
+                        });
+                    };
+                    useful_bits = (useful_bits << 6) | u64::from(value);
+                }
+
+                let payload_bits = symbol_count * 6 - 4;
+                let payload_mask = (1u64 << payload_bits) - 1;
+                let payload = useful_bits & payload_mask;
+                let datagram = parse_datagram(id, payload, payload_bits as u8)?;
+                items
+                    .push(RailcomItem::Datagram(datagram))
+                    .map_err(|_| ParseError::TooManyItems)?;
+                index += symbol_count;
+            }
+            DecodedSymbol::Reserved(code) => return Err(ParseError::Reserved4Of8Code(code)),
+            DecodedSymbol::Invalid(code) => return Err(ParseError::Invalid4Of8Code(code)),
+        }
+    }
+
+    Ok(RailcomParseResult {
+        items,
+        status: RailcomParseStatus::Complete,
+    })
 }
 
 pub fn parse_logon_id15(
@@ -625,15 +694,14 @@ mod tests {
     fn test_parse_logon_id15_split_across_channels() {
         let payload = (u64::from(0x0D_u16) << 32) | 0x12_34_56_78;
         let raw = encode_48_bit_for_test(15, payload);
-        let parsed =
-            parse_logon_response_48(&raw[..2], &raw[2..]).expect("id15 parse must succeed");
+        let parsed = parse_logon_id15(&raw[..2], &raw[2..]).expect("id15 parse must succeed");
 
         assert_eq!(
             parsed,
-            RailcomLogonResponse::DecoderId(RailcomLogonId {
+            RailcomLogonId {
                 manufacturer_id: 0x0D,
                 decoder_id: 0x12_34_56_78,
-            })
+            }
         );
     }
 

@@ -10,56 +10,46 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Sender;
 
-use crate::dcc::{DccAddress, PackedAddressFlags, PomRailcomResult, pom_result_from_railcom_items};
+use crate::dcc::{DccAddress, PackedDccAddress, PomRailcomResult, pom_result_from_railcom_items};
 use crate::railcom::parser::{RailcomDatagram, RailcomItem};
-use crate::railcom::pipeline::{PacketSequence, RailcomChannel};
+use crate::railcom::pipeline::RailcomChannel;
 use crate::track_output::{CutoutRuntimeEvent, RailcomPacketMetadata};
 
 static PENDING_POM_RAILCOM_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static PENDING_POM_RAILCOM_METADATA: AtomicU32 = AtomicU32::new(0);
 static PENDING_POM_RAILCOM_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-// How many packet boundaries a pending POM request stays eligible for a
-// matching RailCom CH2 answer before it is treated as abandoned.
-//
-// TODO(tuning): no recorded derivation for `64`. Observable constraint: a POM
-// write/read round-trip must complete (request -> DCC packet -> cutout ->
-// decoder CH2 answer) well inside a handful of packet cycles; 64 packets is a
-// generous upper bound (at ~20 packets/s that is ~3.2 s) chosen to survive
-// scheduler jitter/retries without leaking a pending flag across unrelated
-// POM sessions indefinitely.
 const PENDING_POM_SEQUENCE_WINDOW: u32 = 64;
 
-/// Bit-packed pending-POM metadata: `PackedAddressFlags` carries the target
-/// address plus one flag (`read_requested`). See `PackedAddressFlags` for the
-/// shared layout also used by `track_output::PackedRailcomPacketMetadata`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PendingPomRailcomMetadata(PackedAddressFlags);
+struct PendingPomRailcomMetadata(u32);
 
 impl PendingPomRailcomMetadata {
-    const READ_REQUESTED_BIT: u32 = 0;
+    const ADDRESS_MASK: u32 = 0xffff;
+    const READ_REQUESTED: u32 = 1 << 16;
 
     fn new(target_address: Option<DccAddress>, read_requested: bool) -> Self {
-        Self(
-            PackedAddressFlags::new(target_address)
-                .with_flag(Self::READ_REQUESTED_BIT, read_requested),
-        )
+        let mut raw = u32::from(PackedDccAddress::from_address(target_address).raw());
+        if read_requested {
+            raw |= Self::READ_REQUESTED;
+        }
+        Self(raw)
     }
 
     const fn from_raw(raw: u32) -> Self {
-        Self(PackedAddressFlags::from_raw(raw))
+        Self(raw)
     }
 
     const fn raw(self) -> u32 {
-        self.0.raw()
+        self.0
     }
 
     fn target_address(self) -> Option<DccAddress> {
-        self.0.address()
+        PackedDccAddress::from_raw((self.0 & Self::ADDRESS_MASK) as u16).address()
     }
 
     const fn read_requested(self) -> bool {
-        self.0.flag(Self::READ_REQUESTED_BIT)
+        (self.0 & Self::READ_REQUESTED) != 0
     }
 }
 
@@ -100,9 +90,7 @@ fn pending_pom_read_requested() -> bool {
 fn clear_pending_pom_railcom_before(packet_sequence: u32) {
     if PENDING_POM_RAILCOM_ACTIVE.load(Ordering::Acquire) {
         let pending = PENDING_POM_RAILCOM_PACKET_SEQUENCE.load(Ordering::Acquire);
-        if !PacketSequence::new(packet_sequence)
-            .is_within(PacketSequence::new(pending), PENDING_POM_SEQUENCE_WINDOW)
-        {
+        if packet_sequence.wrapping_sub(pending) > PENDING_POM_SEQUENCE_WINDOW {
             PENDING_POM_RAILCOM_ACTIVE.store(false, Ordering::Release);
         }
     }
@@ -113,8 +101,8 @@ fn pending_pom_railcom_accepts(packet_sequence: u32, target_address: Option<DccA
         return false;
     }
     let pending = PENDING_POM_RAILCOM_PACKET_SEQUENCE.load(Ordering::Acquire);
-    PacketSequence::new(packet_sequence)
-        .is_within(PacketSequence::new(pending), PENDING_POM_SEQUENCE_WINDOW)
+    let age = packet_sequence.wrapping_sub(pending);
+    age <= PENDING_POM_SEQUENCE_WINDOW
         && (packet_sequence == pending
             || (target_address.is_some() && target_address == pending_pom_target_address()))
 }

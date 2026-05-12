@@ -4,7 +4,6 @@ use critical_section::Mutex;
 
 use crate::dcc::DccAddress;
 use crate::railcom::parser::{RailcomDatagram, RailcomItem};
-use crate::railcom::pipeline::PacketSequence;
 
 // Number of most-recently-identified locos kept for display/diagnostics.
 //
@@ -13,6 +12,7 @@ use crate::railcom::pipeline::PacketSequence;
 // roster — a handful of entries is enough to show recent activity on a
 // hobby-scale layout without growing the stack-resident stats struct.
 const RECENT_SIGHTING_CAPACITY: usize = 4;
+const PENDING_ADR_HIGH_MAX_PACKET_GAP: u32 = 8;
 
 // Maximum packet-boundary gap allowed between an ADR-HIGH fragment (channel 1)
 // and the ADR-LOW fragment that completes a long-address identification.
@@ -119,13 +119,14 @@ impl TrackerState {
 
     fn take_recent_pending_high(&mut self, packet_sequence: u32) -> Option<u8> {
         let pending = self.pending_adr_high?;
-        self.pending_adr_high = None;
-        PacketSequence::new(packet_sequence)
-            .is_within(
-                PacketSequence::new(pending.packet_sequence),
-                PENDING_ADR_HIGH_MAX_PACKET_GAP,
-            )
-            .then_some(pending.value)
+        let age = packet_sequence.wrapping_sub(pending.packet_sequence);
+        if age <= PENDING_ADR_HIGH_MAX_PACKET_GAP {
+            self.pending_adr_high = None;
+            Some(pending.value)
+        } else {
+            self.pending_adr_high = None;
+            None
+        }
     }
 }
 
@@ -181,6 +182,16 @@ fn address_fragment_matches_target(
             }
         }
         (None, None) => None,
+    }
+}
+
+#[must_use]
+pub fn identify_loco_from_items(items: &[RailcomItem]) -> Option<DccAddress> {
+    match classify_address_candidate(items) {
+        AddressCandidate::Identified(address) => Some(address),
+        AddressCandidate::None
+        | AddressCandidate::PresentButInvalid
+        | AddressCandidate::PendingHigh(_) => None,
     }
 }
 

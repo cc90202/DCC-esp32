@@ -4,7 +4,7 @@ use crate::dcc::packet::{DccAddress, DccPacket, Direction};
 use crate::dcc::speed28::logical_to_nmra_packet_speed;
 
 use super::railcom_policy::PacketClass;
-use super::{FunctionIndex, LogicalSpeed, MAX_FUNCTION_INDEX, SchedulerCommand, SpeedFormat};
+use super::{FunctionIndex, MAX_FUNCTION_INDEX, SchedulerCommand, SpeedFormat};
 
 /// Maximum number of active locomotive slots.
 const MAX_SLOTS: usize = 12;
@@ -48,7 +48,7 @@ struct Slot {
     // Logical speed value kept in runtime state.
     // Speed28 uses protocol semantics: 0=stop, 1..=28=steps.
     // Conversion to NMRA packet semantics happens only when building DCC packets.
-    speed: LogicalSpeed,
+    speed: u8,
     direction: Direction,
     format: SpeedFormat,
     // Bit 0 = FL, bits 1..28 = F1..F28.
@@ -75,12 +75,7 @@ struct Slot {
 }
 
 impl Slot {
-    fn new(
-        address: DccAddress,
-        speed: LogicalSpeed,
-        direction: Direction,
-        format: SpeedFormat,
-    ) -> Self {
+    fn new(address: DccAddress, speed: u8, direction: Direction, format: SpeedFormat) -> Self {
         Self {
             address,
             speed,
@@ -129,11 +124,11 @@ impl Slot {
         match self.format {
             SpeedFormat::Speed28 => DccPacket::speed_28step(
                 self.address,
-                logical_to_nmra_packet_speed(self.speed.value())?,
+                logical_to_nmra_packet_speed(self.speed)?,
                 self.direction,
             ),
             SpeedFormat::Speed128 => {
-                DccPacket::speed_128step(self.address, self.speed.value(), self.direction)
+                DccPacket::speed_128step(self.address, self.speed, self.direction)
             }
         }
     }
@@ -223,10 +218,9 @@ impl Slot {
             if !self.has_any_functions() {
                 return None;
             }
-            return Some(
-                self.next_active_function_packet()
-                    .expect("function-only slot has no active function group packet"),
-            );
+            return self.next_active_function_packet().or_else(|| {
+                unreachable!("function-only slot has no active function group packet")
+            });
         }
 
         if !self.has_any_functions() {
@@ -279,23 +273,18 @@ impl Slot {
 
     fn active_function_group_mask(&self) -> u8 {
         let mut mask = 0u8;
-        // F0(FL)..F4 -> FunctionGroup1
         if (self.functions & 0b0000_0000_0000_0000_0000_0000_0001_1111) != 0 {
             mask |= 1 << 0;
         }
-        // F5..F8 -> FunctionGroup2A
         if (self.functions & 0b0000_0000_0000_0000_0000_0001_1110_0000) != 0 {
             mask |= 1 << 1;
         }
-        // F9..F12 -> FunctionGroup2B
         if (self.functions & 0b0000_0000_0000_0000_0001_1110_0000_0000) != 0 {
             mask |= 1 << 2;
         }
-        // F13..F20 -> FunctionGroup3
         if (self.functions & 0b0000_0000_0001_1111_1110_0000_0000_0000) != 0 {
             mask |= 1 << 3;
         }
-        // F21..F28 -> FunctionGroup4
         if (self.functions & 0b0001_1111_1110_0000_0000_0000_0000_0000) != 0 {
             mask |= 1 << 4;
         }
@@ -351,12 +340,7 @@ impl SlotManager {
 
     /// Set speed for a locomotive using Speed28 format.
     #[must_use]
-    pub fn set_speed(
-        &mut self,
-        address: DccAddress,
-        speed: LogicalSpeed,
-        direction: Direction,
-    ) -> bool {
+    pub fn set_speed(&mut self, address: DccAddress, speed: u8, direction: Direction) -> bool {
         self.set_speed_with_format(address, speed, direction, SpeedFormat::Speed28)
     }
 
@@ -365,10 +349,14 @@ impl SlotManager {
     pub fn set_speed_with_format(
         &mut self,
         address: DccAddress,
-        speed: LogicalSpeed,
+        speed: u8,
         direction: Direction,
         format: SpeedFormat,
     ) -> bool {
+        if !speed_valid_for_format(speed, format) {
+            return false;
+        }
+
         for slot in self.slots.iter_mut() {
             if slot.address == address {
                 slot.speed = speed;
@@ -419,12 +407,7 @@ impl SlotManager {
             return false;
         }
 
-        let mut slot = Slot::new(
-            address,
-            LogicalSpeed::ZERO,
-            Direction::Forward,
-            SpeedFormat::Speed28,
-        );
+        let mut slot = Slot::new(address, 0, Direction::Forward, SpeedFormat::Speed28);
         slot.dirty_speed = false;
         slot.speed_commanded = false;
         if !slot.set_function(function, enabled) {
@@ -437,7 +420,7 @@ impl SlotManager {
     /// Request global emergency stop.
     pub fn request_emergency_stop_all(&mut self) {
         for slot in self.slots.iter_mut() {
-            slot.speed = LogicalSpeed::ZERO;
+            slot.speed = 0;
             slot.dirty_speed = true;
         }
         self.pending_broadcast_estop = true;
@@ -450,7 +433,7 @@ impl SlotManager {
         let mut found = false;
         for slot in self.slots.iter_mut() {
             if slot.address == address {
-                slot.speed = LogicalSpeed::ZERO;
+                slot.speed = 0;
                 slot.dirty_speed = true;
                 slot.dirty_speed_retries = DIRTY_STOP_RETRY_COUNT;
                 found = true;
@@ -545,12 +528,7 @@ impl SlotManager {
 
     /// Apply speed command to all consist members.
     #[must_use]
-    pub fn set_consist_speed(
-        &mut self,
-        id: u8,
-        speed: LogicalSpeed,
-        direction: Direction,
-    ) -> usize {
+    pub fn set_consist_speed(&mut self, id: u8, speed: u8, direction: Direction) -> usize {
         let Some(consist) = self.consists.iter().find(|c| c.id == id) else {
             return 0;
         };
@@ -629,7 +607,7 @@ impl SlotManager {
             return false;
         }
 
-        let mut slot = Slot::new(address, LogicalSpeed::ZERO, Direction::Forward, format);
+        let mut slot = Slot::new(address, 0, Direction::Forward, format);
         slot.dirty_speed = false;
         slot.dirty_speed_retries = 0;
         let _ = self.slots.push(slot);
@@ -825,8 +803,15 @@ impl SlotManager {
     }
 }
 
-const fn speed_retry_count(speed: LogicalSpeed) -> u8 {
-    if speed.value() == 0 {
+fn speed_valid_for_format(speed: u8, format: SpeedFormat) -> bool {
+    match format {
+        SpeedFormat::Speed28 => speed <= 28,
+        SpeedFormat::Speed128 => speed <= 126,
+    }
+}
+
+const fn speed_retry_count(speed: u8) -> u8 {
+    if speed == 0 {
         DIRTY_STOP_RETRY_COUNT
     } else {
         0

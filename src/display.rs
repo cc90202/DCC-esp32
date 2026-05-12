@@ -166,6 +166,10 @@ fn format_ip(addr: [u8; 4]) -> heapless::String<15> {
 }
 
 #[cfg(target_arch = "riscv32")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "render receives a compact snapshot of independent display state"
+)]
 async fn render(
     display: &mut Ssd1306Async<
         I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,

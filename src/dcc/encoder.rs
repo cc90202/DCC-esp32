@@ -19,7 +19,7 @@
 //! ```
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction, encode_dcc_packet};
 //!
-//! let addr = DccAddress::short(10).unwrap();
+//! let addr = DccAddress::new_short(10).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 100, Direction::Forward).unwrap();
 //!
 //! // Encode to RMT pulse sequence (Vec<PulseCode>)
@@ -53,8 +53,9 @@
 //! # Error Handling
 //!
 //! [`encode_dcc_packet`] returns [`EncodeError::Packet`] if the packet cannot be encoded
-//! to bytes (invalid CV address in Service Mode), or [`EncodeError::PulseBufferOverflow`]
-//! if the pulse sequence exceeds capacity (should not occur with valid input).
+//! to bytes, or [`EncodeError::PulseBufferOverflow`] if the pulse sequence exceeds
+//! capacity (should not occur with valid input). Public packet constructors use
+//! validated newtypes for address, speed, and CV ranges.
 
 use crate::dcc::packet::DccPacket;
 use crate::dcc::timing::{
@@ -220,6 +221,10 @@ mod tests {
     use super::*;
     use crate::dcc::packet::*;
 
+    fn service_cv(cv: u16) -> ServiceModeCv {
+        ServiceModeCv::new(cv).expect("test service-mode CV must be valid")
+    }
+
     #[test]
     fn test_dcc_bit_encoding() {
         let one = dcc_bit_to_pulse(true);
@@ -266,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_speed_packet_structure() {
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let packet = DccPacket::speed_28step(addr, 10, Direction::Forward).unwrap();
         let pulses = encode_dcc_packet(&packet).unwrap();
 
@@ -281,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_encode_dcc_data_portion_matches_full_packet_tail() {
-        let addr = DccAddress::short(3).unwrap();
+        let addr = DccAddress::new_short(3).unwrap();
         let packet = DccPacket::speed_28step(addr, 10, Direction::Forward).unwrap();
 
         let full = encode_dcc_packet(&packet).unwrap();
@@ -292,9 +297,9 @@ mod tests {
 
     #[test]
     fn test_all_packet_types_fit_in_rmt_ram() {
-        // RMT channel memsize: 2 = 96 RAM slots. transmit_continuously requires
+        // RMT channel memsize: 3 = 144 RAM slots. transmit_continuously requires
         // all data in RAM at once. RMT buffer = encode output + 1 end marker.
-        const RMT_RAM_SLOTS: usize = 96;
+        const RMT_RAM_SLOTS: usize = 144;
 
         let addr_short = DccAddress::new_short(3).unwrap();
         let addr_long = DccAddress::new_long(9999).unwrap();
@@ -349,11 +354,11 @@ mod tests {
                 f28: true,
             },
             DccPacket::ServiceModeVerifyByte {
-                cv: 256,
+                cv: service_cv(256),
                 value: 255,
             },
             DccPacket::ServiceModeWriteByte {
-                cv: 256,
+                cv: service_cv(256),
                 value: 255,
             },
             DccPacket::EmergencyStop {

@@ -90,7 +90,13 @@ pub async fn dcc_engine_task(
             }
         };
 
-        rmt_driver::submit_packet(next_rmt.as_slice());
+        rmt_driver::submit_packet(
+            next_rmt.as_slice(),
+            frame.cutout_allowed(),
+            frame.pom_requested(),
+            frame.pom_read_requested,
+            frame.railcom_target_address,
+        );
     }
 }
 

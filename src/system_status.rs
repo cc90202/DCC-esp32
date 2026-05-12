@@ -22,19 +22,19 @@
 //! use dcc_esp32::system_status::{StatusModel, SystemStatusEvent, LedState};
 //!
 //! let mut model = StatusModel::new();
-//! assert_eq!(model.current_led_state(), LedState::Booting);
+//! assert_eq!(model.led_state(), LedState::Booting);
 //!
 //! // Boot completes
 //! model.apply(SystemStatusEvent::BootCompleted);
-//! assert_eq!(model.current_led_state(), LedState::Running);
+//! assert_eq!(model.led_state(), LedState::Running);
 //!
 //! // WiFi starts connecting
 //! model.apply(SystemStatusEvent::WifiConnecting);
-//! assert_eq!(model.current_led_state(), LedState::WifiConnecting);
+//! assert_eq!(model.led_state(), LedState::WifiConnecting);
 //!
 //! // WiFi connects
 //! model.apply(SystemStatusEvent::WifiConnected);
-//! assert_eq!(model.current_led_state(), LedState::Running);
+//! assert_eq!(model.led_state(), LedState::Running);
 //! ```
 //!
 //! **Fault handling:**
@@ -47,11 +47,11 @@
 //!
 //! // Track short detected
 //! model.apply(SystemStatusEvent::FaultLatched(FaultCause::TrackShort));
-//! assert_eq!(model.current_led_state(), LedState::FaultLatched);
+//! assert_eq!(model.led_state(), LedState::FaultLatched);
 //!
 //! // Service clears the fault
 //! model.apply(SystemStatusEvent::FaultCleared);
-//! assert_eq!(model.current_led_state(), LedState::Running);
+//! assert_eq!(model.led_state(), LedState::Running);
 //! ```
 
 /// Fault origin used for observability and future policy routing.
