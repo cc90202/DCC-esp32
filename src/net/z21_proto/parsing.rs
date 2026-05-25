@@ -1,7 +1,7 @@
-use crate::dcc::{Direction, SpeedFormat};
+use crate::dcc::{Direction, SpeedFormat, z21_wire_to_logical};
 
 use super::wire::*;
-use super::{BroadcastFlags, FunctionAction, ParseError, Z21Command};
+use super::{FunctionAction, ParseError, Z21Command};
 
 /// Parse a single Z21 frame from `buf`.
 ///
@@ -69,16 +69,18 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
             if frame.len() < 7 {
                 return Err(ParseError::FrameTooShort);
             }
-            Ok(Z21Command::LoconetDetector)
+            let report_address = u16::from_le_bytes([frame[5], frame[6]]);
+            Ok(Z21Command::LoconetDetector {
+                request_type: frame[4],
+                report_address,
+            })
         }
         HEADER_SET_BROADCAST_FLAGS => {
             if frame.len() < 8 {
                 return Err(ParseError::FrameTooShort);
             }
             let flags = u32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
-            Ok(Z21Command::SetBroadcastFlags {
-                flags: BroadcastFlags::new(flags),
-            })
+            Ok(Z21Command::SetBroadcastFlags { flags })
         }
         HEADER_XBUS => parse_xbus(frame),
         _ => Ok(Z21Command::Unknown),
@@ -162,9 +164,6 @@ fn parse_set_loco_function_command(payload: &[u8]) -> Result<Z21Command, ParseEr
     if function > 28 {
         return Err(ParseError::InvalidFunction);
     }
-    // `& 0x03` closes the domain to 0..=3; value 3 is reserved by the Z21 LAN
-    // protocol (only Off/On/Toggle are assigned), so it collapses to Off
-    // rather than being surfaced as a parse error.
     let action = match (func_byte >> 6) & 0x03 {
         0 => FunctionAction::Off,
         1 => FunctionAction::On,

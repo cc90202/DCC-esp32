@@ -31,6 +31,11 @@ use crate::fault_manager::{
     fault_manager_task,
 };
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
+use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
+use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
+use crate::railcom::uart_reader::{
+    RailcomRxOutput, RailcomUartRuntimeResultChannel, railcom_uart_rx_config,
+};
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, status_led_task};
 use crate::system_status::{

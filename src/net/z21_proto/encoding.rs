@@ -1,4 +1,4 @@
-use crate::dcc::{DccAddress, Direction, SpeedFormat};
+use crate::dcc::{DccAddress, Direction, SpeedFormat, logical_to_z21_wire};
 use crate::net::LocoState;
 
 use super::wire::*;

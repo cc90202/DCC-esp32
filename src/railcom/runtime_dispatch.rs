@@ -182,8 +182,19 @@ pub async fn railcom_uart_runtime_dispatch_task(
                     }
                 }
             }
-            RailcomRxOutput::WindowError(err) => {
-                warn!("railcom rx window assembly: {:?}", err);
+            RailcomRxOutput::WindowCorrupted(window) => {
+                info!(
+                    "railcom uart corrupted: packet={} channel={:?} raw_len={} glitches={} framing={} raw={:?}",
+                    window.packet_sequence,
+                    window.channel,
+                    window.raw_len,
+                    window.glitch_count,
+                    window.framing_error_count,
+                    &window.raw_bytes[..window.raw_len]
+                );
+            }
+            other => {
+                warn!("railcom rx window assembly: {:?}", other);
             }
         }
     }

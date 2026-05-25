@@ -69,8 +69,7 @@ fn test_parse_set_broadcast_flags() {
     let Ok(Z21Command::SetBroadcastFlags { flags }) = parse_frame(&buf) else {
         panic!("expected SetBroadcastFlags, got {:?}", parse_frame(&buf));
     };
-    assert_eq!(flags, BroadcastFlags::new(1));
-    assert!(flags.basic_driving_and_switching());
+    assert_eq!(flags, 1);
 }
 
 #[test]
@@ -307,7 +306,15 @@ fn test_parse_railcom_getdata() {
 #[test]
 fn test_parse_loconet_detector() {
     let frame = [0x07, 0x00, 0xA4, 0x00, 0x80, 0x00, 0x00];
-    assert_eq!(parse_frame(&frame), Ok(Z21Command::LoconetDetector));
+    let Ok(Z21Command::LoconetDetector {
+        request_type,
+        report_address,
+    }) = parse_frame(&frame)
+    else {
+        panic!("expected LoconetDetector, got {:?}", parse_frame(&frame));
+    };
+    assert_eq!(request_type, 0x80);
+    assert_eq!(report_address, 0);
 }
 
 #[test]
