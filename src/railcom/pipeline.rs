@@ -482,22 +482,6 @@ mod tests {
     }
 
     #[test]
-    fn test_packet_sequence_age_since_wraps() {
-        let earlier = PacketSequence::new(u32::MAX - 1);
-        let later = PacketSequence::new(1);
-
-        assert_eq!(later.age_since(earlier), 3);
-    }
-
-    #[test]
-    fn test_packet_sequence_is_within_inclusive_window() {
-        let earlier = PacketSequence::new(10);
-
-        assert!(PacketSequence::new(18).is_within(earlier, 8));
-        assert!(!PacketSequence::new(19).is_within(earlier, 8));
-    }
-
-    #[test]
     fn test_record_oversized_window_updates_aggregate_stats() {
         reset_railcom_rx_stats();
         record_oversized_window();

@@ -45,16 +45,10 @@ pub mod validator;
 // Re-exports
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
-pub use cv::CvProgrammer;
-#[doc(inline)]
 pub use cv::{
-    PomRailcomResult, PomRailcomResultChannel, PomRequest, PomRequestChannel, PomRequestId,
-    PomResponse, PomResponseChannel, PomTxStartedChannel, pom_actor_task,
-    pom_result_from_railcom_items,
+    PomRailcomResult, PomRailcomResultChannel, PomRequest, PomRequestChannel, PomResponse,
+    PomResponseChannel, PomTxStartedChannel, pom_actor_task, pom_result_from_railcom_items,
 };
-#[cfg(any(test, not(target_arch = "riscv32")))]
-#[doc(inline)]
-pub use cv::{MockAckDetector, MockTrackSwitch};
 #[doc(inline)]
 pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_dcc_packet};
 #[cfg(target_arch = "riscv32")]
@@ -72,7 +66,7 @@ pub use scheduler::SchedulerCommandChannel;
 pub use scheduler::packet_scheduler_task;
 #[doc(inline)]
 pub use scheduler::{
-    FunctionIndex, InvalidFunctionIndex, SchedulerCommand, SlotManager, SpeedFormat,
+    FunctionIndex, InvalidFunctionIndex, LogicalSpeed, SchedulerCommand, SlotManager, SpeedFormat,
 };
 #[doc(inline)]
 pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};

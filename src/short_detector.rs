@@ -81,7 +81,7 @@ pub async fn short_detector_task(
         crate::fault_manager::FaultManagerState,
         1,
     >,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::boot::BootReadyEvent, 9>,
+    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     // Boot blanking: ignore transients from WiFi radio startup and DCC stabilization.
     Timer::after(Duration::from_millis(TRACK_SHORT_BOOT_BLANKING_MS)).await;
@@ -93,7 +93,7 @@ pub async fn short_detector_task(
     }
 
     ready_sender
-        .send(crate::boot::BootReadyEvent::ShortDetector)
+        .send(crate::system_status::BootReadyEvent::ShortDetector)
         .await;
 
     let initial_state = if initial_low { "LOW" } else { "HIGH" };

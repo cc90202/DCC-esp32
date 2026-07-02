@@ -25,6 +25,7 @@ use crate::railcom::pipeline::{
     record_oversized_window, record_rx_overflows,
 };
 use crate::railcom::uart_reader::{RailcomRxOutput, RailcomUartWindowError};
+use crate::track_output::CutoutRailcomChannel;
 
 const CAPTURE_RING_CAPACITY: usize = 64;
 const MAX_CAPTURE_BYTES: usize = 6;

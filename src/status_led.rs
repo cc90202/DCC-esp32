@@ -133,7 +133,7 @@ pub async fn status_led_task(
     ready_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::boot::BootReadyEvent,
+        crate::system_status::BootReadyEvent,
         9,
     >,
 ) -> ! {
@@ -144,7 +144,7 @@ pub async fn status_led_task(
     // Both LEDs start off until the first event is processed.
     set_both_off(&mut green_led, &mut red_led);
     ready_sender
-        .send(crate::boot::BootReadyEvent::StatusLed)
+        .send(crate::system_status::BootReadyEvent::StatusLed)
         .await;
 
     loop {

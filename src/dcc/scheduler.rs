@@ -125,6 +125,49 @@ pub enum SpeedFormat {
     Speed128,
 }
 
+/// Validated logical (runtime) speed value for a locomotive slot.
+///
+/// "Logical" speed is the scheduler's internal protocol-agnostic representation:
+/// - `0` = stop
+/// - Speed28  → `1..=28`  = speed steps
+/// - Speed128 → `1..=126` = speed steps
+///
+/// The valid range depends on the [`SpeedFormat`] the value is validated
+/// against at construction time. The format itself is *not* stored inside
+/// this type — callers keep tracking it alongside (e.g. `Slot::format`,
+/// `SchedulerCommand::SetSpeed::format`), exactly as before this newtype
+/// existed. This is the single place that knows the logical speed ranges;
+/// there is no other validation of these ranges anywhere else in the crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct LogicalSpeed(u8);
+
+impl LogicalSpeed {
+    /// Stop, valid for any [`SpeedFormat`].
+    pub const ZERO: Self = Self(0);
+
+    /// Validate `value` as a logical speed for `format`.
+    #[must_use]
+    pub fn new(value: u8, format: SpeedFormat) -> Option<Self> {
+        let in_range = match format {
+            SpeedFormat::Speed28 => value <= 28,
+            SpeedFormat::Speed128 => value <= 126,
+        };
+        in_range.then_some(Self(value))
+    }
+
+    /// Return the raw logical speed value.
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+/// Function index mapping:
+/// - 0 => FL
+/// - 1..=28 => F1..F28
+const MAX_FUNCTION_INDEX: u8 = 28;
+
 /// Validated function index (F0..F28).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FunctionIndex(u8);
@@ -160,7 +203,7 @@ impl TryFrom<u8> for FunctionIndex {
 pub enum SchedulerCommand {
     SetSpeed {
         address: DccAddress,
-        speed: u8,
+        speed: LogicalSpeed,
         direction: Direction,
         format: SpeedFormat,
     },
@@ -187,7 +230,7 @@ pub enum SchedulerCommand {
     },
     SetConsistSpeed {
         id: u8,
-        speed: u8,
+        speed: LogicalSpeed,
         direction: Direction,
     },
     RemoveSlot {

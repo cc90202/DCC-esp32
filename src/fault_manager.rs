@@ -77,9 +77,6 @@
 //! - Status events: `EstopActive`, `EstopCleared`, `FaultLatched`, `FaultCleared`
 //! - H-bridge GPIO: HIGH in Normal, LOW otherwise
 
-#[cfg(target_arch = "riscv32")]
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use crate::system_status::FaultCause;
 #[cfg(any(target_arch = "riscv32", test))]
 use crate::system_status::FaultEvent;
@@ -89,6 +86,24 @@ use crate::{dcc::SchedulerCommand, system_status::SystemStatusEvent};
 use embassy_sync::channel::Sender;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::watch;
+
+/// External events consumed by the fault state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum FaultEvent {
+    /// Boot sequence has finished; track power may be enabled if state permits.
+    TrackPowerArmed,
+    /// Physical stop button pressed (GPIO22).
+    StopPressed,
+    /// Resume button short-press (<2 s) — clears e-stop, ignored during fault.
+    ResumeShortPressed,
+    /// Resume button long-press (≥2 s) — force-clears any latched state.
+    ResumeLongPressed,
+    /// Hardware or service fault detected (e.g. track short, CV error).
+    FaultLatched(FaultCause),
+    /// Fault condition resolved by automated service logic.
+    FaultClearedByService,
+}
 
 /// Tri-state machine governing track safety.
 ///
@@ -102,27 +117,6 @@ pub enum FaultManagerState {
     EstopLatched,
     /// Hardware/service fault; requires long-press or service clear.
     FaultLatched(FaultCause),
-}
-
-/// Returns `true` when the system is in [`Normal`](FaultManagerState::Normal) state.
-///
-/// Checked by the network layer before forwarding speed/function commands to the scheduler.
-#[cfg(target_arch = "riscv32")]
-#[must_use]
-pub fn motion_commands_enabled() -> bool {
-    MOTION_COMMANDS_ENABLED.load(Ordering::Acquire)
-}
-
-/// Allow the fault manager to energize the track when state returns to `Normal`.
-#[cfg(target_arch = "riscv32")]
-pub fn arm_track_power_output() {
-    TRACK_POWER_ARMED.store(true, Ordering::Release);
-}
-
-#[cfg(target_arch = "riscv32")]
-fn set_motion_commands_enabled_for_state(state: FaultManagerState) {
-    let enabled = matches!(state, FaultManagerState::Normal);
-    MOTION_COMMANDS_ENABLED.store(enabled, Ordering::Release);
 }
 
 /// Complete description of a state transition's side-effects.
@@ -260,7 +254,7 @@ pub struct FaultManagerTaskContext {
     pub ready_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::boot::BootReadyEvent,
+        crate::system_status::BootReadyEvent,
         9,
     >,
 }
@@ -272,11 +266,11 @@ pub struct FaultManagerTaskContext {
 #[embassy_executor::task]
 pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     #[inline]
-    fn apply_hbridge_enable_for_state(
+    fn apply_track_output_for_state(
         state: FaultManagerState,
-        hbridge_enable: &mut esp_hal::gpio::Output<'static>,
+        armed: bool,
+        track_output: &mut TrackOutput,
     ) {
-        let armed = TRACK_POWER_ARMED.load(Ordering::Acquire);
         if armed && matches!(state, FaultManagerState::Normal) {
             hbridge_enable.set_high();
         } else {
@@ -296,38 +290,38 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     } = context;
 
     let mut state = FaultManagerState::Normal;
-    set_motion_commands_enabled_for_state(state);
-    apply_hbridge_enable_for_state(state, &mut hbridge_enable);
+    let mut armed = false;
+    apply_track_output_for_state(state, armed, &mut track_output);
     state_sender.send(state);
     ready_sender
-        .send(crate::boot::BootReadyEvent::FaultManager)
+        .send(crate::system_status::BootReadyEvent::FaultManager)
         .await;
 
     loop {
         let event = receiver.receive().await;
         defmt::info!("fault_manager: event={:?} state_before={:?}", event, state);
+        if event == FaultEvent::TrackPowerArmed {
+            armed = true;
+        }
         let t = state.reduce(event);
         let prev_state = state;
         state = t.next;
         apply_track_output_for_state(state, armed, &mut track_output);
         let motion_enabled = matches!(state, FaultManagerState::Normal);
-        // Mirrors apply_track_output_for_state: the driver stays off until
-        // the boot sequence arms track power, even in Normal state.
-        let track_enabled = armed && motion_enabled;
         if state != prev_state {
             state_sender.send(state);
             defmt::warn!(
                 "fault_manager: state {:?} -> {:?}, track_enabled={}, motion_enabled={}",
                 prev_state,
                 state,
-                track_enabled,
+                motion_enabled,
                 motion_enabled
             );
         } else {
             defmt::info!(
                 "fault_manager: state unchanged {:?}, track_enabled={}, motion_enabled={}",
                 state,
-                track_enabled,
+                motion_enabled,
                 motion_enabled
             );
         }

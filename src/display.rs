@@ -231,13 +231,13 @@ async fn render(
 pub async fn display_task(
     i2c: Option<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     receiver: Receiver<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::boot::BootReadyEvent, 9>,
+    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     let Some(i2c) = i2c else {
         warn!("display: disabled, draining display events");
         ready_sender
-            .send(crate::boot::BootReadyEvent::DisplayDegraded(
-                crate::boot::OptionalPeripheralInit::DisplayUnavailable,
+            .send(crate::system_status::BootReadyEvent::DisplayDegraded(
+                crate::system_status::OptionalPeripheralInit::DisplayUnavailable,
             ))
             .await;
         loop {
@@ -254,8 +254,8 @@ pub async fn display_task(
     if display.init().await.is_err() {
         warn!("display: SSD1306 init failed, draining display events");
         ready_sender
-            .send(crate::boot::BootReadyEvent::DisplayDegraded(
-                crate::boot::OptionalPeripheralInit::DisplayInit,
+            .send(crate::system_status::BootReadyEvent::DisplayDegraded(
+                crate::system_status::OptionalPeripheralInit::DisplayInit,
             ))
             .await;
         loop {
@@ -264,7 +264,7 @@ pub async fn display_task(
     }
 
     ready_sender
-        .send(crate::boot::BootReadyEvent::DisplayReady)
+        .send(crate::system_status::BootReadyEvent::DisplayReady)
         .await;
 
     let mut model = DisplayModel::new();

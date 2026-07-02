@@ -27,15 +27,15 @@ use crate::dcc::{
     pom_actor_task,
 };
 use crate::fault_manager::{
-    FaultManagerState, FaultManagerTaskContext, FaultStateWatch, fault_manager_task,
+    FaultEvent, FaultEventChannel, FaultManagerState, FaultManagerTaskContext, FaultStateWatch,
+    fault_manager_task,
 };
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, status_led_task};
 use crate::system_status::{
-    BootReadyChannel, BootReadyEvent, BootStep, DisplayChannel, DisplayEvent, FaultEvent,
-    FaultEventChannel, NetStatusChannel, OptionalPeripheralInit, SystemStatusChannel,
-    SystemStatusEvent,
+    BootReadyChannel, BootReadyEvent, NetStatusChannel, OptionalPeripheralInit,
+    SystemStatusChannel, SystemStatusEvent,
 };
 use crate::track_output::TrackOutput;
 
@@ -64,14 +64,6 @@ pub enum BootError {
     CriticalHardwareInit(CriticalHardwareInit),
     CriticalTaskSpawn(CriticalTask),
     CriticalTaskInit(CriticalTaskInit),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum OptionalPeripheralInit {
-    DisplayI2c,
-    DisplayInit,
-    DisplayUnavailable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,23 +108,6 @@ pub enum CriticalTaskInit {
     ReadinessTimeout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum BootReadyEvent {
-    DisplayReady,
-    DisplayDegraded(OptionalPeripheralInit),
-    DccEngine,
-    StatusLed,
-    Scheduler,
-    Net,
-    FaultManager,
-    StopButton,
-    ResumeButton,
-    ShortDetector,
-}
-
-pub type BootReadyChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, BootReadyEvent, 9>;
 pub type BootFailureChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, CriticalTaskInit, 4>;
 
@@ -397,7 +372,61 @@ async fn scheduler_task_wrapper(
     ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::Scheduler).await;
-    packet_scheduler_task(command_receiver, sender, status_sender, display_sender).await
+    packet_scheduler_task(command_receiver, sender, display_sender).await
+}
+
+#[embassy_executor::task]
+async fn railcom_isr_capture_task_wrapper(
+    uart_rx: UartRx<'static, esp_hal::Async>,
+    result_sender: Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
+) -> ! {
+    crate::railcom::isr_capture::railcom_isr_capture_task(uart_rx, result_sender).await
+}
+
+#[embassy_executor::task]
+async fn railcom_diag_task() -> ! {
+    loop {
+        Timer::after(Duration::from_secs(10)).await;
+
+        let diag = crate::railcom::diagnostics();
+
+        info!(
+            "railcom diag: boundary={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_oversized={} rx_overflow={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
+            diag.boundary.packet_boundary_count,
+            diag.scheduler.cutout_granted_count,
+            diag.scheduler.cutout_granted_pom_count,
+            diag.scheduler.track_logon_sent_count,
+            diag.scheduler.track_search_sent_count,
+            diag.scheduler.track_search_throttled_count,
+            diag.scheduler.cutout_skipped_budget_count,
+            diag.scheduler.cutout_skipped_priority_count,
+            diag.track_output.cutout_request_count,
+            diag.track_output.cutout_skipped_disabled_count,
+            diag.track_output.cutout_started_count,
+            diag.track_output.cutout_ended_count,
+            diag.track_output.cutout_schedule_fail_count,
+            diag.track_output.cutout_event_dropped_count,
+            diag.track_output.cutout_event_notify_fail_count,
+            diag.rx.rx_window_count(),
+            diag.rx.rx_empty_window_count,
+            diag.rx.rx_windows_with_bytes_count(),
+            diag.rx.rx_parse_ok_count,
+            diag.rx.rx_parse_err_count,
+            diag.rx.rx_oversized_window_count,
+            diag.rx.rx_overflow_count,
+            diag.rx.ch1_window_count,
+            diag.rx.ch1_empty_count,
+            diag.rx.ch2_window_count,
+            diag.rx.ch2_empty_count,
+            diag.rx.rx_ack_count,
+            diag.rx.rx_nack_count,
+            diag.rx.rx_adr_high_count,
+            diag.rx.rx_adr_low_count,
+            diag.loco.identification_window_count,
+            diag.loco.identified_loco_count,
+            diag.loco.invalid_identification_count,
+        );
+    }
 }
 
 pub async fn run(
@@ -626,7 +655,6 @@ pub async fn run(
 
     info!("boot: waiting for critical task readiness");
     wait_for_runtime_ready(BOOT_READY.receiver(), BOOT_FAILURE.receiver()).await?;
-    arm_track_power_output();
     FAULT_CHANNEL.send(FaultEvent::TrackPowerArmed).await;
     info!("boot: track power armed after critical runtime readiness");
     DISPLAY_CHANNEL

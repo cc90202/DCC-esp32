@@ -126,11 +126,11 @@ async fn is_long_press(button: &mut Input<'static>, threshold: Duration) -> bool
 #[embassy_executor::task]
 pub async fn stop_button_task(
     mut stop_button: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     ready_sender
-        .send(crate::boot::BootReadyEvent::StopButton)
+        .send(crate::system_status::BootReadyEvent::StopButton)
         .await;
     loop {
         wait_for_debounced_press(&mut stop_button).await;
@@ -146,11 +146,11 @@ pub async fn stop_button_task(
 #[embassy_executor::task]
 pub async fn resume_button_task(
     mut resume_button: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     ready_sender
-        .send(crate::boot::BootReadyEvent::ResumeButton)
+        .send(crate::system_status::BootReadyEvent::ResumeButton)
         .await;
     loop {
         wait_for_debounced_press(&mut resume_button).await;

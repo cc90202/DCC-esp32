@@ -34,3 +34,10 @@ Thumbs.db
 
 # WiFi credentials (never commit)
 .env
+
+# Local tool state
+.codex
+
+# Python
+__pycache__/
+.superpowers/
