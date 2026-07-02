@@ -391,7 +391,7 @@ async fn railcom_diag_task() -> ! {
         let diag = crate::railcom::diagnostics();
 
         info!(
-            "railcom diag: boundary={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_oversized={} rx_overflow={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
+            "railcom diag: boundary={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_corrupted={} rx_overflow={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
             diag.boundary.packet_boundary_count,
             diag.scheduler.cutout_granted_count,
             diag.scheduler.cutout_granted_pom_count,
@@ -493,8 +493,9 @@ pub async fn run(
         .with_idle_output(true)
         .with_memsize(2);
 
-    // Single RMT channel on GPIO2. The 74HC14 Schmitt-trigger inverter
-    // produces the complementary signal for the BTS7960 H-bridge (RPWM/LPWM).
+    // Single RMT channel on GPIO2. On the current PH/EN bench wiring GPIO2
+    // drives PH/IN2; on the Option A RailCom rebuild it feeds external logic
+    // that derives the complementary PWM-mode DRV8874 inputs.
     let tx_channel = rmt
         .channel0
         .configure_tx(peripherals.GPIO2, tx_config)
@@ -522,13 +523,13 @@ pub async fn run(
     let command_receiver = scheduler_commands.receiver();
     info!("boot: scheduler command channel initialized");
 
-    // H-bridge enable: GPIO18 push-pull, held LOW during init so the track
-    // sees no signal until the DCC waveform is already stable. This prevents
-    // the decoder (CV29 bit2=1, analog mode enabled) from detecting the brief
-    // DC phase that would otherwise appear while GPIO2 is at idle-LOW before
-    // the first DCC packet is transmitted.
-    let hbridge_enable = Output::new(peripherals.GPIO18, Level::Low, OutputConfig::default());
-    info!("boot: H-bridge GPIO18 held LOW until DCC signal is stable");
+    // Track SLEEP master enable: GPIO18 push-pull, held LOW during init so
+    // the track sees no signal until the DCC waveform is already stable.
+    // RailCom cutout/run: GPIO4 is held HIGH outside timed cutout windows and
+    // driven LOW during the cutout.
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
+    let track_output = TrackOutput::new(peripherals.GPIO18, peripherals.GPIO4, timg1.timer0);
+    info!("boot: track SLEEP GPIO18 held LOW; RailCom cutout/run GPIO4 held inactive HIGH");
 
     spawner
         .spawn(dcc_engine_task_wrapper(
