@@ -258,9 +258,6 @@ impl RailcomChannel {
 /// `0` is reserved as an "unset" sentinel by ISR-side code and is therefore
 /// never produced here; see `TryFrom<u8> for RailcomChannel`.
 impl From<RailcomChannel> for u8 {
-    /// Called from ISR-resident code (`track_output`, `isr_capture`); the
-    /// inline guarantee keeps the conversion out of flash on non-LTO builds.
-    #[inline(always)]
     fn from(channel: RailcomChannel) -> Self {
         match channel {
             RailcomChannel::Channel1 => 1,
@@ -272,7 +269,6 @@ impl From<RailcomChannel> for u8 {
 impl TryFrom<u8> for RailcomChannel {
     type Error = ();
 
-    #[inline]
     fn try_from(id: u8) -> Result<Self, Self::Error> {
         match id {
             1 => Ok(RailcomChannel::Channel1),

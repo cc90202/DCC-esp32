@@ -3,9 +3,8 @@
 use crate::dcc::encoder::{PulseCode as DccPulseCode, encode_dcc_data_portion};
 use crate::dcc::rmt_driver;
 use crate::dcc::timing::{IDLE_RMT_SIZE, MAX_DATA_PULSES, RMT_CLOCK_HZ};
-use crate::dcc::{DccPacket, encode_dcc_packet};
-use crate::fault_manager::FaultEvent;
-use crate::system_status::FaultCause;
+use crate::dcc::{DccFrame, DccPacket, encode_dcc_packet};
+use crate::system_status::{FaultCause, FaultEvent};
 
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;

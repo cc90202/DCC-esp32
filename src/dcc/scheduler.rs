@@ -1072,7 +1072,7 @@ pub async fn packet_scheduler_task(
     display_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::display::DisplayEvent,
+        crate::system_status::DisplayEvent,
         8,
     >,
 ) -> ! {
@@ -1093,7 +1093,7 @@ pub async fn packet_scheduler_task(
         let slot_count = slot_manager.slot_count();
         if slot_count != prev_slot_count {
             prev_slot_count = slot_count;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::ActiveLocoCount(
+            let _ = display_sender.try_send(crate::system_status::DisplayEvent::ActiveLocoCount(
                 slot_count as u8,
             ));
         }

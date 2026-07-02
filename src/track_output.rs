@@ -22,7 +22,7 @@ use esp_hal::timer::timg;
 use heapless::Vec;
 use static_cell::StaticCell;
 
-use crate::dcc::{DccAddress, PackedAddressFlags};
+use crate::dcc::{DccAddress, PackedDccAddress};
 use crate::railcom::pipeline::RailcomChannel;
 
 /// Cutout duration in microseconds. NMRA S-9.3.2 requires 454..=488 µs; 460 µs
@@ -147,6 +147,14 @@ pub struct TrackOutputStats {
     pub cutout_skipped_disabled_count: u32,
     pub cutout_ended_count: u32,
     pub cutout_schedule_fail_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailcomRealtimeWindowSnapshot {
+    pub generation: u32,
+    pub active: bool,
+    pub packet_sequence: u32,
+    pub channel: Option<RailcomChannel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,15 +351,14 @@ fn stop_cutout_timer_fast(hw: &mut TrackOutputHw) {
 fn open_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
     RAILCOM_WINDOW_PACKET_SEQUENCE.store(packet_sequence, Ordering::Release);
     RAILCOM_WINDOW_CHANNEL.store(u8::from(channel), Ordering::Release);
+    RAILCOM_WINDOW_ACTIVE.store(true, Ordering::Release);
+    RAILCOM_WINDOW_GENERATION.fetch_add(1, Ordering::AcqRel);
     #[cfg(target_arch = "riscv32")]
     crate::railcom::isr_capture::open_window_from_isr();
 }
 
 #[inline(always)]
 fn close_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
-    // Guard: only forward the close (and its FIFO read) if this is still the
-    // window that was most recently opened. See the comment on
-    // `RAILCOM_WINDOW_PACKET_SEQUENCE`/`RAILCOM_WINDOW_CHANNEL` above.
     if RAILCOM_WINDOW_PACKET_SEQUENCE.load(Ordering::Acquire) == packet_sequence
         && RAILCOM_WINDOW_CHANNEL.load(Ordering::Acquire) == u8::from(channel)
     {
@@ -360,24 +367,21 @@ fn close_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel)
     }
 }
 
-// SEQLOCK-STYLE RING SLOT PUBLICATION — do not "simplify" the zero pre-store.
-//
-// This is the reference site for a pattern repeated at `push_cutout_event_from_isr`
-// / `drain_cutout_runtime_events` below (cross-referenced from there).
-//
-// Writer order (ISR-side, no lock available): `sequence = 0` (invalidate) ->
-// `payload` -> `sequence = real_value`. Reader order:
-// `sequence_before`, `payload`, `sequence_after`; the read is only trusted
-// when `sequence_before == sequence_after == the value the reader wanted`.
-// The leading zero-store guarantees a reader can never observe a slot whose
-// `sequence` value matches its target while `payload` is still mid-update:
-// during the writer's update window the slot's sequence reads either `0`
-// (always a mismatch) or the *old* sequence (mismatches the new payload's
-// sequence unless the ring wraps after exactly `u32::MAX` writes to this
-// slot, at which point `sequence_before != sequence_after` still catches it).
-// Skipping the zero pre-store to save one atomic store re-opens a window
-// where a reader can pair an old sequence number with a partially/newly
-// written payload. Keep all three stores, in this order, at both sites.
+#[must_use]
+pub fn railcom_realtime_window_snapshot() -> RailcomRealtimeWindowSnapshot {
+    let generation = RAILCOM_WINDOW_GENERATION.load(Ordering::Acquire);
+    let active = RAILCOM_WINDOW_ACTIVE.load(Ordering::Acquire);
+    let packet_sequence = RAILCOM_WINDOW_PACKET_SEQUENCE.load(Ordering::Acquire);
+    let channel = RailcomChannel::try_from(RAILCOM_WINDOW_CHANNEL.load(Ordering::Acquire)).ok();
+
+    RailcomRealtimeWindowSnapshot {
+        generation,
+        active,
+        packet_sequence,
+        channel,
+    }
+}
+
 #[inline(always)]
 fn record_railcom_packet_metadata_from_isr(
     packet_sequence: u32,

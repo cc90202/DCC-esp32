@@ -21,16 +21,23 @@ use crate::dcc::dcc_engine_task;
 use crate::dcc::engine::DccPacketChannel;
 use crate::dcc::packet_scheduler_task;
 use crate::dcc::rmt_driver;
-use crate::dcc::{DccAddress, DccPacket, Direction, SchedulerCommand, SchedulerCommandChannel};
-use crate::display::{BootStep, DisplayChannel, DisplayEvent};
+use crate::dcc::{
+    DccAddress, DccFrame, DccPacket, Direction, PomRailcomResultChannel, PomRequestChannel,
+    PomResponseChannel, PomTxStartedChannel, SchedulerCommand, SchedulerCommandChannel,
+    pom_actor_task,
+};
 use crate::fault_manager::{
-    FaultEvent, FaultEventChannel, FaultManagerState, FaultManagerTaskContext, FaultStateWatch,
-    arm_track_power_output, fault_manager_task,
+    FaultManagerState, FaultManagerTaskContext, FaultStateWatch, fault_manager_task,
 };
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, status_led_task};
-use crate::system_status::{NetStatusChannel, SystemStatusChannel, SystemStatusEvent};
+use crate::system_status::{
+    BootReadyChannel, BootReadyEvent, BootStep, DisplayChannel, DisplayEvent, FaultEvent,
+    FaultEventChannel, NetStatusChannel, OptionalPeripheralInit, SystemStatusChannel,
+    SystemStatusEvent,
+};
+use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.
 static DCC_CHANNEL: StaticCell<DccPacketChannel> = StaticCell::new();
@@ -133,7 +140,7 @@ struct NetTaskWrapperContext {
     spawner: Spawner,
     wifi: esp_hal::peripherals::WIFI<'static>,
     scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
     channels: NetTaskChannels,
     failure_sender: Sender<'static, CriticalSectionRawMutex, CriticalTaskInit, 4>,
 }

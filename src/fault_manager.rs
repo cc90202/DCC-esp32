@@ -14,8 +14,9 @@
 //!
 //! **Host-side state machine test:**
 //!
-//! ```
-//! use dcc_esp32::fault_manager::{FaultManagerState, FaultEvent, FaultCause};
+//! ```ignore
+//! use dcc_esp32::fault_manager::FaultManagerState;
+//! use dcc_esp32::system_status::FaultEvent;
 //!
 //! // Start in Normal state
 //! let mut state = FaultManagerState::Normal;
@@ -32,8 +33,9 @@
 //!
 //! **Fault latching (e.g., track short):**
 //!
-//! ```
-//! use dcc_esp32::fault_manager::{FaultManagerState, FaultEvent, FaultCause};
+//! ```ignore
+//! use dcc_esp32::fault_manager::FaultManagerState;
+//! use dcc_esp32::system_status::{FaultCause, FaultEvent};
 //!
 //! let mut state = FaultManagerState::Normal;
 //!
@@ -79,35 +81,14 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::system_status::FaultCause;
+#[cfg(any(target_arch = "riscv32", test))]
+use crate::system_status::FaultEvent;
 #[cfg(target_arch = "riscv32")]
 use crate::{dcc::SchedulerCommand, system_status::SystemStatusEvent};
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::channel::Sender;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::watch;
-
-#[cfg(target_arch = "riscv32")]
-static MOTION_COMMANDS_ENABLED: AtomicBool = AtomicBool::new(true);
-#[cfg(target_arch = "riscv32")]
-static TRACK_POWER_ARMED: AtomicBool = AtomicBool::new(false);
-
-/// External events consumed by the fault state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum FaultEvent {
-    /// Boot sequence has finished; track power may be enabled if state permits.
-    TrackPowerArmed,
-    /// Physical stop button pressed (GPIO22).
-    StopPressed,
-    /// Resume button short-press (<2 s) — clears e-stop, ignored during fault.
-    ResumeShortPressed,
-    /// Resume button long-press (≥2 s) — force-clears any latched state.
-    ResumeLongPressed,
-    /// Hardware or service fault detected (e.g. track short, CV error).
-    FaultLatched(FaultCause),
-    /// Fault condition resolved by automated service logic.
-    FaultClearedByService,
-}
 
 /// Tri-state machine governing track safety.
 ///
@@ -234,12 +215,6 @@ impl FaultManagerState {
 }
 
 #[cfg(target_arch = "riscv32")]
-pub type FaultEventChannel = embassy_sync::channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    FaultEvent,
-    16,
->;
-#[cfg(target_arch = "riscv32")]
 pub type FaultStateWatch =
     watch::Watch<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, FaultManagerState, 1>;
 
@@ -273,7 +248,7 @@ pub struct FaultManagerTaskContext {
     pub display_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::display::DisplayEvent,
+        crate::system_status::DisplayEvent,
         8,
     >,
     pub state_sender: watch::Sender<
@@ -373,25 +348,26 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             let event = SystemStatusEvent::EstopActive;
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::Fault(FaultCause::Estop));
+            let _ = display_sender
+                .try_send(crate::system_status::DisplayEvent::Fault(FaultCause::Estop));
         }
         if t.emit_estop_cleared {
             let event = SystemStatusEvent::EstopCleared;
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::FaultCleared);
+            let _ = display_sender.try_send(crate::system_status::DisplayEvent::FaultCleared);
         }
         if let Some(cause) = t.emit_fault_latched {
             let event = SystemStatusEvent::FaultLatched(cause);
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::Fault(cause));
+            let _ = display_sender.try_send(crate::system_status::DisplayEvent::Fault(cause));
         }
         if t.emit_fault_cleared {
             let event = SystemStatusEvent::FaultCleared;
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::FaultCleared);
+            let _ = display_sender.try_send(crate::system_status::DisplayEvent::FaultCleared);
         }
     }
 }

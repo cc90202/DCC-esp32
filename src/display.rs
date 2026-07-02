@@ -1,5 +1,6 @@
 //! OLED display event types and async task.
 
+#[cfg(target_arch = "riscv32")]
 use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
 
 #[cfg(target_arch = "riscv32")]

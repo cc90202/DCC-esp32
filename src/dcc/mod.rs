@@ -75,10 +75,7 @@ pub use scheduler::{
     FunctionIndex, InvalidFunctionIndex, SchedulerCommand, SlotManager, SpeedFormat,
 };
 #[doc(inline)]
-pub use speed28::{
-    encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed, logical_to_z21_wire,
-    z21_wire_to_logical,
-};
+pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};
 #[doc(inline)]
 pub use timing::{
     DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,

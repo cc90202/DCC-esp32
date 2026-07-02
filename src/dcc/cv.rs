@@ -71,7 +71,10 @@ use embassy_sync::channel::Sender;
 #[cfg(target_arch = "riscv32")]
 use embassy_time::{Duration, Instant};
 
-// --- Configuration ---
+#[cfg(target_arch = "riscv32")]
+use crate::dcc::scheduler::SchedulerCommand;
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::{FaultCause, FaultEvent};
 
 /// CV programming configuration (NMRA S-9.2.2 timing parameters)
 #[derive(Debug, Clone, Copy)]

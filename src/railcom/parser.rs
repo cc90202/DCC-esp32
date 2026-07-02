@@ -303,6 +303,16 @@ pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError
     items_from_symbols(&decode_symbols::<2>(raw_bytes)?)
 }
 
+pub fn parse_logon_id15(
+    channel1_raw: &[u8],
+    channel2_raw: &[u8],
+) -> Result<RailcomLogonId, ParseError> {
+    match parse_logon_response_48(channel1_raw, channel2_raw)? {
+        RailcomLogonResponse::DecoderId(logon_id) => Ok(logon_id),
+        RailcomLogonResponse::Select(_) => Err(ParseError::UnsupportedDatagramId(8)),
+    }
+}
+
 pub fn parse_logon_response_48(
     channel1_raw: &[u8],
     channel2_raw: &[u8],

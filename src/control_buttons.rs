@@ -126,8 +126,8 @@ async fn is_long_press(button: &mut Input<'static>, threshold: Duration) -> bool
 #[embassy_executor::task]
 pub async fn stop_button_task(
     mut stop_button: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::boot::BootReadyEvent, 9>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     ready_sender
         .send(crate::boot::BootReadyEvent::StopButton)
@@ -136,7 +136,7 @@ pub async fn stop_button_task(
         wait_for_debounced_press(&mut stop_button).await;
         defmt::info!("STOP pressed");
         fault_sender
-            .send(crate::fault_manager::FaultEvent::StopPressed)
+            .send(crate::system_status::FaultEvent::StopPressed)
             .await;
 
         wait_for_debounced_release(&mut stop_button).await;
@@ -146,8 +146,8 @@ pub async fn stop_button_task(
 #[embassy_executor::task]
 pub async fn resume_button_task(
     mut resume_button: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::boot::BootReadyEvent, 9>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     ready_sender
         .send(crate::boot::BootReadyEvent::ResumeButton)
@@ -162,9 +162,9 @@ pub async fn resume_button_task(
         )
         .await;
         let event = if long_press {
-            crate::fault_manager::FaultEvent::ResumeLongPressed
+            crate::system_status::FaultEvent::ResumeLongPressed
         } else {
-            crate::fault_manager::FaultEvent::ResumeShortPressed
+            crate::system_status::FaultEvent::ResumeShortPressed
         };
         if long_press {
             defmt::info!("RESUME long press");

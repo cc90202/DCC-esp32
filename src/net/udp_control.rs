@@ -26,8 +26,18 @@ use crate::net::z21_proto::{self, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 use crate::net::{LocoSlots, loco_is_moving};
 use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEvent};
 
-use super::wifi;
-pub use super::wifi::NetInitError;
+    use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
+    use crate::dcc::cv::drain_channel;
+    use crate::dcc::{
+        FunctionIndex, LogicalSpeed, PomCv, PomRequest, PomResponse, SchedulerCommand,
+    };
+    const WIFI_SSID: &str = env!("WIFI_SSID");
+    const WIFI_PASS: &str = env!("WIFI_PASS");
+    use crate::net::z21_proto::{
+        self, FunctionAction, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS, Z21Command,
+    };
+    use crate::net::{LocoSlots, LocoState, loco_commands_allowed, loco_is_moving};
+    use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEvent};
 
 const Z21_PORT: u16 = 21105;
 const DECEL_STEP_MS: u64 = 500;
@@ -162,11 +172,115 @@ pub async fn net_task(
     loop {
         let now_ms = Instant::now().as_millis();
 
-        let next_wake = if client_endpoint.is_some()
-            && now_ms.saturating_sub(last_rx_ms) >= Z21_KEEPALIVE_TIMEOUT_MS
-            && !all_stopped
-        {
-            Instant::from_millis(last_decel_ms + DECEL_STEP_MS)
+    /// Handles WiFi connect and automatic reconnect.
+    #[embassy_executor::task]
+    async fn connection_task(
+        mut controller: WifiController<'static>,
+        status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
+    ) {
+        let mut state = ConnectionState::Connecting;
+
+        loop {
+            match state {
+                ConnectionState::Connecting => {
+                    status_sender.send(SystemStatusEvent::WifiConnecting).await;
+                    match controller.connect_async().await {
+                        Ok(_) => {
+                            info!("WiFi connected");
+                            status_sender.send(SystemStatusEvent::WifiConnected).await;
+                            state = ConnectionState::Connected;
+                        }
+                        Err(_) => {
+                            warn!("WiFi connect failed, retrying in 5s");
+                            status_sender
+                                .send(SystemStatusEvent::WifiDisconnected)
+                                .await;
+                            Timer::after(Duration::from_secs(5)).await;
+                        }
+                    }
+                }
+                ConnectionState::Connected => {
+                    controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                    warn!("WiFi disconnected, reconnecting in 5s...");
+                    status_sender
+                        .send(SystemStatusEvent::WifiDisconnected)
+                        .await;
+                    Timer::after(Duration::from_secs(5)).await;
+                    state = ConnectionState::Connecting;
+                }
+            }
+        }
+    }
+
+    // ── Main net task ─────────────────────────────────────────────────────────
+
+    /// Main net task — WiFi init, DHCP, Z21 UDP control loop.
+    ///
+    /// Spawns `wifi_runner_task` and `connection_task` internally, following
+    /// the official esp-hal embassy WiFi example pattern.
+    pub async fn net_task(
+        spawner: Spawner,
+        wifi: esp_hal::peripherals::WIFI<'static>,
+        scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+        fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
+        channels: NetTaskChannels,
+    ) -> Result<(), NetInitError> {
+        let NetTaskChannels {
+            net_status,
+            status_sender,
+            display_sender,
+            ready_sender,
+            pom_request_sender,
+            pom_response_receiver,
+        } = channels;
+
+        let controller = esp_radio::init().map_err(|_| NetInitError::EspRadioInit)?;
+        let controller = RADIO_CONTROLLER.init(controller);
+
+        let (mut wifi_ctrl, interfaces) =
+            esp_radio::wifi::new(controller, wifi, esp_radio::wifi::Config::default())
+                .map_err(|_| NetInitError::WifiInit)?;
+
+        let client_config = ClientConfig::default()
+            .with_ssid(WIFI_SSID.to_string())
+            .with_password(WIFI_PASS.to_string())
+            .with_auth_method(AuthMethod::Wpa2Personal);
+
+        wifi_ctrl
+            .set_config(&ModeConfig::Client(client_config))
+            .map_err(|_| NetInitError::WifiSetConfig)?;
+        wifi_ctrl
+            .start_async()
+            .await
+            .map_err(|_| NetInitError::WifiStart)?;
+        info!("WiFi started, connecting to SSID: {}", WIFI_SSID);
+
+        let net_config = Config::dhcpv4(Default::default());
+        let rng = Rng::new();
+        let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+        let resources = NET_RESOURCES.init(StackResources::new());
+        let (stack, runner) = embassy_net::new(interfaces.sta, net_config, resources, seed);
+
+        // Spawn runner and connection tasks — same pattern as official examples.
+        spawner
+            .spawn(wifi_runner_task(runner))
+            .map_err(|_| NetInitError::WifiRunnerSpawn)?;
+        spawner
+            .spawn(connection_task(wifi_ctrl, status_sender))
+            .map_err(|_| NetInitError::ConnectionSpawn)?;
+
+        info!("Waiting for DHCP...");
+        stack.wait_config_up().await;
+        if let Some(config) = stack.config_v4() {
+            info!(
+                "Network up — IP: {}",
+                defmt::Display2Format(&config.address.address())
+            );
+            let addr = config.address.address();
+            let _ = display_sender.try_send(DisplayEvent::IpAssigned(addr.octets()));
+            let _ = display_sender.try_send(DisplayEvent::BootProgress(
+                crate::system_status::BootStep::WifiConnected,
+            ));
         } else {
             Instant::from_millis(last_rx_ms + Z21_KEEPALIVE_TIMEOUT_MS + 1)
         };

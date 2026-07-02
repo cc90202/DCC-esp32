@@ -60,11 +60,11 @@ pub fn new_short_detect_input(gpio3: esp_hal::peripherals::GPIO3<'static>) -> In
 
 #[cfg(target_arch = "riscv32")]
 async fn report_track_short(
-    fault_sender: &Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
+    fault_sender: &Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
 ) {
     defmt::warn!("Short circuit detected on GPIO3!");
     fault_sender
-        .send(crate::fault_manager::FaultEvent::FaultLatched(
+        .send(crate::system_status::FaultEvent::FaultLatched(
             crate::system_status::FaultCause::TrackShort,
         ))
         .await;
@@ -74,7 +74,7 @@ async fn report_track_short(
 #[embassy_executor::task]
 pub async fn short_detector_task(
     mut pin: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
     mut fault_state_receiver: watch::Receiver<
         'static,
         CriticalSectionRawMutex,
