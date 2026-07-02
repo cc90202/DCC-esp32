@@ -22,8 +22,8 @@
 //! # Hardware Requirements
 //!
 //! - ESP32-C6 with RMT peripheral
-//! - GPIO2 connected to H-bridge input
-//! - H-bridge (e.g., BTS7960) for track power
+//! - GPIO2 connected to the track-driver DCC input or external DCC logic
+//! - Track-power driver with current limiting and fault handling
 //!
 //! # Safety
 //!
