@@ -289,6 +289,10 @@ Tests:
 - valid record round-trips without password logging.
 - force-provisioning flag round-trips;
 - flag clear is idempotent.
+- interrupted save during inactive-sector erase/write leaves the old valid
+  record selected;
+- completed save selects the newer generation;
+- both slots corrupt maps to `InvalidStoredCredentials`.
 
 Acceptance:
 
@@ -524,11 +528,6 @@ Behavior:
 3. Return confirmation.
 4. Reboot through the reset API selected in Task 4.
 
-Fallback:
-
-- If no safe reset API is available in first implementation, show confirmation
-  and instruct operator to power-cycle.
-
 Failure behavior:
 
 - Save failure returns an error page.
@@ -645,8 +644,10 @@ Do not mix hardware AP work with pure policy tests in the same commit.
 
 ## Open Decisions Before Coding
 
-- Which persistent backend is feasible and selected: NVS or blob?
-- Exact platform reset API for reboot after save.
+- Persistent backend: dedicated versioned blob in a `dcc_cfg` flash partition.
+  Do not use ESP-IDF/NVS for the first release.
+- Exact platform reset API after successful save:
+  `esp_hal::system::software_reset()`.
 - AP IP/DHCP shape for phone clients.
 - HTTP implementation approach and parser limits.
 - Whether `.env` remains as a dev-only fallback after first release.
