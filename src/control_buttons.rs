@@ -4,11 +4,12 @@
 //!
 //! Provides two Embassy async tasks for the physical control buttons on the ESP32-C6:
 //! - **Stop Button (GPIO22)** - Triggers emergency stop (e-stop latch state)
-//! - **Resume Button (GPIO21)** - Short press clears e-stop; long press (≥2s) force-clears any latched fault
+//! - **Resume Button (GPIO21)** - Short press clears e-stop; long press force-clears any
+//!   latched fault; provisioning hold requests runtime WiFi setup
 //!
 //! Both tasks implement:
 //! - Debounce on press and release (30ms hysteresis)
-//! - Long-press detection (resume button only)
+//! - Resume press classification (<2s, 2s..10s, >=10s)
 //! - Direct integration with the fault manager via channel
 //!
 //! # Examples
@@ -26,10 +27,11 @@
 //!
 //! // Get the fault event channel sender from fault_manager_task setup
 //! // let fault_sender = ...;
+//! // let provisioning_sender = ...;
 //!
 //! // Spawn the tasks (returns ! - never returns)
-//! // embassy_executor::task::spawn(stop_button_task(stop_button, fault_sender.clone()));
-//! // embassy_executor::task::spawn(resume_button_task(resume_button, fault_sender));
+//! // embassy_executor::task::spawn(stop_button_task(stop_button, fault_sender, ready_sender));
+//! // embassy_executor::task::spawn(resume_button_task(resume_button, fault_sender, provisioning_sender, ready_sender));
 //! ```
 //!
 //! # Button Behavior
@@ -40,7 +42,8 @@
 //!
 //! **Resume Button:**
 //! - Press + release (<2s) → sends `FaultEvent::ResumeShortPressed` → clears e-stop (if in EstopLatched)
-//! - Press + hold (≥2s) → sends `FaultEvent::ResumeLongPressed` → force-clears any latched fault
+//! - Press + release (2s..10s) → sends `FaultEvent::ResumeLongPressed` → force-clears any latched fault
+//! - Press + hold (>=10s) → sends `ProvisioningRequest::Requested` → later task handles WiFi setup mode
 //!
 //! # Hardware
 //!
@@ -48,16 +51,39 @@
 //! Press pulls the line LOW; release lets pull-up drive it HIGH.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Sender;
+use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::gpio::{Input, InputConfig, Pull};
 
 use crate::control_logic::{
-    DebouncedPress, DebouncedRelease, debounce_active_low_press, debounce_active_low_release,
+    DebouncedPress, DebouncedRelease, RESUME_LONG_PRESS_MS, RESUME_PROVISIONING_PRESS_MS,
+    ResumeButtonAction, ResumePress, debounce_active_low_press, debounce_active_low_release,
+    resume_action_for_press,
 };
 
 const DEBOUNCE_MS: u64 = 30;
-const RESUME_LONG_PRESS_MS: u64 = 2_000;
+
+pub type ProvisioningRequestChannel =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, ProvisioningRequest, 1>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum ProvisioningRequest {
+    Requested,
+}
+
+#[embassy_executor::task]
+pub async fn provisioning_request_task(
+    receiver: Receiver<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
+) -> ! {
+    loop {
+        match receiver.receive().await {
+            ProvisioningRequest::Requested => {
+                defmt::warn!("WiFi provisioning requested; runtime transition not implemented yet");
+            }
+        }
+    }
+}
 
 async fn wait_for_debounced_press(button: &mut Input<'static>) {
     loop {
@@ -83,9 +109,9 @@ async fn wait_for_debounced_press(button: &mut Input<'static>) {
 }
 
 /// Cancellation-safe by construction: no state is held across `.await`
-/// points, so dropping this future mid-debounce (as `is_long_press` does via
-/// `with_timeout`) simply restarts the loop on the next call. Keep it that
-/// way - adding side effects here would break `is_long_press`.
+/// points, so dropping this future mid-debounce during `with_timeout`
+/// simply restarts the loop on the next call. Keep it that way; adding side
+/// effects here would break classification.
 async fn wait_for_debounced_release(button: &mut Input<'static>) {
     loop {
         if button.is_high() {
@@ -109,17 +135,56 @@ async fn wait_for_debounced_release(button: &mut Input<'static>) {
     }
 }
 
-async fn is_long_press(button: &mut Input<'static>, threshold: Duration) -> bool {
-    if with_timeout(threshold, wait_for_debounced_release(button))
-        .await
-        .is_ok()
+async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePress {
+    if with_timeout(
+        Duration::from_millis(RESUME_LONG_PRESS_MS),
+        wait_for_debounced_release(button),
+    )
+    .await
+    .is_ok()
     {
-        // Released before the threshold elapsed -> short press.
-        false
-    } else {
-        // Timed out while still pressed -> long press. Ensure release before returning.
-        wait_for_debounced_release(button).await;
-        true
+        return ResumePress::Short;
+    }
+
+    let provisioning_window_ms = RESUME_PROVISIONING_PRESS_MS - RESUME_LONG_PRESS_MS;
+    if with_timeout(
+        Duration::from_millis(provisioning_window_ms),
+        wait_for_debounced_release(button),
+    )
+    .await
+    .is_ok()
+    {
+        return ResumePress::Long;
+    }
+
+    wait_for_debounced_release(button).await;
+    ResumePress::Provisioning
+}
+
+async fn send_resume_action(
+    action: ResumeButtonAction,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    provisioning_sender: Sender<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
+) {
+    match action {
+        ResumeButtonAction::ResumeShortFault => {
+            fault_sender
+                .send(crate::system_status::FaultEvent::ResumeShortPressed)
+                .await;
+        }
+        ResumeButtonAction::ResumeLongFault => {
+            fault_sender
+                .send(crate::system_status::FaultEvent::ResumeLongPressed)
+                .await;
+        }
+        ResumeButtonAction::RequestWifiProvisioning => {
+            if provisioning_sender
+                .try_send(ProvisioningRequest::Requested)
+                .is_err()
+            {
+                defmt::warn!("WiFi provisioning request already pending");
+            }
+        }
     }
 }
 
@@ -147,6 +212,7 @@ pub async fn stop_button_task(
 pub async fn resume_button_task(
     mut resume_button: Input<'static>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    provisioning_sender: Sender<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     ready_sender
@@ -156,22 +222,18 @@ pub async fn resume_button_task(
         wait_for_debounced_press(&mut resume_button).await;
         defmt::info!("RESUME pressed");
 
-        let long_press = is_long_press(
-            &mut resume_button,
-            Duration::from_millis(RESUME_LONG_PRESS_MS),
+        let press = classify_resume_button_press(&mut resume_button).await;
+        match press {
+            ResumePress::Short => defmt::info!("RESUME short press"),
+            ResumePress::Long => defmt::info!("RESUME long press"),
+            ResumePress::Provisioning => defmt::info!("RESUME provisioning hold"),
+        }
+        send_resume_action(
+            resume_action_for_press(press),
+            fault_sender,
+            provisioning_sender,
         )
         .await;
-        let event = if long_press {
-            crate::system_status::FaultEvent::ResumeLongPressed
-        } else {
-            crate::system_status::FaultEvent::ResumeShortPressed
-        };
-        if long_press {
-            defmt::info!("RESUME long press");
-        } else {
-            defmt::info!("RESUME short press");
-        }
-        fault_sender.send(event).await;
     }
 }
 

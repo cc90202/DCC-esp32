@@ -17,7 +17,10 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::UartRx;
 use static_cell::StaticCell;
 
-use crate::control_buttons::{new_button_input, resume_button_task, stop_button_task};
+use crate::control_buttons::{
+    ProvisioningRequestChannel, new_button_input, provisioning_request_task, resume_button_task,
+    stop_button_task,
+};
 use crate::dcc::dcc_engine_task;
 use crate::dcc::engine::DccPacketChannel;
 use crate::dcc::packet_scheduler_task;
@@ -55,6 +58,7 @@ static FAULT_STATE: FaultStateWatch = FaultStateWatch::new_with(FaultManagerStat
 static DISPLAY_CHANNEL: DisplayChannel = DisplayChannel::new();
 static BOOT_READY: BootReadyChannel = BootReadyChannel::new();
 static BOOT_FAILURE: BootFailureChannel = BootFailureChannel::new();
+static PROVISIONING_REQUESTS: ProvisioningRequestChannel = ProvisioningRequestChannel::new();
 static RAILCOM_RUNTIME_RESULTS: RailcomUartRuntimeResultChannel =
     RailcomUartRuntimeResultChannel::new();
 static POM_REQUESTS: PomRequestChannel = PomRequestChannel::new();
@@ -113,6 +117,7 @@ pub enum CriticalTask {
     RailcomUartDispatch,
     Net,
     FaultManager,
+    ProvisioningRequest,
     StopButton,
     ResumeButton,
     ShortDetector,
@@ -211,6 +216,9 @@ impl BootError {
             Self::CriticalTaskSpawn(CriticalTask::Net) => "failed to spawn net_task",
             Self::CriticalTaskSpawn(CriticalTask::FaultManager) => {
                 "failed to spawn fault_manager_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::ProvisioningRequest) => {
+                "failed to spawn provisioning_request_task"
             }
             Self::CriticalTaskSpawn(CriticalTask::StopButton) => "failed to spawn stop_button_task",
             Self::CriticalTaskSpawn(CriticalTask::ResumeButton) => {
@@ -687,6 +695,11 @@ pub async fn run(
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::FaultManager))?;
     info!("boot: fault manager task spawned");
 
+    spawner
+        .spawn(provisioning_request_task(PROVISIONING_REQUESTS.receiver()))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::ProvisioningRequest))?;
+    info!("boot: provisioning request task spawned");
+
     // Control buttons: GPIO22=stop (active-low), GPIO21=resume (active-low).
     // Spawned before the reset sequence so button events are never missed.
     let stop_btn = new_button_input(peripherals.GPIO22);
@@ -702,6 +715,7 @@ pub async fn run(
         .spawn(resume_button_task(
             resume_btn,
             FAULT_CHANNEL.sender(),
+            PROVISIONING_REQUESTS.sender(),
             BOOT_READY.sender(),
         ))
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::ResumeButton))?;

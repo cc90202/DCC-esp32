@@ -8,6 +8,7 @@ mod railcom_lookup;
 pub mod udp_control;
 #[cfg(target_arch = "riscv32")]
 mod wifi;
+pub mod wifi_config;
 #[cfg(target_arch = "riscv32")]
 mod z21_dispatch;
 pub mod z21_proto;
