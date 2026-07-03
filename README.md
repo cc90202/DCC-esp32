@@ -79,9 +79,9 @@ Important:
 
 5. Select the locomotive address and drive.
 
-> **Note:** CV programming is not yet available.
-> Locomotives can only be controlled at their factory default address until
-> the programming track hardware is integrated.
+> **Note:** CV programming support is under active development.
+> RailCom/POM read and write paths are being integrated, but full programming-track
+> hardware support is not yet complete.
 
 ## Cargo Aliases
 
@@ -119,6 +119,15 @@ cargo check-esp            # fast embedded compile check
 cargo clippy-host          # lint (host)
 cargo clippy-esp           # lint (ESP32-C6)
 ```
+
+## Commit Conventions
+
+Commit messages follow Conventional Commits and are validated with `cocogitto`.
+
+- Format: `type(scope)!: short imperative summary`
+- Reference: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Local check: `cog check origin/main..HEAD`
+- Local hook install: `cog install-hook`
 
 ## Project Layout
 

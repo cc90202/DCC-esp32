@@ -1,8 +1,7 @@
-//! Track short-circuit detector using hardware Schmitt trigger (74HC14) and GPIO interrupt.
+//! Track short-circuit detector using an active-low conditioned GPIO signal.
 //!
-//! The 74HC14 (powered at 3.3V alongside the DCC inverter) converts the
-//! BTS7960 current-sense signal (R_IS/L_IS) into a clean digital output
-//! via a 10KΩ trimmer threshold.  Pin 6 connects directly to GPIO3.
+//! The external current/fault detector conditions the track-driver signal into
+//! a clean 3.3V digital output for GPIO3.
 //!
 //! - Normal operation: GPIO3 = HIGH (3.3V)
 //! - Short circuit:    GPIO3 = LOW  (0V)  → falling edge triggers fault
@@ -15,9 +14,8 @@
 //!
 //! # Hardware Architecture
 //!
-//! - **GPIO3** — Active-low digital short signal from 74HC14 Schmitt trigger
-//! - **BTS7960 R_IS / L_IS** — Current sense outputs (analog, optional)
-//! - **10KΩ trimmer** — Sets trip threshold for analog sense (production use)
+//! - **GPIO3** — Active-low digital short signal from the detector
+//! - **External detector** — Conditions the track-driver current/fault signal
 //! - **Boot blanking** — 5 seconds after power-up (ignore spurious shorts)
 //! - **Debounce** — 50ms hysteresis on digital short signal
 //!
@@ -50,6 +48,13 @@ use esp_hal::gpio::{Input, InputConfig, Pull};
 #[cfg(target_arch = "riscv32")]
 const DEBOUNCE_MS: u64 = 50;
 
+/// Settling delay after the fault manager re-enters Normal, before re-arming
+/// short detection. Lets the track driver wake up and the decoder's bulk/keep-alive
+/// capacitor charge through the rails without a transient OCP pulse on FAULT
+/// being interpreted as a persistent short.
+#[cfg(target_arch = "riscv32")]
+const RECOVERY_SETTLE_MS: u64 = 100;
+
 /// Build the GPIO3 input pin for short-circuit detection (active-low, pull-up).
 #[cfg(target_arch = "riscv32")]
 #[must_use]
@@ -60,11 +65,11 @@ pub fn new_short_detect_input(gpio3: esp_hal::peripherals::GPIO3<'static>) -> In
 
 #[cfg(target_arch = "riscv32")]
 async fn report_track_short(
-    fault_sender: &Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
+    fault_sender: &Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
 ) {
     defmt::warn!("Short circuit detected on GPIO3!");
     fault_sender
-        .send(crate::fault_manager::FaultEvent::FaultLatched(
+        .send(crate::system_status::FaultEvent::FaultLatched(
             crate::system_status::FaultCause::TrackShort,
         ))
         .await;
@@ -74,14 +79,14 @@ async fn report_track_short(
 #[embassy_executor::task]
 pub async fn short_detector_task(
     mut pin: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
     mut fault_state_receiver: watch::Receiver<
         'static,
         CriticalSectionRawMutex,
         crate::fault_manager::FaultManagerState,
         1,
     >,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::boot::BootReadyEvent, 9>,
+    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     // Boot blanking: ignore transients from WiFi radio startup and DCC stabilization.
     Timer::after(Duration::from_millis(TRACK_SHORT_BOOT_BLANKING_MS)).await;
@@ -93,7 +98,7 @@ pub async fn short_detector_task(
     }
 
     ready_sender
-        .send(crate::boot::BootReadyEvent::ShortDetector)
+        .send(crate::system_status::BootReadyEvent::ShortDetector)
         .await;
 
     let initial_state = if initial_low { "LOW" } else { "HIGH" };
@@ -109,6 +114,8 @@ pub async fn short_detector_task(
         while !matches!(fault_state, crate::fault_manager::FaultManagerState::Normal) {
             fault_state = fault_state_receiver.changed().await;
         }
+
+        Timer::after(Duration::from_millis(RECOVERY_SETTLE_MS)).await;
 
         if pin.is_low() {
             report_track_short(&fault_sender).await;
