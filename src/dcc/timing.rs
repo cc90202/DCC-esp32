@@ -24,9 +24,9 @@ pub const RMT_CLOCK_HZ: u32 = 1_000_000;
 
 /// Maximum number of DCC data pulses encodable in one RMT TX submission.
 ///
-/// 128 comfortably fits 5-6 byte DCC packets (preamble + data + checksum).
+/// 128 comfortably fits 10-byte DCC packets (preamble + data + checksum).
 /// The actual RMT buffer includes +1 for the end marker.
-/// Must not exceed RMT RAM capacity (memsize: 2 = 96 slots) since
+/// Must not exceed RMT RAM capacity (memsize: 3 = 144 slots) since
 /// `transmit_continuously` requires all data in RAM at once.
 pub const DCC_MAX_PACKET_PULSES: usize = 128;
 
@@ -35,7 +35,10 @@ pub const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
 
 /// Maximum number of RMT entries in the variable packet tail (start bit, data,
 /// separators, end bit). The ISR appends the end marker itself.
-pub const MAX_DATA_PULSES: usize = 56;
+///
+/// RCN-218 LOGON_SELECT is 10 bytes:
+/// 1 start + 10*8 data bits + 9 separators + 1 end = 91 entries.
+pub const MAX_DATA_PULSES: usize = 96;
 
 /// RMT buffer capacity for the pre-built idle packet.
 ///
@@ -46,7 +49,8 @@ pub const MAX_DATA_PULSES: usize = 56;
 /// on every loop iteration.  All packets (idle and real) are transmitted via
 /// `transmit_continuously(LoopMode::Infinite)` - the hardware loops the buffer
 /// with zero inter-packet gap.  RMT channel memsize must be ≥ 2 blocks (96 slots)
-/// to fit both idle (49 entries) and the longest real packet (~77 entries).
+/// to fit idle (49 entries). Three blocks leave enough tail RAM for RCN-218
+/// LOGON_SELECT packets.
 pub const IDLE_RMT_SIZE: usize = 49; // 48 DCC pulses + 1 end marker
 
 /// Minimum Embassy executor yield time per DCC engine cycle (milliseconds).

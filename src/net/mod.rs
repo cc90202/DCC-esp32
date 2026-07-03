@@ -1,7 +1,15 @@
 //! Network layer - WiFi + Z21 UDP control.
 
 #[cfg(target_arch = "riscv32")]
+mod pom_client;
+#[cfg(target_arch = "riscv32")]
+mod railcom_lookup;
+#[cfg(target_arch = "riscv32")]
 pub mod udp_control;
+#[cfg(target_arch = "riscv32")]
+mod wifi;
+#[cfg(target_arch = "riscv32")]
+mod z21_dispatch;
 pub mod z21_proto;
 
 // esp-radio 0.17.0 defines these stubs only for Xtensa chips (#[cfg(xtensa)]).
