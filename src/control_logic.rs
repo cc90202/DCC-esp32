@@ -17,13 +17,6 @@ pub enum DebouncedRelease {
     IgnoredBounce,
 }
 
-/// Classify a RESUME press duration against the configured long-press threshold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResumePressKind {
-    Short,
-    Long,
-}
-
 /// Return whether a low level remained stable long enough to count as a press.
 #[must_use]
 pub const fn debounce_active_low_press(
@@ -47,16 +40,6 @@ pub const fn debounce_active_low_release(
         DebouncedRelease::Confirmed
     } else {
         DebouncedRelease::IgnoredBounce
-    }
-}
-
-/// Classify a measured press duration.
-#[must_use]
-pub const fn classify_resume_press(held_ms: u64, long_press_threshold_ms: u64) -> ResumePressKind {
-    if held_ms >= long_press_threshold_ms {
-        ResumePressKind::Long
-    } else {
-        ResumePressKind::Short
     }
 }
 
@@ -94,15 +77,5 @@ mod tests {
             debounce_active_low_release(true, false),
             DebouncedRelease::IgnoredBounce
         );
-    }
-
-    #[test]
-    fn test_classify_resume_press_short_below_threshold() {
-        assert_eq!(classify_resume_press(1_999, 2_000), ResumePressKind::Short);
-    }
-
-    #[test]
-    fn test_classify_resume_press_long_at_threshold() {
-        assert_eq!(classify_resume_press(2_000, 2_000), ResumePressKind::Long);
     }
 }

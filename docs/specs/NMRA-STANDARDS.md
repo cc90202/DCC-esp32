@@ -24,7 +24,7 @@ pub const DCC_ZERO_LOW_US: u16 = 100;
 pub const PREAMBLE_BITS: usize = 20;   // measured capture showed stable 22x "1" preamble
 ```
 
-**Validator:** `DccValidator::validate_timing()` checks pulse durations
+**Validator:** `validator::validate_timing()` checks pulse durations
 
 **Hardware evidence:**
 - Oscilloscope/logic-analyzer capture confirms valid DCC waveform on real output
@@ -75,7 +75,7 @@ let speed_bits = match speed {
 };
 ```
 
-**Validator:** `DccValidator::validate_nmra_compliance()` checks packet structure
+**Validator:** `validator::validate_nmra_compliance()` checks packet structure
 
 ---
 
@@ -188,7 +188,7 @@ loop {
 ### Software Validation (Current)
 ```rust
 // Validates packet structure and encoding
-DccValidator::validate_full(&packet, &pulses)
+validator::validate_full(&packet, &pulses)
 ```
 
 Recommended command sequence:

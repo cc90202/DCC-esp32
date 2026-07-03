@@ -10,10 +10,11 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer, with_timeout};
-use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::gpio::{Flex, Level, Output};
 use esp_hal::rmt::{Rmt, TxChannelConfig, TxChannelCreator};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::uart::UartRx;
 use static_cell::StaticCell;
 
 use crate::control_buttons::{new_button_input, resume_button_task, stop_button_task};
@@ -21,16 +22,28 @@ use crate::dcc::dcc_engine_task;
 use crate::dcc::engine::DccPacketChannel;
 use crate::dcc::packet_scheduler_task;
 use crate::dcc::rmt_driver;
-use crate::dcc::{DccAddress, DccPacket, Direction, SchedulerCommand, SchedulerCommandChannel};
-use crate::display::{BootStep, DisplayChannel, DisplayEvent};
+use crate::dcc::{
+    DccAddress, DccFrame, DccPacket, Direction, PomRailcomResultChannel, PomRequestChannel,
+    PomResponseChannel, PomTxStartedChannel, SchedulerCommand, SchedulerCommandChannel,
+    pom_actor_task,
+};
 use crate::fault_manager::{
-    FaultEvent, FaultEventChannel, FaultManagerState, FaultManagerTaskContext, FaultStateWatch,
-    arm_track_power_output, fault_manager_task,
+    FaultManagerState, FaultManagerTaskContext, FaultStateWatch, fault_manager_task,
 };
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
+use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
+use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
+use crate::railcom::uart_reader::{
+    RailcomRxOutput, RailcomUartRuntimeResultChannel, railcom_uart_rx_config,
+};
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, status_led_task};
-use crate::system_status::{NetStatusChannel, SystemStatusChannel, SystemStatusEvent};
+use crate::system_status::{
+    BootReadyChannel, BootReadyEvent, BootStep, DisplayChannel, DisplayEvent, FaultEvent,
+    FaultEventChannel, NetStatusChannel, OptionalPeripheralInit, SystemStatusChannel,
+    SystemStatusEvent,
+};
+use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.
 static DCC_CHANNEL: StaticCell<DccPacketChannel> = StaticCell::new();
@@ -42,6 +55,12 @@ static FAULT_STATE: FaultStateWatch = FaultStateWatch::new_with(FaultManagerStat
 static DISPLAY_CHANNEL: DisplayChannel = DisplayChannel::new();
 static BOOT_READY: BootReadyChannel = BootReadyChannel::new();
 static BOOT_FAILURE: BootFailureChannel = BootFailureChannel::new();
+static RAILCOM_RUNTIME_RESULTS: RailcomUartRuntimeResultChannel =
+    RailcomUartRuntimeResultChannel::new();
+static POM_REQUESTS: PomRequestChannel = PomRequestChannel::new();
+static POM_RESPONSES: PomResponseChannel = PomResponseChannel::new();
+static POM_TX_STARTED: PomTxStartedChannel = PomTxStartedChannel::new();
+static POM_RAILCOM_RESULTS: PomRailcomResultChannel = PomRailcomResultChannel::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -57,14 +76,6 @@ pub enum BootError {
     CriticalHardwareInit(CriticalHardwareInit),
     CriticalTaskSpawn(CriticalTask),
     CriticalTaskInit(CriticalTaskInit),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum OptionalPeripheralInit {
-    DisplayI2c,
-    DisplayInit,
-    DisplayUnavailable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +96,7 @@ pub enum CriticalHardwareInit {
     Rmt,
     RmtChannel0,
     RmtDriver,
+    RailcomUart,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -94,6 +106,11 @@ pub enum CriticalTask {
     DccEngine,
     StatusLed,
     Scheduler,
+    RailcomDiag,
+    PomActor,
+    PomCutoutMonitor,
+    RailcomIsrCapture,
+    RailcomUartDispatch,
     Net,
     FaultManager,
     StopButton,
@@ -109,23 +126,6 @@ pub enum CriticalTaskInit {
     ReadinessTimeout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum BootReadyEvent {
-    DisplayReady,
-    DisplayDegraded(OptionalPeripheralInit),
-    DccEngine,
-    StatusLed,
-    Scheduler,
-    Net,
-    FaultManager,
-    StopButton,
-    ResumeButton,
-    ShortDetector,
-}
-
-pub type BootReadyChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, BootReadyEvent, 9>;
 pub type BootFailureChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, CriticalTaskInit, 4>;
 
@@ -133,7 +133,7 @@ struct NetTaskWrapperContext {
     spawner: Spawner,
     wifi: esp_hal::peripherals::WIFI<'static>,
     scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::fault_manager::FaultEvent, 16>,
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
     channels: NetTaskChannels,
     failure_sender: Sender<'static, CriticalSectionRawMutex, CriticalTaskInit, 4>,
 }
@@ -188,10 +188,26 @@ impl BootError {
             Self::CriticalHardwareInit(CriticalHardwareInit::RmtDriver) => {
                 "RMT ISR driver init failed"
             }
+            Self::CriticalHardwareInit(CriticalHardwareInit::RailcomUart) => {
+                "RailCom UART RX init failed"
+            }
             Self::CriticalTaskSpawn(CriticalTask::Display) => "failed to spawn display_task",
             Self::CriticalTaskSpawn(CriticalTask::DccEngine) => "failed to spawn dcc_engine_task",
             Self::CriticalTaskSpawn(CriticalTask::StatusLed) => "failed to spawn status_led_task",
             Self::CriticalTaskSpawn(CriticalTask::Scheduler) => "failed to spawn scheduler_task",
+            Self::CriticalTaskSpawn(CriticalTask::RailcomDiag) => {
+                "failed to spawn railcom_diag_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::PomActor) => "failed to spawn pom_actor_task",
+            Self::CriticalTaskSpawn(CriticalTask::PomCutoutMonitor) => {
+                "failed to spawn pom_cutout_monitor_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::RailcomIsrCapture) => {
+                "failed to spawn railcom_isr_capture_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::RailcomUartDispatch) => {
+                "failed to spawn railcom_uart_runtime_dispatch_task"
+            }
             Self::CriticalTaskSpawn(CriticalTask::Net) => "failed to spawn net_task",
             Self::CriticalTaskSpawn(CriticalTask::FaultManager) => {
                 "failed to spawn fault_manager_task"
@@ -206,7 +222,7 @@ impl BootError {
             Self::CriticalTaskInit(CriticalTaskInit::FaultStateReceiverUnavailable) => {
                 "fault-state watch receiver already taken"
             }
-            Self::CriticalTaskInit(CriticalTaskInit::Net(error)) => error.message(),
+            Self::CriticalTaskInit(CriticalTaskInit::Net(error)) => error.as_str(),
             Self::CriticalTaskInit(CriticalTaskInit::ReadinessTimeout) => {
                 "critical task readiness timeout"
             }
@@ -338,10 +354,10 @@ fn verify_boot_packet_encoding() -> Result<(), BootError> {
     Ok(())
 }
 
-/// Wrapper task for the DCC engine (single RMT channel, 74HC14 provides inverted signal)
+/// Wrapper task for the DCC engine (single RMT channel on the DRV8874 PH/IN2 input).
 #[embassy_executor::task]
 async fn dcc_engine_task_wrapper(
-    receiver: Receiver<'static, CriticalSectionRawMutex, DccPacket, 16>,
+    receiver: Receiver<'static, CriticalSectionRawMutex, DccFrame, 16>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
 ) -> ! {
@@ -364,7 +380,7 @@ async fn net_task_wrapper(context: NetTaskWrapperContext) {
     match net_task(spawner, wifi, scheduler_sender, fault_sender, channels).await {
         Ok(()) => unreachable!("net_task runs forever after successful initialization"),
         Err(error) => {
-            defmt::error!("boot: network init failed: {}", error.message());
+            defmt::error!("boot: network init failed: {}", error.as_str());
             failure_sender.send(CriticalTaskInit::Net(error)).await;
         }
     }
@@ -384,13 +400,66 @@ async fn display_task_wrapper(
 #[embassy_executor::task]
 async fn scheduler_task_wrapper(
     command_receiver: Receiver<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    sender: Sender<'static, CriticalSectionRawMutex, DccPacket, 16>,
-    status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
+    sender: Sender<'static, CriticalSectionRawMutex, DccFrame, 16>,
     display_sender: Sender<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
     ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::Scheduler).await;
-    packet_scheduler_task(command_receiver, sender, status_sender, display_sender).await
+    packet_scheduler_task(command_receiver, sender, display_sender).await
+}
+
+#[embassy_executor::task]
+async fn railcom_isr_capture_task_wrapper(
+    uart_rx: UartRx<'static, esp_hal::Async>,
+    result_sender: Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
+) -> ! {
+    crate::railcom::isr_capture::railcom_isr_capture_task(uart_rx, result_sender).await
+}
+
+#[embassy_executor::task]
+async fn railcom_diag_task() -> ! {
+    loop {
+        Timer::after(Duration::from_secs(10)).await;
+
+        let diag = crate::railcom::diagnostics();
+
+        info!(
+            "railcom diag: boundary={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_oversized={} rx_overflow={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
+            diag.boundary.packet_boundary_count,
+            diag.scheduler.cutout_granted_count,
+            diag.scheduler.cutout_granted_pom_count,
+            diag.scheduler.track_logon_sent_count,
+            diag.scheduler.track_search_sent_count,
+            diag.scheduler.track_search_throttled_count,
+            diag.scheduler.cutout_skipped_budget_count,
+            diag.scheduler.cutout_skipped_priority_count,
+            diag.track_output.cutout_request_count,
+            diag.track_output.cutout_skipped_disabled_count,
+            diag.track_output.cutout_started_count,
+            diag.track_output.cutout_ended_count,
+            diag.track_output.cutout_schedule_fail_count,
+            diag.track_output.cutout_event_dropped_count,
+            diag.track_output.cutout_event_notify_fail_count,
+            diag.rx.rx_window_count(),
+            diag.rx.rx_empty_window_count,
+            diag.rx.rx_windows_with_bytes_count(),
+            diag.rx.rx_parse_ok_count,
+            diag.rx.rx_parse_err_count,
+            diag.rx.rx_oversized_window_count,
+            diag.rx.rx_overflow_count,
+            diag.rx.ch1_window_count,
+            diag.rx.ch1_empty_count,
+            diag.rx.ch2_window_count,
+            diag.rx.ch2_empty_count,
+            diag.rx.rx_ack_count,
+            diag.rx.rx_nack_count,
+            diag.rx.rx_adr_high_count,
+            diag.rx.rx_adr_low_count,
+            diag.loco.identification_window_count,
+            diag.loco.identified_loco_count,
+            diag.loco.invalid_identification_count,
+        );
+    }
 }
 
 pub async fn run(
@@ -448,17 +517,17 @@ pub async fn run(
 
     // DCC channel: divider=80 -> 80MHz/80 = 1MHz = 1us/tick (NMRA S-9.1 timings unchanged).
     //
-    // memsize: 2 -> 96 RAM slots (2 x 48). Required for transmit_continuously:
-    // the idle packet is 48 DCC pulses + 1 end marker = 49 entries, which
-    // exceeds the single-block limit of 48. Two blocks fit it comfortably.
+    // memsize: 3 -> 144 RAM slots (3 x 48). Two blocks fit idle; the third
+    // gives the ISR backend room for RCN-218 LOGON_SELECT packets.
     let tx_config = TxChannelConfig::default()
         .with_clk_divider(80)
         .with_idle_output_level(Level::Low)
         .with_idle_output(true)
-        .with_memsize(2);
+        .with_memsize(3);
 
-    // Single RMT channel on GPIO2. The 74HC14 Schmitt-trigger inverter
-    // produces the complementary signal for the BTS7960 H-bridge (RPWM/LPWM).
+    // Single RMT channel on GPIO2. On the current PH/EN bench wiring GPIO2
+    // drives PH/IN2; on the Option A RailCom rebuild it feeds external logic
+    // that derives the complementary PWM-mode DRV8874 inputs.
     let tx_channel = rmt
         .channel0
         .configure_tx(peripherals.GPIO2, tx_config)
@@ -486,13 +555,13 @@ pub async fn run(
     let command_receiver = scheduler_commands.receiver();
     info!("boot: scheduler command channel initialized");
 
-    // H-bridge enable: GPIO18 push-pull, held LOW during init so the track
-    // sees no signal until the DCC waveform is already stable. This prevents
-    // the decoder (CV29 bit2=1, analog mode enabled) from detecting the brief
-    // DC phase that would otherwise appear while GPIO2 is at idle-LOW before
-    // the first DCC packet is transmitted.
-    let hbridge_enable = Output::new(peripherals.GPIO18, Level::Low, OutputConfig::default());
-    info!("boot: H-bridge GPIO18 held LOW until DCC signal is stable");
+    // Track SLEEP master enable: GPIO18 push-pull, held LOW during init so
+    // the track sees no signal until the DCC waveform is already stable.
+    // RailCom cutout/run: GPIO4 is held HIGH outside timed cutout windows and
+    // driven LOW during the cutout.
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
+    let track_output = TrackOutput::new(peripherals.GPIO18, peripherals.GPIO4, timg1.timer0);
+    info!("boot: track SLEEP GPIO18 held LOW; RailCom cutout/run GPIO4 held inactive HIGH");
 
     spawner
         .spawn(dcc_engine_task_wrapper(
@@ -518,12 +587,57 @@ pub async fn run(
         .spawn(scheduler_task_wrapper(
             command_receiver,
             sender,
-            SYSTEM_STATUS.sender(),
             DISPLAY_CHANNEL.sender(),
             BOOT_READY.sender(),
         ))
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::Scheduler))?;
     info!("boot: scheduler task spawned");
+
+    spawner
+        .spawn(railcom_diag_task())
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomDiag))?;
+    info!("boot: RailCom diagnostics task spawned");
+
+    spawner
+        .spawn(pom_actor_task(
+            POM_REQUESTS.receiver(),
+            POM_RESPONSES.sender(),
+            POM_TX_STARTED.receiver(),
+            POM_RAILCOM_RESULTS.receiver(),
+            scheduler_commands.sender(),
+        ))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::PomActor))?;
+    spawner
+        .spawn(pom_cutout_monitor_task(POM_TX_STARTED.sender()))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::PomCutoutMonitor))?;
+    info!("boot: POM actor and cutout monitor tasks spawned");
+
+    // RailCom RX wiring: UART RX on GPIO5. The cutout timer opens/closes
+    // ISR-side capture windows and the task below drains UART1 FIFO snapshots.
+    // Gate 6 of the 74HC14 has a weak pull-down; bypass by wiring GPIO5 directly
+    // to pin 10 (gate 5 output) and invert the UART RX polarity in firmware.
+    let railcom_rx_pin = Flex::new(peripherals.GPIO5)
+        .peripheral_input()
+        .with_input_inverter(true);
+    let railcom_uart_rx = UartRx::new(peripherals.UART1, railcom_uart_rx_config())
+        .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RailcomUart))?
+        .with_rx(railcom_rx_pin)
+        .into_async();
+
+    spawner
+        .spawn(railcom_isr_capture_task_wrapper(
+            railcom_uart_rx,
+            RAILCOM_RUNTIME_RESULTS.sender(),
+        ))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomIsrCapture))?;
+    spawner
+        .spawn(railcom_uart_runtime_dispatch_task(
+            RAILCOM_RUNTIME_RESULTS.receiver(),
+            POM_RAILCOM_RESULTS.sender(),
+            scheduler_commands.sender(),
+        ))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::RailcomUartDispatch))?;
+    info!("boot: RailCom ISR capture spawned on GPIO5 (POM dispatcher active)");
 
     spawner
         .spawn(net_task_wrapper(NetTaskWrapperContext {
@@ -536,6 +650,8 @@ pub async fn run(
                 status_sender: SYSTEM_STATUS.sender(),
                 display_sender: DISPLAY_CHANNEL.sender(),
                 ready_sender: BOOT_READY.sender(),
+                pom_request_sender: POM_REQUESTS.sender(),
+                pom_response_receiver: POM_RESPONSES.receiver(),
             },
             failure_sender: BOOT_FAILURE.sender(),
         }))
@@ -551,7 +667,9 @@ pub async fn run(
     // is energised. 20 idle packets ≈ 160 ms of clean signal ensures the decoder
     // does not see a DC transient and enter analog mode at startup.
     for _ in 0..20 {
-        sender.send(DccPacket::Idle).await;
+        sender
+            .send(DccFrame::new(DccPacket::Idle, crate::dcc::CutoutMode::None))
+            .await;
     }
     info!("boot: power-on idle burst complete (20 packets)");
 
@@ -561,7 +679,7 @@ pub async fn run(
             scheduler_sender: scheduler_commands.sender(),
             status_sender: SYSTEM_STATUS.sender(),
             net_status_sender: NET_STATUS.sender(),
-            hbridge_enable,
+            track_output,
             display_sender: DISPLAY_CHANNEL.sender(),
             state_sender: FAULT_STATE.sender(),
             ready_sender: BOOT_READY.sender(),
@@ -592,15 +710,20 @@ pub async fn run(
     // NMRA S-9.2.4: send >=3 Reset packets so the decoder clears its state and
     // enters normal operations mode. Without this some decoders ignore commands.
     for _ in 0..5 {
-        sender.send(DccPacket::Reset).await;
+        sender
+            .send(DccFrame::new(
+                DccPacket::Reset,
+                crate::dcc::CutoutMode::None,
+            ))
+            .await;
     }
     info!("boot: reset sequence complete (5 packets)");
 
     // Brief delay to let decoder finish reset processing.
     Timer::after(Duration::from_millis(100)).await;
 
-    // Track short detector: GPIO3 monitors the 74HC14 Schmitt trigger output
-    // (direct connection) for overcurrent events from the BTS7960 R_IS/L_IS.
+    // Track short detector: GPIO3 monitors the active-low conditioned
+    // overcurrent/fault output from the external detector.
     // Spawned after reset + stabilization so the decoder is quiescent.
     let short_pin = new_short_detect_input(peripherals.GPIO3);
     let fault_state_receiver = FAULT_STATE.receiver().ok_or(BootError::CriticalTaskInit(
@@ -619,7 +742,6 @@ pub async fn run(
 
     info!("boot: waiting for critical task readiness");
     wait_for_runtime_ready(BOOT_READY.receiver(), BOOT_FAILURE.receiver()).await?;
-    arm_track_power_output();
     FAULT_CHANNEL.send(FaultEvent::TrackPowerArmed).await;
     info!("boot: track power armed after critical runtime readiness");
     DISPLAY_CHANNEL
