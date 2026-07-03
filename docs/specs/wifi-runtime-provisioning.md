@@ -188,15 +188,15 @@ flash driver.
 
 ## Persistent Format
 
-Use a small versioned record in flash or NVS.
+Use a small versioned record in a dedicated application-owned flash partition.
 
-Preferred if practical: NVS/key-value storage.
-
-Fallback: a dedicated blob with:
+Selected format:
 
 ```text
-magic: "DCCWIFI1"
+magic: "DCCWIFI"
 version: 1
+generation
+flags
 ssid_len
 password_len
 ssid bytes
@@ -212,10 +212,105 @@ Requirements:
 - allow clearing credentials later;
 - avoid logging secret contents.
 
-Before implementation, run a short storage spike and pick exactly one storage
-backend for the first release. If NVS is straightforward on the current
-ESP32-C6 stack, use NVS. If it is not, use the versioned blob format above and
-keep the encode/decode logic host-testable.
+### Storage Spike Decision
+
+Decision for the first runtime provisioning release: use a dedicated versioned
+blob in a small application-owned flash partition, not NVS.
+
+Rationale:
+
+- the current stack is `esp-hal`/`esp-rtos`/`esp-radio`, not ESP-IDF;
+- `esp-radio` on ESP32-C6 currently needs local NVS symbol stubs in
+  `src/net/mod.rs`, so treating NVS as an application persistence dependency
+  would couple this feature to a storage path that is not actually initialized;
+- the project already has `partitions.csv`, so a dedicated data partition is
+  explicit and reviewable;
+- blob encode/decode, checksum validation, corruption handling, and flag
+  semantics can be host-tested without flash hardware;
+- the concrete flash driver remains an outer detail and can be replaced later
+  without changing WiFi provisioning policy.
+
+Required partition change for the implementation task:
+
+```text
+# Name,     Type, SubType, Offset,   Size,     Flags
+dcc_cfg,    data, 0x40,    0x1E0000, 0x2000,
+```
+
+To keep a 2 MiB flash layout valid, shrink the current factory app partition
+from `0x1F0000` to `0x1D0000` and place `dcc_cfg` at `0x1E0000`. Do not store
+application credentials in the existing `nvs` partition; leave that partition
+available for platform/radio use.
+
+Flash layout inside `dcc_cfg`:
+
+- two 4 KiB erase sectors;
+- one fixed-size credential record per sector: slot A and slot B;
+- each record contains a monotonically increasing generation counter;
+- load chooses the valid record with the highest generation;
+- save erases and writes only the inactive sector, then subsequent loads prefer
+  the newer valid slot after checksum validation;
+- clear erases both slots;
+- missing means both slots are erased or empty;
+- corrupt means at least one slot contains non-empty bytes but no slot validates.
+
+Record shape:
+
+```text
+magic: "DCCWIFI"
+version: 1
+generation: u32
+flags: u8
+ssid_len: u8
+password_len: u8
+ssid bytes [32]
+password bytes [64]
+checksum: u32
+```
+
+Flags:
+
+- bit 0: `force_provisioning_on_next_boot`;
+- all other bits must be zero in version 1.
+
+Checksum:
+
+- use a small deterministic checksum implemented in the host-testable codec;
+- checksum covers every record byte except the checksum field itself;
+- checksum mismatch maps to corrupt config, never to missing config.
+
+Reset strategy:
+
+- after credentials are saved successfully from the setup flow, call
+  `esp_hal::system::software_reset()`;
+- the same API is already used by panic/fail-fast paths in `src/bin/main.rs`,
+  so no new reset dependency is introduced;
+- do not reset until the store reports a successful save.
+
+Power-loss behavior:
+
+- power loss during inactive-sector erase/write leaves the previous valid
+  sector active;
+- power loss after the inactive slot validates makes the newer generation
+  active;
+- if both slots are corrupt, boot enters provisioning due to
+  `InvalidStoredCredentials`;
+- this behavior needs HIL validation before relying on field updates.
+
+Typed error surface:
+
+```rust
+pub enum StoreError {
+    FlashRead,
+    FlashErase,
+    FlashWrite,
+    Corrupt,
+    BufferTooSmall,
+}
+```
+
+The codec should distinguish `Missing` from `Corrupt`; the flash adapter should
+map driver errors to read/erase/write variants without logging credentials.
 
 ## WiFi Module Changes
 
@@ -367,9 +462,9 @@ Boot must not add a 10 second delay when GPIO21 is not pressed. It should only
 wait for the 10 second override window if GPIO21 is already active-low at the
 time the provisioning decision is made.
 
-After successful credential save, use the platform reset API to reboot. If no
-safe reset API is available during the first implementation, show a saved
-confirmation page and ask the operator to power-cycle manually.
+After successful credential save, call `esp_hal::system::software_reset()` to
+reboot. Do not show success or reset until the store reports that credentials
+were written successfully.
 
 ## Button Integration
 
@@ -467,9 +562,12 @@ and physically gated. This is acceptable for the project scope.
 
 ### Phase 3: Persistent Store
 
-- Implement flash/NVS storage.
-- Add encode/decode tests for stored record format if using blob storage.
+- Implement `dcc_cfg` flash blob storage.
+- Add encode/decode tests for stored record format.
 - Treat corrupt config as `InvalidStoredCredentials`.
+- Keep the previously valid slot active if save is interrupted during inactive
+  sector erase/write.
+- Prefer the newer generation only after the inactive slot validates.
 
 ### Phase 4: Provisioning AP And HTTP
 
