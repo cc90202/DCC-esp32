@@ -1,37 +1,6 @@
 //! OLED display event types and async task.
 
-use crate::system_status::{FaultCause, LedState};
-
-/// Boot sequence milestones shown on the display during initialisation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum BootStep {
-    PeripheralsInit,
-    WifiConnecting,
-    WifiConnected,
-    DccEngineReady,
-    SystemRunning,
-}
-
-/// Events that update the OLED display content.
-#[derive(Debug, Clone)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum DisplayEvent {
-    BootProgress(BootStep),
-    IpAssigned([u8; 4]),
-    SystemState(LedState),
-    ActiveLocoCount(u8),
-    Fault(FaultCause),
-    FaultCleared,
-    Message(heapless::String<21>),
-}
-
-#[cfg(target_arch = "riscv32")]
-pub type DisplayChannel = embassy_sync::channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    DisplayEvent,
-    8,
->;
+use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
 
 #[cfg(target_arch = "riscv32")]
 use defmt::warn;
@@ -99,24 +68,58 @@ fn draw_throbber<D: DrawTarget<Color = BinaryColor>>(target: &mut D, origin: Poi
     }
 }
 
-#[cfg(target_arch = "riscv32")]
-fn apply_display_event(
-    event: DisplayEvent,
-    boot_step: &mut BootStep,
-    ip: &mut Option<[u8; 4]>,
-    state: &mut LedState,
-    loco_count: &mut u8,
-    fault: &mut Option<FaultCause>,
-    message: &mut Option<heapless::String<21>>,
-) {
-    match event {
-        DisplayEvent::BootProgress(s) => *boot_step = s,
-        DisplayEvent::IpAssigned(addr) => *ip = Some(addr),
-        DisplayEvent::SystemState(s) => *state = s,
-        DisplayEvent::ActiveLocoCount(n) => *loco_count = n,
-        DisplayEvent::Fault(f) => *fault = Some(f),
-        DisplayEvent::FaultCleared => *fault = None,
-        DisplayEvent::Message(m) => *message = Some(m),
+/// Aggregated OLED display state, updated one [`DisplayEvent`] at a time.
+///
+/// Mirrors the reducer pattern used by [`crate::system_status::StatusModel`]:
+/// a single struct owns all display fields so [`Self::apply`] and `render`
+/// don't need to thread six independent `&mut` parameters through the task.
+#[derive(Debug, Clone)]
+pub struct DisplayModel {
+    boot_step: BootStep,
+    ip: Option<[u8; 4]>,
+    state: LedState,
+    loco_count: u8,
+    fault: Option<FaultCause>,
+    message: Option<heapless::String<21>>,
+}
+
+impl DisplayModel {
+    /// Builds a new model in the initial boot state.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            boot_step: BootStep::PeripheralsInit,
+            ip: None,
+            state: LedState::Booting,
+            loco_count: 0,
+            fault: None,
+            message: None,
+        }
+    }
+
+    /// Applies one display event, updating the relevant field.
+    pub fn apply(&mut self, event: DisplayEvent) {
+        match event {
+            DisplayEvent::BootProgress(s) => self.boot_step = s,
+            DisplayEvent::IpAssigned(addr) => self.ip = Some(addr),
+            DisplayEvent::SystemState(s) => self.state = s,
+            DisplayEvent::ActiveLocoCount(n) => self.loco_count = n,
+            DisplayEvent::Fault(f) => self.fault = Some(f),
+            DisplayEvent::FaultCleared => self.fault = None,
+            DisplayEvent::Message(m) => self.message = Some(m),
+        }
+    }
+
+    /// Returns the current LED-equivalent system state shown on screen.
+    #[must_use]
+    pub const fn state(&self) -> LedState {
+        self.state
+    }
+}
+
+impl Default for DisplayModel {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -162,19 +165,13 @@ fn format_ip(addr: [u8; 4]) -> heapless::String<15> {
 }
 
 #[cfg(target_arch = "riscv32")]
-#[allow(clippy::too_many_arguments)]
 async fn render(
     display: &mut Ssd1306Async<
         I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
         DisplaySize128x64,
         BufferedGraphicsModeAsync<DisplaySize128x64>,
     >,
-    boot_step: BootStep,
-    ip: Option<[u8; 4]>,
-    state: LedState,
-    loco_count: u8,
-    fault: Option<FaultCause>,
-    message: &Option<heapless::String<21>>,
+    model: &DisplayModel,
     throbber_frame: u8,
 ) {
     use core::fmt::Write;
@@ -187,11 +184,11 @@ async fn render(
 
     // Blue zone (pixels 16-63): skip gap, start content at Y=26
     let mut line: heapless::String<21> = heapless::String::new();
-    let _ = write!(line, "State: {}", led_state_label(state));
+    let _ = write!(line, "State: {}", led_state_label(model.state));
     let _ = Text::new(&line, Point::new(0, 26), style).draw(display);
 
     line.clear();
-    if let Some(addr) = ip {
+    if let Some(addr) = model.ip {
         let ip_str = format_ip(addr);
         let _ = write!(line, "IP: {}", ip_str);
     } else {
@@ -200,17 +197,17 @@ async fn render(
     let _ = Text::new(&line, Point::new(0, 36), style).draw(display);
 
     line.clear();
-    let _ = write!(line, "Locos: {}", loco_count);
+    let _ = write!(line, "Locos: {}", model.loco_count);
     let _ = Text::new(&line, Point::new(0, 46), style).draw(display);
 
-    if let Some(cause) = fault {
+    if let Some(cause) = model.fault {
         line.clear();
         let _ = write!(line, "Fault: {}", fault_label(cause));
         let _ = Text::new(&line, Point::new(0, 56), style).draw(display);
     }
 
     // Animated throbber next to state label when running.
-    if state == LedState::Running {
+    if model.state == LedState::Running {
         draw_throbber(
             display,
             Point::new(96, 18),
@@ -219,9 +216,9 @@ async fn render(
     }
 
     // Last row: boot step during boot, or message after boot
-    if !matches!(boot_step, BootStep::SystemRunning) {
-        let _ = Text::new(boot_step_label(boot_step), Point::new(0, 63), style).draw(display);
-    } else if let Some(msg) = message {
+    if !matches!(model.boot_step, BootStep::SystemRunning) {
+        let _ = Text::new(boot_step_label(model.boot_step), Point::new(0, 63), style).draw(display);
+    } else if let Some(msg) = &model.message {
         let _ = Text::new(msg, Point::new(0, 63), style).draw(display);
     }
 
@@ -233,13 +230,13 @@ async fn render(
 pub async fn display_task(
     i2c: Option<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     receiver: Receiver<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::boot::BootReadyEvent, 9>,
+    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
 ) -> ! {
     let Some(i2c) = i2c else {
         warn!("display: disabled, draining display events");
         ready_sender
-            .send(crate::boot::BootReadyEvent::DisplayDegraded(
-                crate::boot::OptionalPeripheralInit::DisplayUnavailable,
+            .send(crate::system_status::BootReadyEvent::DisplayDegraded(
+                crate::system_status::OptionalPeripheralInit::DisplayUnavailable,
             ))
             .await;
         loop {
@@ -256,8 +253,8 @@ pub async fn display_task(
     if display.init().await.is_err() {
         warn!("display: SSD1306 init failed, draining display events");
         ready_sender
-            .send(crate::boot::BootReadyEvent::DisplayDegraded(
-                crate::boot::OptionalPeripheralInit::DisplayInit,
+            .send(crate::system_status::BootReadyEvent::DisplayDegraded(
+                crate::system_status::OptionalPeripheralInit::DisplayInit,
             ))
             .await;
         loop {
@@ -266,32 +263,17 @@ pub async fn display_task(
     }
 
     ready_sender
-        .send(crate::boot::BootReadyEvent::DisplayReady)
+        .send(crate::system_status::BootReadyEvent::DisplayReady)
         .await;
 
-    let mut boot_step = BootStep::PeripheralsInit;
-    let mut ip: Option<[u8; 4]> = None;
-    let mut state = LedState::Booting;
-    let mut loco_count: u8 = 0;
-    let mut fault: Option<FaultCause> = None;
-    let mut message: Option<heapless::String<21>> = None;
+    let mut model = DisplayModel::new();
     let mut throbber_frame: u8 = 0;
 
     // Initial render (shows "PeripheralsInit" boot step).
-    render(
-        &mut display,
-        boot_step,
-        ip,
-        state,
-        loco_count,
-        fault,
-        &message,
-        throbber_frame,
-    )
-    .await;
+    render(&mut display, &model, throbber_frame).await;
 
     loop {
-        if state == LedState::Running {
+        if model.state == LedState::Running {
             let mut next_throbber_tick = Instant::now() + THROBBER_INTERVAL;
             loop {
                 let now = Instant::now();
@@ -304,16 +286,8 @@ pub async fn display_task(
                 let wait = next_throbber_tick - now;
                 match with_timeout(wait, receiver.receive()).await {
                     Ok(event) => {
-                        apply_display_event(
-                            event,
-                            &mut boot_step,
-                            &mut ip,
-                            &mut state,
-                            &mut loco_count,
-                            &mut fault,
-                            &mut message,
-                        );
-                        if state != LedState::Running {
+                        model.apply(event);
+                        if model.state != LedState::Running {
                             throbber_frame = 0;
                             break;
                         }
@@ -328,26 +302,52 @@ pub async fn display_task(
         } else {
             throbber_frame = 0;
             let event = receiver.receive().await;
-            apply_display_event(
-                event,
-                &mut boot_step,
-                &mut ip,
-                &mut state,
-                &mut loco_count,
-                &mut fault,
-                &mut message,
-            );
+            model.apply(event);
         }
-        render(
-            &mut display,
-            boot_step,
-            ip,
-            state,
-            loco_count,
-            fault,
-            &message,
-            throbber_frame,
-        )
-        .await;
+        render(&mut display, &model, throbber_frame).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_model_starts_in_initial_boot_state() {
+        let model = DisplayModel::new();
+        assert_eq!(model.boot_step, BootStep::PeripheralsInit);
+        assert_eq!(model.state(), LedState::Booting);
+        assert_eq!(model.ip, None);
+        assert_eq!(model.loco_count, 0);
+        assert_eq!(model.fault, None);
+        assert!(model.message.is_none());
+    }
+
+    #[test]
+    fn test_apply_updates_only_targeted_field() {
+        let mut model = DisplayModel::new();
+
+        model.apply(DisplayEvent::BootProgress(BootStep::WifiConnecting));
+        assert_eq!(model.boot_step, BootStep::WifiConnecting);
+
+        model.apply(DisplayEvent::IpAssigned([192, 168, 4, 1]));
+        assert_eq!(model.ip, Some([192, 168, 4, 1]));
+
+        model.apply(DisplayEvent::SystemState(LedState::Running));
+        assert_eq!(model.state(), LedState::Running);
+
+        model.apply(DisplayEvent::ActiveLocoCount(3));
+        assert_eq!(model.loco_count, 3);
+
+        model.apply(DisplayEvent::Fault(FaultCause::TrackShort));
+        assert_eq!(model.fault, Some(FaultCause::TrackShort));
+
+        model.apply(DisplayEvent::FaultCleared);
+        assert_eq!(model.fault, None);
+
+        let mut text: heapless::String<21> = heapless::String::new();
+        text.push_str("hello").expect("fits in 21-byte buffer");
+        model.apply(DisplayEvent::Message(text));
+        assert_eq!(model.message.as_deref(), Some("hello"));
     }
 }
