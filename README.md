@@ -79,9 +79,9 @@ Important:
 
 5. Select the locomotive address and drive.
 
-> **Note:** CV programming is not yet available.
-> Locomotives can only be controlled at their factory default address until
-> the programming track hardware is integrated.
+> **Note:** CV programming support is under active development.
+> RailCom/POM read and write paths are being integrated, but full programming-track
+> hardware support is not yet complete.
 
 ## Cargo Aliases
 
