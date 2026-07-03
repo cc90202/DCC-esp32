@@ -1,51 +1,52 @@
 //! Central fault and e-stop state manager.
 //!
-//! Pure state-machine [`FaultManagerState::reduce`] drives all transitions;
-//! the async [`fault_manager_task`] only performs I/O on its output.
+//! An internal pure reducer drives all transitions; the async [`fault_manager_task`]
+//! only performs I/O on its output.
 //!
 //! # Overview
 //!
 //! The fault manager is a state machine with three states:
-//! - **Normal** - Track powered, motion commands accepted, H-bridge enabled
-//! - **EstopLatched** - Operator pressed stop button; resume clears; H-bridge disabled
-//! - **FaultLatched** - Hardware fault (track short, CV error); long resume or service action clears; H-bridge disabled
+//! - **Normal** - Track powered, motion commands accepted, track driver enabled
+//! - **EstopLatched** - Operator pressed stop button; resume clears; track driver disabled
+//! - **FaultLatched** - Hardware fault (track short, CV error); long resume or service action clears; track driver disabled
 //!
 //! # Examples
 //!
 //! **Host-side state machine test:**
 //!
-//! ```
-//! use dcc_esp32::fault_manager::{FaultManagerState, FaultEvent, FaultCause};
+//! ```ignore
+//! use dcc_esp32::fault_manager::FaultManagerState;
+//! use dcc_esp32::system_status::FaultEvent;
 //!
 //! // Start in Normal state
 //! let mut state = FaultManagerState::Normal;
 //!
 //! // Operator presses stop button
 //! let event = FaultEvent::StopPressed;
-//! state = FaultManagerState::reduce(state, event);
+//! state = state.reduce(event).next;
 //! assert_eq!(state, FaultManagerState::EstopLatched);
 //!
 //! // Operator presses resume (short press, <2s)
-//! state = FaultManagerState::reduce(state, FaultEvent::ResumeShortPressed);
+//! state = state.reduce(FaultEvent::ResumeShortPressed).next;
 //! assert_eq!(state, FaultManagerState::Normal);
 //! ```
 //!
 //! **Fault latching (e.g., track short):**
 //!
-//! ```
-//! use dcc_esp32::fault_manager::{FaultManagerState, FaultEvent, FaultCause};
+//! ```ignore
+//! use dcc_esp32::fault_manager::FaultManagerState;
+//! use dcc_esp32::system_status::{FaultCause, FaultEvent};
 //!
 //! let mut state = FaultManagerState::Normal;
 //!
 //! // Short detector triggers; sends FaultEvent::FaultLatched(TrackShort)
-//! state = FaultManagerState::reduce(
-//!     state,
-//!     FaultEvent::FaultLatched(FaultCause::TrackShort),
-//! );
+//! state = state
+//!     .reduce(FaultEvent::FaultLatched(FaultCause::TrackShort))
+//!     .next;
 //! assert_eq!(state, FaultManagerState::FaultLatched(FaultCause::TrackShort));
 //!
 //! // Only long resume or service clear can exit
-//! state = FaultManagerState::reduce(state, FaultEvent::ResumeLongPressed);
+//! state = state.reduce(FaultEvent::ResumeLongPressed).next;
 //! assert_eq!(state, FaultManagerState::Normal);
 //! ```
 //!
@@ -73,12 +74,13 @@
 //! **Side-effects per transition** (emitted by `Transition`):
 //! - Scheduler commands: `EmergencyStopAll`, `Pause`, `Resume`
 //! - Status events: `EstopActive`, `EstopCleared`, `FaultLatched`, `FaultCleared`
-//! - H-bridge GPIO: HIGH in Normal, LOW otherwise
-
-#[cfg(target_arch = "riscv32")]
-use core::sync::atomic::{AtomicBool, Ordering};
+//! - Track-driver enable GPIO: HIGH in Normal, LOW otherwise
 
 use crate::system_status::FaultCause;
+#[cfg(any(target_arch = "riscv32", test))]
+use crate::system_status::FaultEvent;
+#[cfg(target_arch = "riscv32")]
+use crate::track_output::TrackOutput;
 #[cfg(target_arch = "riscv32")]
 use crate::{dcc::SchedulerCommand, system_status::SystemStatusEvent};
 #[cfg(target_arch = "riscv32")]
@@ -86,32 +88,9 @@ use embassy_sync::channel::Sender;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::watch;
 
-#[cfg(target_arch = "riscv32")]
-static MOTION_COMMANDS_ENABLED: AtomicBool = AtomicBool::new(true);
-#[cfg(target_arch = "riscv32")]
-static TRACK_POWER_ARMED: AtomicBool = AtomicBool::new(false);
-
-/// External events consumed by the fault state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum FaultEvent {
-    /// Boot sequence has finished; track power may be enabled if state permits.
-    TrackPowerArmed,
-    /// Physical stop button pressed (GPIO22).
-    StopPressed,
-    /// Resume button short-press (<2 s) - clears e-stop, ignored during fault.
-    ResumeShortPressed,
-    /// Resume button long-press (≥2 s) - force-clears any latched state.
-    ResumeLongPressed,
-    /// Hardware or service fault detected (e.g. track short, CV error).
-    FaultLatched(FaultCause),
-    /// Fault condition resolved by automated service logic.
-    FaultClearedByService,
-}
-
 /// Tri-state machine governing track safety.
 ///
-/// Only [`Normal`](Self::Normal) allows motion commands and H-bridge output.
+/// Only [`Normal`](Self::Normal) allows motion commands and track output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum FaultManagerState {
@@ -121,27 +100,6 @@ pub enum FaultManagerState {
     EstopLatched,
     /// Hardware/service fault; requires long-press or service clear.
     FaultLatched(FaultCause),
-}
-
-/// Returns `true` when the system is in [`Normal`](FaultManagerState::Normal) state.
-///
-/// Checked by the network layer before forwarding speed/function commands to the scheduler.
-#[cfg(target_arch = "riscv32")]
-#[must_use]
-pub fn motion_commands_enabled() -> bool {
-    MOTION_COMMANDS_ENABLED.load(Ordering::Acquire)
-}
-
-/// Allow the fault manager to energize the track when state returns to `Normal`.
-#[cfg(target_arch = "riscv32")]
-pub fn arm_track_power_output() {
-    TRACK_POWER_ARMED.store(true, Ordering::Release);
-}
-
-#[cfg(target_arch = "riscv32")]
-fn set_motion_commands_enabled_for_state(state: FaultManagerState) {
-    let enabled = matches!(state, FaultManagerState::Normal);
-    MOTION_COMMANDS_ENABLED.store(enabled, Ordering::Release);
 }
 
 /// Complete description of a state transition's side-effects.
@@ -179,8 +137,10 @@ impl FaultManagerState {
         };
 
         match (self, event) {
-            (FaultManagerState::Normal, FaultEvent::TrackPowerArmed)
-            | (FaultManagerState::EstopLatched, FaultEvent::TrackPowerArmed)
+            (FaultManagerState::Normal, FaultEvent::TrackPowerArmed) => {
+                t.send_resume = true;
+            }
+            (FaultManagerState::EstopLatched, FaultEvent::TrackPowerArmed)
             | (FaultManagerState::FaultLatched(_), FaultEvent::TrackPowerArmed) => {}
             (FaultManagerState::Normal, FaultEvent::StopPressed) => {
                 t.next = FaultManagerState::EstopLatched;
@@ -222,8 +182,10 @@ impl FaultManagerState {
                 t.emit_fault_cleared = true;
             }
             (FaultManagerState::Normal, FaultEvent::ResumeShortPressed)
-            | (FaultManagerState::Normal, FaultEvent::ResumeLongPressed)
-            | (FaultManagerState::Normal, FaultEvent::FaultClearedByService)
+            | (FaultManagerState::Normal, FaultEvent::ResumeLongPressed) => {
+                t.send_resume = true;
+            }
+            (FaultManagerState::Normal, FaultEvent::FaultClearedByService)
             | (FaultManagerState::EstopLatched, FaultEvent::StopPressed)
             | (FaultManagerState::EstopLatched, FaultEvent::FaultClearedByService)
             | (FaultManagerState::FaultLatched(_), FaultEvent::StopPressed) => {}
@@ -233,12 +195,6 @@ impl FaultManagerState {
     }
 }
 
-#[cfg(target_arch = "riscv32")]
-pub type FaultEventChannel = embassy_sync::channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    FaultEvent,
-    16,
->;
 #[cfg(target_arch = "riscv32")]
 pub type FaultStateWatch =
     watch::Watch<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, FaultManagerState, 1>;
@@ -269,11 +225,11 @@ pub struct FaultManagerTaskContext {
         SystemStatusEvent,
         8,
     >,
-    pub hbridge_enable: esp_hal::gpio::Output<'static>,
+    pub track_output: TrackOutput,
     pub display_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::display::DisplayEvent,
+        crate::system_status::DisplayEvent,
         8,
     >,
     pub state_sender: watch::Sender<
@@ -285,27 +241,27 @@ pub struct FaultManagerTaskContext {
     pub ready_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::boot::BootReadyEvent,
+        crate::system_status::BootReadyEvent,
         9,
     >,
 }
 
 /// Async event loop that applies [`FaultManagerState::reduce`] and dispatches side-effects.
 ///
-/// Owns the H-bridge enable GPIO and forwards scheduler/status commands via channels.
+/// Owns the track-driver enable GPIO and forwards scheduler/status commands via channels.
 #[cfg(target_arch = "riscv32")]
 #[embassy_executor::task]
 pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     #[inline]
-    fn apply_hbridge_enable_for_state(
+    fn apply_track_output_for_state(
         state: FaultManagerState,
-        hbridge_enable: &mut esp_hal::gpio::Output<'static>,
+        armed: bool,
+        track_output: &mut TrackOutput,
     ) {
-        let armed = TRACK_POWER_ARMED.load(Ordering::Acquire);
         if armed && matches!(state, FaultManagerState::Normal) {
-            hbridge_enable.set_high();
+            track_output.set_track_enabled(true);
         } else {
-            hbridge_enable.set_low();
+            track_output.set_track_enabled(false);
         }
     }
 
@@ -314,43 +270,49 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
         scheduler_sender,
         status_sender,
         net_status_sender,
-        mut hbridge_enable,
+        mut track_output,
         display_sender,
         state_sender,
         ready_sender,
     } = context;
 
     let mut state = FaultManagerState::Normal;
-    set_motion_commands_enabled_for_state(state);
-    apply_hbridge_enable_for_state(state, &mut hbridge_enable);
+    let mut armed = false;
+    apply_track_output_for_state(state, armed, &mut track_output);
     state_sender.send(state);
     ready_sender
-        .send(crate::boot::BootReadyEvent::FaultManager)
+        .send(crate::system_status::BootReadyEvent::FaultManager)
         .await;
 
     loop {
         let event = receiver.receive().await;
         defmt::info!("fault_manager: event={:?} state_before={:?}", event, state);
+        if event == FaultEvent::TrackPowerArmed {
+            armed = true;
+        }
         let t = state.reduce(event);
         let prev_state = state;
         state = t.next;
-        set_motion_commands_enabled_for_state(state);
-        apply_hbridge_enable_for_state(state, &mut hbridge_enable);
+        apply_track_output_for_state(state, armed, &mut track_output);
+        let motion_enabled = matches!(state, FaultManagerState::Normal);
+        // Mirrors apply_track_output_for_state: the driver stays off until
+        // the boot sequence arms track power, even in Normal state.
+        let track_enabled = armed && motion_enabled;
         if state != prev_state {
             state_sender.send(state);
             defmt::warn!(
                 "fault_manager: state {:?} -> {:?}, track_enabled={}, motion_enabled={}",
                 prev_state,
                 state,
-                matches!(state, FaultManagerState::Normal),
-                motion_commands_enabled()
+                track_enabled,
+                motion_enabled
             );
         } else {
             defmt::info!(
                 "fault_manager: state unchanged {:?}, track_enabled={}, motion_enabled={}",
                 state,
-                matches!(state, FaultManagerState::Normal),
-                motion_commands_enabled()
+                track_enabled,
+                motion_enabled
             );
         }
 
@@ -370,25 +332,26 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             let event = SystemStatusEvent::EstopActive;
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::Fault(FaultCause::Estop));
+            let _ = display_sender
+                .try_send(crate::system_status::DisplayEvent::Fault(FaultCause::Estop));
         }
         if t.emit_estop_cleared {
             let event = SystemStatusEvent::EstopCleared;
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::FaultCleared);
+            let _ = display_sender.try_send(crate::system_status::DisplayEvent::FaultCleared);
         }
         if let Some(cause) = t.emit_fault_latched {
             let event = SystemStatusEvent::FaultLatched(cause);
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::Fault(cause));
+            let _ = display_sender.try_send(crate::system_status::DisplayEvent::Fault(cause));
         }
         if t.emit_fault_cleared {
             let event = SystemStatusEvent::FaultCleared;
             status_sender.send(event).await;
             net_status_sender.send(event).await;
-            let _ = display_sender.try_send(crate::display::DisplayEvent::FaultCleared);
+            let _ = display_sender.try_send(crate::system_status::DisplayEvent::FaultCleared);
         }
     }
 }
@@ -398,10 +361,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_track_power_armed_is_state_machine_noop() {
+    fn test_track_power_armed_in_normal_resumes_scheduler() {
         let t = FaultManagerState::Normal.reduce(FaultEvent::TrackPowerArmed);
         assert_eq!(t.next, FaultManagerState::Normal);
-        assert!(!t.send_resume);
+        assert!(t.send_resume);
         assert!(!t.send_pause);
         assert!(!t.send_emergency_stop_all);
     }
@@ -424,10 +387,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resume_in_normal_is_ignored() {
+    fn test_resume_in_normal_retriggers_scheduler_resume() {
         let t = FaultManagerState::Normal.reduce(FaultEvent::ResumeShortPressed);
         assert_eq!(t.next, FaultManagerState::Normal);
-        assert!(!t.send_resume);
+        assert!(t.send_resume);
     }
 
     #[test]

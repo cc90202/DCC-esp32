@@ -16,8 +16,12 @@ path = "./src/bin/main.rs"
 # Platform-independent dependencies (available in tests)
 heapless         = "0.9"
 
+[target.'cfg(not(target_arch = "riscv32"))'.dependencies]
+critical-section = { version = "1.2.0", features = ["std"] }
+
 # ESP32-specific dependencies (only compiled for RISC-V target, not for host tests)
 [target.'cfg(target_arch = "riscv32")'.dependencies]
+critical-section = "1.2.0"
 esp-hal = { version = "~1.0", features = ["defmt", "esp32c6", "unstable"] }
 ssd1306 = { version = "0.10", features = ["async"] }
 embedded-graphics = "0.8"
@@ -41,7 +45,6 @@ embassy-time = { version = "0.5.0", features = ["defmt"] }
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-futures = "0.1.2"
 
-critical-section = "1.2.0"
 static_cell      = "2.1.1"
 
 # Network stack (WiFi Z21 UDP)

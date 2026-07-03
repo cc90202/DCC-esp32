@@ -26,6 +26,7 @@ use esp_hal::ram;
 use esp_hal::rmt::{Channel as RmtChannel, ContinuousTxTransaction, LoopMode, PulseCode, Tx};
 use static_cell::StaticCell;
 
+use crate::dcc::DccAddress;
 use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_RMT_OFFSET};
 
 // ESP32-C6 RMT peripheral RAM base address (from TRM §29.5, APB address space).
@@ -38,12 +39,12 @@ use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_RMT_OFFSET};
 // target the first channel window starting at this peripheral base.
 //
 // Each channel memory block holds 48 PulseCode entries (48 × 4 bytes = 192 bytes).
-// The channel is configured with memsize = 2 blocks by the RMT setup used for
-// continuous transmission, so channel 0 has 96 writable entries available.
+// The channel is configured with memsize = 3 blocks by the RMT setup used for
+// continuous transmission, so channel 0 has 144 writable entries available.
 const RMT_RAM_START: usize = 0x6000_6400;
 const RMT_CHANNEL_RAM_SIZE: usize = 48;
 const RMT_CHANNEL_INDEX: usize = 0;
-const RMT_CHANNEL_MEM_BLOCKS: usize = 2;
+const RMT_CHANNEL_MEM_BLOCKS: usize = 3;
 const RMT_CHANNEL_TOTAL_RAM_SIZE: usize = RMT_CHANNEL_RAM_SIZE * RMT_CHANNEL_MEM_BLOCKS;
 
 const _: () = assert!(
@@ -56,9 +57,29 @@ const _: () = assert!(
 );
 
 #[derive(Clone, Copy)]
+struct PacketMeta {
+    cutout_allowed: bool,
+    pom_requested: bool,
+    pom_read_requested: bool,
+    target_address: Option<DccAddress>,
+}
+
+impl PacketMeta {
+    const fn idle() -> Self {
+        Self {
+            cutout_allowed: false,
+            pom_requested: false,
+            pom_read_requested: false,
+            target_address: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct SharedPacket {
     data: [PulseCode; MAX_DATA_PULSES],
     len: u8,
+    meta: PacketMeta,
 }
 
 impl SharedPacket {
@@ -66,6 +87,7 @@ impl SharedPacket {
         Self {
             data: [PulseCode::end_marker(); MAX_DATA_PULSES],
             len: 0,
+            meta: PacketMeta::idle(),
         }
     }
 }
@@ -81,6 +103,8 @@ pub enum InitError {
 static DATA_READY: AtomicBool = AtomicBool::new(false);
 static ISR_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
 static NEXT_PACKET: Mutex<RefCell<SharedPacket>> = Mutex::new(RefCell::new(SharedPacket::empty()));
+static CURRENT_PACKET_META: Mutex<RefCell<PacketMeta>> =
+    Mutex::new(RefCell::new(PacketMeta::idle()));
 // Read-only after init - no Mutex needed, ISR reads directly via raw pointer.
 static IDLE_DATA_CELL: StaticCell<SharedPacket> = StaticCell::new();
 static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_mut());
@@ -108,6 +132,10 @@ pub fn init(
 
     DATA_READY.store(false, Ordering::Release);
     ISR_HEARTBEAT.store(0, Ordering::Relaxed);
+    critical_section::with(|cs| {
+        *NEXT_PACKET.borrow_ref_mut(cs) = SharedPacket::empty();
+        *CURRENT_PACKET_META.borrow_ref_mut(cs) = PacketMeta::idle();
+    });
 
     let tx = channel
         .transmit_continuously(idle_rmt, LoopMode::InfiniteWithInterrupt(1))
@@ -131,7 +159,13 @@ pub fn init(
 /// Non-blocking. The ISR picks up the data within one packet cycle (~6ms).
 /// If called again before the ISR consumes the previous submission, the new
 /// data overwrites the old - use [`is_consumed`] to enforce ACK-based pacing.
-pub fn submit_packet(data: &[PulseCode]) {
+pub fn submit_packet(
+    data: &[PulseCode],
+    cutout_allowed: bool,
+    pom_requested: bool,
+    pom_read_requested: bool,
+    target_address: Option<DccAddress>,
+) {
     debug_assert!(
         data.len() <= MAX_DATA_PULSES,
         "packet tail exceeds MAX_DATA_PULSES"
@@ -141,6 +175,12 @@ pub fn submit_packet(data: &[PulseCode]) {
         let len = data.len().min(MAX_DATA_PULSES);
         packet.len = len as u8;
         packet.data[..len].copy_from_slice(&data[..len]);
+        packet.meta = PacketMeta {
+            cutout_allowed,
+            pom_requested,
+            pom_read_requested,
+            target_address,
+        };
     });
 
     DATA_READY.store(true, Ordering::Release);
@@ -190,13 +230,32 @@ fn rmt_interrupt() {
 
     clear_tx_loop_interrupt();
     reset_tx_loop_counter();
-    ISR_HEARTBEAT.fetch_add(1, Ordering::Relaxed);
+    let packet_sequence = ISR_HEARTBEAT
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    // `on_dcc_packet_boundary()` is observation-only telemetry. It intentionally
+    // runs before the cutout authorization check so packet-boundary health can be
+    // counted on every loop. Do not add hardware side effects here: real cutout
+    // execution must remain gated by the current packet metadata below.
+    crate::railcom::on_dcc_packet_boundary();
+    let current_meta = critical_section::with(|cs| *CURRENT_PACKET_META.borrow_ref(cs));
+    // Only the precomputed scheduler decision may trigger a physical cutout from
+    // this ISR. Keep all policy outside the RMT timing path.
+    if current_meta.cutout_allowed {
+        let _ = crate::track_output::request_cutout_from_isr(
+            packet_sequence,
+            current_meta.pom_requested,
+            current_meta.pom_read_requested,
+            current_meta.target_address,
+        );
+    }
 
     if DATA_READY.load(Ordering::Acquire) {
         critical_section::with(|cs| {
             let pkt = NEXT_PACKET.borrow_ref(cs);
             debug_assert!(pkt.len as usize <= MAX_DATA_PULSES);
             write_data_to_rmt_ram(&pkt.data[..pkt.len as usize]);
+            *CURRENT_PACKET_META.borrow_ref_mut(cs) = pkt.meta;
         });
         DATA_READY.store(false, Ordering::Release);
     } else {
@@ -209,6 +268,9 @@ fn rmt_interrupt() {
             let idle = unsafe { &*idle_ptr };
             write_data_to_rmt_ram(&idle.data[..idle.len as usize]);
         }
+        critical_section::with(|cs| {
+            *CURRENT_PACKET_META.borrow_ref_mut(cs) = PacketMeta::idle();
+        });
     }
 }
 
@@ -246,8 +308,8 @@ fn write_data_to_rmt_ram(data: &[PulseCode]) {
     // started from the idle waveform. We patch only the variable tail after that
     // fixed preamble so every loop keeps a gap-free packet prefix in hardware.
     //
-    // With memsize = 2, channel 0 owns 96 entries total. Starting at
-    // PREAMBLE_RMT_OFFSET reserves 20 entries for the preamble, leaving 76.
+    // With memsize = 3, channel 0 owns 144 entries total. Starting at
+    // PREAMBLE_RMT_OFFSET reserves 20 entries for the preamble, leaving 124.
     // The compile-time assertions above guarantee that MAX_DATA_PULSES plus the
     // trailing end_marker still fit inside this remaining window.
     let base = (RMT_RAM_START as *mut PulseCode)
