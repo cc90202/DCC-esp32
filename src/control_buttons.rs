@@ -53,8 +53,7 @@ use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::gpio::{Input, InputConfig, Pull};
 
 use crate::control_logic::{
-    DebouncedPress, DebouncedRelease, ResumePressKind, classify_resume_press,
-    debounce_active_low_press, debounce_active_low_release,
+    DebouncedPress, DebouncedRelease, debounce_active_low_press, debounce_active_low_release,
 };
 
 const DEBOUNCE_MS: u64 = 30;
@@ -83,6 +82,10 @@ async fn wait_for_debounced_press(button: &mut Input<'static>) {
     }
 }
 
+/// Cancellation-safe by construction: no state is held across `.await`
+/// points, so dropping this future mid-debounce (as `is_long_press` does via
+/// `with_timeout`) simply restarts the loop on the next call. Keep it that
+/// way — adding side effects here would break `is_long_press`.
 async fn wait_for_debounced_release(button: &mut Input<'static>) {
     loop {
         if button.is_high() {
@@ -111,17 +114,12 @@ async fn is_long_press(button: &mut Input<'static>, threshold: Duration) -> bool
         .await
         .is_ok()
     {
-        matches!(
-            classify_resume_press(0, RESUME_LONG_PRESS_MS),
-            ResumePressKind::Short
-        )
+        // Released before the threshold elapsed -> short press.
+        false
     } else {
         // Timed out while still pressed -> long press. Ensure release before returning.
         wait_for_debounced_release(button).await;
-        matches!(
-            classify_resume_press(RESUME_LONG_PRESS_MS, RESUME_LONG_PRESS_MS),
-            ResumePressKind::Long
-        )
+        true
     }
 }
 
@@ -187,8 +185,7 @@ pub fn new_button_input(pin: impl esp_hal::gpio::InputPin + 'static) -> Input<'s
 #[cfg(test)]
 mod tests {
     use crate::control_logic::{
-        DebouncedPress, DebouncedRelease, ResumePressKind, classify_resume_press,
-        debounce_active_low_press, debounce_active_low_release,
+        DebouncedPress, DebouncedRelease, debounce_active_low_press, debounce_active_low_release,
     };
 
     #[test]
@@ -213,11 +210,5 @@ mod tests {
             debounce_active_low_release(true, false),
             DebouncedRelease::IgnoredBounce
         );
-    }
-
-    #[test]
-    fn test_resume_press_classification_threshold() {
-        assert_eq!(classify_resume_press(1_999, 2_000), ResumePressKind::Short);
-        assert_eq!(classify_resume_press(2_000, 2_000), ResumePressKind::Long);
     }
 }

@@ -334,23 +334,26 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
         let t = state.reduce(event);
         let prev_state = state;
         state = t.next;
-        set_motion_commands_enabled_for_state(state);
-        apply_hbridge_enable_for_state(state, &mut hbridge_enable);
+        apply_track_output_for_state(state, armed, &mut track_output);
+        let motion_enabled = matches!(state, FaultManagerState::Normal);
+        // Mirrors apply_track_output_for_state: the driver stays off until
+        // the boot sequence arms track power, even in Normal state.
+        let track_enabled = armed && motion_enabled;
         if state != prev_state {
             state_sender.send(state);
             defmt::warn!(
                 "fault_manager: state {:?} -> {:?}, track_enabled={}, motion_enabled={}",
                 prev_state,
                 state,
-                matches!(state, FaultManagerState::Normal),
-                motion_commands_enabled()
+                track_enabled,
+                motion_enabled
             );
         } else {
             defmt::info!(
                 "fault_manager: state unchanged {:?}, track_enabled={}, motion_enabled={}",
                 state,
-                matches!(state, FaultManagerState::Normal),
-                motion_commands_enabled()
+                track_enabled,
+                motion_enabled
             );
         }
 

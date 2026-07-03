@@ -48,8 +48,9 @@ pub mod validator;
 pub use cv::CvProgrammer;
 #[doc(inline)]
 pub use cv::{
-    AckDetector, AckError, CvReadError, CvWriteError, ProgrammingConfig, SessionError, SwitchError,
-    TrackSwitch,
+    PomRailcomResult, PomRailcomResultChannel, PomRequest, PomRequestChannel, PomRequestId,
+    PomResponse, PomResponseChannel, PomTxStartedChannel, pom_actor_task,
+    pom_result_from_railcom_items,
 };
 #[cfg(any(test, not(target_arch = "riscv32")))]
 #[doc(inline)]
@@ -59,6 +60,8 @@ pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_dcc_packet};
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
 pub use engine::{IdleWaveformBuildError, build_idle_rmt_buffer, dcc_engine_task};
+#[cfg(target_arch = "riscv32")]
+pub(crate) use packet::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{DccAddress, DccPacket, Direction, NmraSpeed28, NmraSpeed128, PacketEncodeError};
 #[cfg(target_arch = "riscv32")]
@@ -81,4 +84,4 @@ pub use timing::{
     DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
 };
 #[doc(inline)]
-pub use validator::{DccValidator, ValidationError};
+pub use validator::ValidationError;

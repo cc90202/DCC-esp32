@@ -108,6 +108,121 @@ enum AddressKind {
     Long(u16),
 }
 
+/// Public view of which NMRA S-9.2 addressing mode a `DccAddress` uses.
+///
+/// Exposed separately from the private `AddressKind` enum so the on-wire
+/// representation (`Short(u8)` / `Long(u16)`) stays encapsulated while callers
+/// can still pattern-match on the addressing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum DccAddressKind {
+    Short,
+    Long,
+}
+
+/// Compact crate-internal representation for atomics and ISR metadata.
+///
+/// Raw layout:
+/// - `0` = no address
+/// - `1..=127` = short address
+/// - `0x8000 | value` = long address, with `value` in `128..=10239`
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct PackedDccAddress(u16);
+
+#[cfg(any(test, target_arch = "riscv32"))]
+impl PackedDccAddress {
+    const LONG_TAG: u16 = 0x8000;
+    const LONG_VALUE_MASK: u16 = 0x3fff;
+
+    pub(crate) const fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) const fn raw(self) -> u16 {
+        self.0
+    }
+
+    pub(crate) fn from_address(address: Option<DccAddress>) -> Self {
+        match address {
+            Some(address) if address.is_short() => Self(address.value()),
+            Some(address) => Self(Self::LONG_TAG | address.value()),
+            None => Self(0),
+        }
+    }
+
+    pub(crate) fn address(self) -> Option<DccAddress> {
+        if self.0 == 0 {
+            return None;
+        }
+
+        if (self.0 & Self::LONG_TAG) != 0 {
+            DccAddress::new_long(self.0 & Self::LONG_VALUE_MASK)
+        } else {
+            let value = u8::try_from(self.0).ok()?;
+            DccAddress::new_short(value)
+        }
+    }
+}
+
+/// Shared bit layout for packing a [`PackedDccAddress`] together with a
+/// handful of boolean flags into a single `u32` for atomic-word metadata
+/// side channels.
+///
+/// The address occupies bits `0..=15` (see [`PackedDccAddress`]); flag `n`
+/// (0-based) occupies bit `16 + n`. This is the common backing storage for
+/// `track_output::PackedRailcomPacketMetadata` (2 flags: pom_requested,
+/// pom_read_requested) and `railcom::pom_dispatch::PendingPomRailcomMetadata`
+/// (1 flag: read_requested) — both used to exist as independent copies of the
+/// same mask/shift arithmetic before being unified here.
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PackedAddressFlags(u32);
+
+#[cfg(any(test, target_arch = "riscv32"))]
+impl PackedAddressFlags {
+    const ADDRESS_MASK: u32 = 0xffff;
+    const FLAG_BASE_BIT: u32 = 16;
+
+    /// Called from ISR-resident code (`track_output` metadata capture); the
+    /// inline attributes keep these helpers out of flash on non-LTO builds.
+    #[inline(always)]
+    pub(crate) fn new(address: Option<DccAddress>) -> Self {
+        Self(u32::from(PackedDccAddress::from_address(address).raw()))
+    }
+
+    #[inline(always)]
+    pub(crate) const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[inline(always)]
+    pub(crate) const fn raw(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) fn address(self) -> Option<DccAddress> {
+        PackedDccAddress::from_raw((self.0 & Self::ADDRESS_MASK) as u16).address()
+    }
+
+    /// Sets flag `index` (0-based, added to [`Self::FLAG_BASE_BIT`]) when
+    /// `value` is true; leaves the word unchanged otherwise.
+    #[must_use]
+    #[inline(always)]
+    pub(crate) fn with_flag(self, index: u32, value: bool) -> Self {
+        if value {
+            Self(self.0 | (1 << (Self::FLAG_BASE_BIT + index)))
+        } else {
+            self
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) const fn flag(self, index: u32) -> bool {
+        (self.0 & (1 << (Self::FLAG_BASE_BIT + index))) != 0
+    }
+}
+
 impl DccAddress {
     /// Create a new short address (1-127)
     ///
@@ -135,14 +250,28 @@ impl DccAddress {
         }
     }
 
-    /// Alias for `new_short`
-    pub fn short(addr: u8) -> Option<Self> {
-        Self::new_short(addr)
-    }
-
-    /// Alias for `new_long`
-    pub fn long(addr: u16) -> Option<Self> {
-        Self::new_long(addr)
+    /// Create an address from its plain numeric magnitude (1-127 short,
+    /// 128-10239 long), picking the addressing mode implied by NMRA's
+    /// non-overlapping short/long ranges.
+    ///
+    /// Returns `None` for 0 or values above 10239.
+    ///
+    /// This differs from the Z21 wire decoding in `wire.rs::parse_loco_address`,
+    /// which reads a 2-byte on-wire field where the addressing mode is tagged by
+    /// the top two bits of the high byte rather than inferred from magnitude —
+    /// a wire long-address encoding could in principle carry a value that also
+    /// fits the short range. `from_magnitude` is for callers that only have a
+    /// plain numeric address (e.g. a RailCom-reported address) and want the
+    /// same short/long split NMRA uses.
+    #[must_use]
+    pub fn from_magnitude(addr: u16) -> Option<Self> {
+        if addr == 0 {
+            None
+        } else if addr <= 127 {
+            Self::new_short(addr as u8)
+        } else {
+            Self::new_long(addr)
+        }
     }
 
     /// Returns `true` if this is a short address
@@ -168,9 +297,9 @@ impl DccAddress {
         let mut bytes = Vec::new();
         match self.kind {
             AddressKind::Short(addr) => {
-                if bytes.push(addr).is_err() {
-                    unreachable!("short address must fit in two-byte buffer");
-                }
+                bytes
+                    .push(addr)
+                    .expect("short address must fit in two-byte buffer");
             }
             AddressKind::Long(addr) => {
                 // Long address format: 11AAAAAA AAAAAAAA
@@ -178,12 +307,12 @@ impl DccAddress {
                 // Bottom 8 bits in second byte
                 let high = 0xC0 | ((addr >> 8) as u8);
                 let low = (addr & 0xFF) as u8;
-                if bytes.push(high).is_err() {
-                    unreachable!("long address high byte must fit in two-byte buffer");
-                }
-                if bytes.push(low).is_err() {
-                    unreachable!("long address low byte must fit in two-byte buffer");
-                }
+                bytes
+                    .push(high)
+                    .expect("long address high byte must fit in two-byte buffer");
+                bytes
+                    .push(low)
+                    .expect("long address low byte must fit in two-byte buffer");
             }
         }
         bytes
@@ -348,9 +477,9 @@ impl PacketBytes {
     }
 
     fn push(&mut self, byte: u8) {
-        if self.bytes.push(byte).is_err() {
-            unreachable!("packet payload must fit in six-byte buffer");
-        }
+        self.bytes
+            .push(byte)
+            .expect("packet payload must fit in ten-byte buffer");
         self.checksum ^= byte;
     }
 
@@ -361,10 +490,19 @@ impl PacketBytes {
         }
     }
 
-    fn finalize(mut self) -> Vec<u8, 6> {
-        if self.bytes.push(self.checksum).is_err() {
-            unreachable!("packet checksum must fit in six-byte buffer");
-        }
+    /// Appends the Dallas/Maxim CRC8 of the bytes pushed so far.
+    ///
+    /// Used by RCN-218 automatic-logon packets (`LogonSelect`), which carry a
+    /// CRC8 byte ahead of the usual trailing XOR checksum.
+    fn push_crc8(&mut self) {
+        let crc = DccPacket::crc8_dallas_maxim(&self.bytes);
+        self.push(crc);
+    }
+
+    fn finalize(mut self) -> Vec<u8, 10> {
+        self.bytes
+            .push(self.checksum)
+            .expect("packet checksum must fit in ten-byte buffer");
         self.bytes
     }
 }
@@ -605,6 +743,38 @@ impl DccPacket {
                 packet.push(0x00);
                 packet.push(Self::encode_emergency_stop_instruction(Direction::Forward));
             }
+            DccPacket::BroadcastBinaryStateShort { bin_addr, state } => {
+                packet.push(0x00);
+                packet.push(0xDD);
+                packet.push(Self::bool_mask(state, 0x80) | bin_addr.value());
+            }
+            DccPacket::LogonEnable {
+                group,
+                command_station_id,
+                session_id,
+            } => {
+                packet.push(254);
+                packet.push(0xFC | group.value());
+                packet.push((command_station_id >> 8) as u8);
+                packet.push((command_station_id & 0xFF) as u8);
+                packet.push(session_id);
+            }
+            DccPacket::LogonSelect {
+                manufacturer_id,
+                decoder_id,
+                subcommand,
+            } => {
+                let logon_instruction = 0xD0 | ((manufacturer_id >> 8) as u8 & 0x0F);
+                packet.push(254);
+                packet.push(logon_instruction);
+                packet.push((manufacturer_id & 0xFF) as u8);
+                packet.push(((decoder_id >> 24) & 0xFF) as u8);
+                packet.push(((decoder_id >> 16) & 0xFF) as u8);
+                packet.push(((decoder_id >> 8) & 0xFF) as u8);
+                packet.push((decoder_id & 0xFF) as u8);
+                packet.push(subcommand);
+                packet.push_crc8();
+            }
             DccPacket::ServiceModeVerifyByte { cv, value } => {
                 // Service Mode Verify Byte per NMRA S-9.2.2
                 // Packet format: [preamble] 0 0111CCAA 0 AAAAAAAA 0 DDDDDDDD 0 [checksum] 1
@@ -637,6 +807,82 @@ impl DccPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn service_cv(cv: u16) -> ServiceModeCv {
+        ServiceModeCv::new(cv).expect("test service-mode CV must be valid")
+    }
+
+    fn pom_cv(cv: u16) -> PomCv {
+        PomCv::new(cv).expect("test POM CV must be valid")
+    }
+
+    fn binary_state_addr(address: u8) -> BinaryStateAddress {
+        BinaryStateAddress::new(address).expect("test binary-state address must be valid")
+    }
+
+    fn logon_group(group: u8) -> LogonGroup {
+        LogonGroup::new(group).expect("test logon group must be valid")
+    }
+
+    #[test]
+    fn test_from_magnitude_picks_short_or_long_by_range() {
+        assert_eq!(DccAddress::from_magnitude(0), None);
+        assert_eq!(DccAddress::from_magnitude(3), DccAddress::new_short(3));
+        assert_eq!(DccAddress::from_magnitude(127), DccAddress::new_short(127));
+        assert_eq!(DccAddress::from_magnitude(128), DccAddress::new_long(128));
+        assert_eq!(
+            DccAddress::from_magnitude(10_239),
+            DccAddress::new_long(10_239)
+        );
+        assert_eq!(DccAddress::from_magnitude(10_240), None);
+    }
+
+    #[test]
+    fn test_packed_dcc_address_roundtrip() {
+        let short = DccAddress::new_short(3).unwrap();
+        let long = DccAddress::new_long(1000).unwrap();
+
+        assert_eq!(PackedDccAddress::from_address(None).raw(), 0);
+        assert_eq!(
+            PackedDccAddress::from_address(Some(short)).address(),
+            Some(short)
+        );
+        assert_eq!(
+            PackedDccAddress::from_address(Some(long)).address(),
+            Some(long)
+        );
+        assert_eq!(PackedDccAddress::from_raw(0).address(), None);
+    }
+
+    #[test]
+    fn test_packed_dcc_address_rejects_invalid_raw_values() {
+        assert_eq!(PackedDccAddress::from_raw(128).address(), None);
+        assert_eq!(PackedDccAddress::from_raw(0x8000 | 127).address(), None);
+        assert_eq!(PackedDccAddress::from_raw(0x8000 | 10_240).address(), None);
+    }
+
+    #[test]
+    fn test_packed_address_flags_roundtrip() {
+        let short = DccAddress::new_short(3).unwrap();
+
+        let packed = PackedAddressFlags::new(Some(short))
+            .with_flag(0, true)
+            .with_flag(1, false);
+
+        assert_eq!(packed.address(), Some(short));
+        assert!(packed.flag(0));
+        assert!(!packed.flag(1));
+        assert_eq!(PackedAddressFlags::from_raw(packed.raw()), packed);
+    }
+
+    #[test]
+    fn test_packed_address_flags_no_flags_set_by_default() {
+        let packed = PackedAddressFlags::new(None);
+
+        assert_eq!(packed.address(), None);
+        assert!(!packed.flag(0));
+        assert!(!packed.flag(1));
+    }
 
     #[test]
     fn test_short_address_validation() {

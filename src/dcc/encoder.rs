@@ -183,37 +183,31 @@ pub fn encode_dcc_data_portion(
 ) -> Result<Vec<PulseCode, MAX_DATA_PULSES>, EncodeError> {
     let mut pulses = Vec::new();
 
-    push_data_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
+    push_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
 
     let bytes = packet.to_bytes()?;
     for (i, &byte) in bytes.iter().enumerate() {
         let byte_pulses = encode_byte(byte);
         for pulse in byte_pulses {
-            push_data_pulse(&mut pulses, pulse)?;
+            push_pulse(&mut pulses, pulse)?;
         }
 
         if i < bytes.len() - 1 {
-            push_data_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
+            push_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
         }
     }
 
-    push_data_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
+    push_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
 
     Ok(pulses)
 }
 
-/// Push a pulse into the fixed-capacity pulse buffer.
-fn push_pulse(
-    pulses: &mut Vec<PulseCode, DCC_MAX_PACKET_PULSES>,
-    pulse: PulseCode,
-) -> Result<(), EncodeError> {
-    pulses
-        .push(pulse)
-        .map_err(|_| EncodeError::PulseBufferOverflow)
-}
-
-fn push_data_pulse(
-    pulses: &mut Vec<PulseCode, MAX_DATA_PULSES>,
+/// Push a pulse into a fixed-capacity pulse buffer of any capacity `N`.
+///
+/// Shared by [`encode_dcc_packet`] (capacity `DCC_MAX_PACKET_PULSES`) and
+/// [`encode_dcc_data_portion`] (capacity `MAX_DATA_PULSES`).
+fn push_pulse<const N: usize>(
+    pulses: &mut Vec<PulseCode, N>,
     pulse: PulseCode,
 ) -> Result<(), EncodeError> {
     pulses

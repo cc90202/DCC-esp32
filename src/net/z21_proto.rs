@@ -137,6 +137,56 @@ const FW_VERSION: u32 = 0x00000140; // firmware 1.40
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
+/// `LAN_SET_BROADCASTFLAGS` payload — an OR-combination of Z21 broadcast
+/// subscription bits (Z21 LAN Protocol Specification v1.13, §2.16).
+///
+/// We currently push all relevant broadcasts unconditionally rather than
+/// gating on the subscribed set, so `SetBroadcastFlags` only needs to parse
+/// and store the value (see `dispatch_command`'s handling of this variant).
+/// The named accessors document the handful of bits apps are known to rely
+/// on, without committing to modeling the full 32-bit set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct BroadcastFlags(u32);
+
+impl BroadcastFlags {
+    /// §2.16 `0x00000001` — driving/switching broadcasts (track power,
+    /// programming mode, short circuit, stopped, loco info, turnout info).
+    const BASIC_DRIVING_AND_SWITCHING: u32 = 0x0000_0001;
+    /// §2.16 `0x00000100` — `LAN_SYSTEMSTATE_DATACHANGED` broadcasts.
+    const SYSTEM_STATUS: u32 = 0x0000_0100;
+    /// §2.16 `0x00000004` — `LAN_RAILCOM_DATACHANGED` for subscribed locos.
+    const RAILCOM_DATA: u32 = 0x0000_0004;
+
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+
+    /// `0x00000001` — driving/switching broadcasts requested.
+    #[must_use]
+    pub const fn basic_driving_and_switching(self) -> bool {
+        (self.0 & Self::BASIC_DRIVING_AND_SWITCHING) != 0
+    }
+
+    /// `0x00000100` — system status broadcasts requested.
+    #[must_use]
+    pub const fn system_status(self) -> bool {
+        (self.0 & Self::SYSTEM_STATUS) != 0
+    }
+
+    /// `0x00000004` — RailCom data broadcasts requested.
+    #[must_use]
+    pub const fn railcom_data(self) -> bool {
+        (self.0 & Self::RAILCOM_DATA) != 0
+    }
+}
+
 /// Parsed Z21 command from an incoming UDP frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -149,7 +199,7 @@ pub enum Z21Command {
     GetXBusVersion,
     GetStatus,
     SetBroadcastFlags {
-        flags: u32,
+        flags: BroadcastFlags,
     },
     SetTrackPowerOn,
     SetTrackPowerOff,
@@ -176,6 +226,14 @@ pub enum Z21Command {
     GetTurnoutInfo {
         address: u16,
     },
+    RailcomGetData {
+        request_type: u8,
+        address: u16,
+    },
+    /// `LAN_LOCONET_DETECTOR` — LocoNet track occupancy detector query.
+    /// We have no LocoNet detector support; the parser only validates frame
+    /// length, so no fields are extracted (dispatch is a 0-byte no-op).
+    LoconetDetector,
     Unknown,
 }
 
