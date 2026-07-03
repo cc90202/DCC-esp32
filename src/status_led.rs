@@ -102,7 +102,7 @@ async fn apply_status_event(
     display_sender: &embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::display::DisplayEvent,
+        crate::system_status::DisplayEvent,
         8,
     >,
 ) {
@@ -110,7 +110,7 @@ async fn apply_status_event(
     let new_state = model.led_state();
     if new_state != *prev_state {
         *prev_state = new_state;
-        let _ = display_sender.try_send(crate::display::DisplayEvent::SystemState(new_state));
+        let _ = display_sender.try_send(crate::system_status::DisplayEvent::SystemState(new_state));
     }
 }
 
@@ -127,13 +127,13 @@ pub async fn status_led_task(
     display_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::display::DisplayEvent,
+        crate::system_status::DisplayEvent,
         8,
     >,
     ready_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::boot::BootReadyEvent,
+        crate::system_status::BootReadyEvent,
         9,
     >,
 ) -> ! {
@@ -144,7 +144,7 @@ pub async fn status_led_task(
     // Both LEDs start off until the first event is processed.
     set_both_off(&mut green_led, &mut red_led);
     ready_sender
-        .send(crate::boot::BootReadyEvent::StatusLed)
+        .send(crate::system_status::BootReadyEvent::StatusLed)
         .await;
 
     loop {

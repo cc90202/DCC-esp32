@@ -1,66 +1,12 @@
-//! CV Programming Service Mode Implementation
+//! Service-mode CV programming scaffolding.
 //!
-//! Provides Service Mode CV programming (Verify Byte + Write Byte) with hardware
-//! abstraction via traits. Automatically coordinates main track pause/resume and
-//! relay switching with RAII safety guarantees.
-//!
-//! # NMRA S-9.2.2 Compliance
-//!
-//! - Direct Mode CV addressing (CV 1-256)
-//! - Verify Byte operation (instruction 0x74)
-//! - Write Byte operation (instruction 0x7C)
-//! - ACK pulse detection for confirmation
-//! - 5 packet repetitions with 6ms gaps (configurable)
-//!
-//! # Examples
-//!
-//! **Verify a CV value (host example):**
-//!
-//! ```no_run
-//! use dcc_esp32::dcc::{MockTrackSwitch, MockAckDetector, CvProgrammer, ProgrammingConfig};
-//!
-//! // Mock hardware for testing (no ESP hardware needed)
-//! let track_switch = MockTrackSwitch::new();
-//! let ack_detector = MockAckDetector::new(true); // Will report ACK
-//!
-//! let config = ProgrammingConfig::default();
-//! let programmer = CvProgrammer::new(track_switch, ack_detector, config);
-//!
-//! // Verify CV1 (primary address) equals 42
-//! // let result = programmer.verify_byte(1, 42).await;
-//! ```
-//!
-//! **Write a CV value (host example):**
-//!
-//! ```no_run
-//! use dcc_esp32::dcc::{MockTrackSwitch, MockAckDetector, CvProgrammer};
-//!
-//! let track_switch = MockTrackSwitch::new();
-//! let ack_detector = MockAckDetector::new(true);
-//! let programmer = CvProgrammer::new(
-//!     track_switch,
-//!     ack_detector,
-//!     Default::default(),
-//! );
-//!
-//! // Write CV2 (acceleration) = 20
-//! // let result = programmer.write_byte(2, 20).await;
-//! ```
-//!
-//! # Architecture
-//!
-//! - Separate RMT channel from main track (planned; not integrated yet)
-//! - Trait-based hardware abstraction (`TrackSwitch`, `AckDetector`)
-//! - Automatic main track coordination via scheduler Pause/Resume commands
-//! - RAII safety with `ProgrammingSessionGuard`
-//! - Fault protection: refuses new sessions after improper shutdown
+//! The programmer API and host mocks live here, but the ESP32-C6 target does
+//! not yet have a programming-track packet transport. `read_cv`/`write_cv`/
+//! `verify_cv` fail fast with `PacketTransportUnavailable` before touching any
+//! hardware (scheduler pause, relay switch) — none of this module's types are
+//! wired into production code yet, so everything here is crate-internal
+//! scaffolding, not a public API.
 
-#[cfg(target_arch = "riscv32")]
-use crate::dcc::scheduler::SchedulerCommand;
-#[cfg(target_arch = "riscv32")]
-use crate::fault_manager::FaultEvent;
-#[cfg(target_arch = "riscv32")]
-use crate::system_status::FaultCause;
 #[cfg(target_arch = "riscv32")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -71,11 +17,14 @@ use embassy_sync::channel::Sender;
 #[cfg(target_arch = "riscv32")]
 use embassy_time::{Duration, Instant};
 
-// --- Configuration ---
+#[cfg(target_arch = "riscv32")]
+use crate::dcc::scheduler::SchedulerCommand;
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::{FaultCause, FaultEvent};
 
 /// CV programming configuration (NMRA S-9.2.2 timing parameters)
 #[derive(Debug, Clone, Copy)]
-pub struct ProgrammingConfig {
+pub(crate) struct ProgrammingConfig {
     /// Packet repetitions per operation (default: 5 per NMRA S-9.2.2)
     pub repetitions: u8,
 
@@ -112,7 +61,7 @@ const MAX_CV_V1: u16 = 256;
 /// Errors that can occur during CV read operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum CvReadError {
+pub(crate) enum CvReadError {
     /// CV address outside valid range (1-256 in V1)
     InvalidCvAddress(u16),
 
@@ -156,7 +105,7 @@ impl From<SessionError> for CvReadError {
 /// Errors that can occur during CV write operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum CvWriteError {
+pub(crate) enum CvWriteError {
     /// CV address outside valid range (1-256 in V1)
     InvalidCvAddress(u16),
 
@@ -197,7 +146,7 @@ impl From<SessionError> for CvWriteError {
 /// Errors from track switch relay operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum SwitchError {
+pub(crate) enum SwitchError {
     /// Hardware error during relay switching
     HardwareError,
 
@@ -211,7 +160,7 @@ pub enum SwitchError {
 /// Errors from ACK pulse detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum AckError {
+pub(crate) enum AckError {
     /// No ACK pulse received within timeout
     NoAckReceived,
 
@@ -225,7 +174,7 @@ pub enum AckError {
 /// Errors from session management
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum SessionError {
+pub(crate) enum SessionError {
     /// System is in fault state, refusing new sessions
     SystemInFaultState,
 
@@ -239,10 +188,51 @@ impl From<SwitchError> for SessionError {
     }
 }
 
+/// Error types that can be produced by `CvProgrammer::run_session`.
+///
+/// A CV session wraps an inner operation with enter/exit programming-mode
+/// plumbing; both the enter path and the exit path can fail with a
+/// `SwitchError`, and the programmer may refuse a new session while in a
+/// latched fault state. This trait lets `run_session` be generic over the
+/// public read/write error types while keeping fault-latching policy inside
+/// the error enum itself.
+#[cfg(any(test, target_arch = "riscv32"))]
+trait CvSessionError: From<SessionError> + From<SwitchError> + Sized {
+    /// Errors that indicate track hardware or session plumbing is unhealthy
+    /// enough to justify latching the CV service into a fault state.
+    fn should_latch(&self) -> bool;
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+impl CvSessionError for CvReadError {
+    fn should_latch(&self) -> bool {
+        matches!(
+            self,
+            CvReadError::TrackSwitchError(_)
+                | CvReadError::Timeout
+                | CvReadError::AckDetectorError(AckError::HardwareError | AckError::Timeout)
+                | CvReadError::SessionError(SessionError::TrackSwitchError(_))
+        )
+    }
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+impl CvSessionError for CvWriteError {
+    fn should_latch(&self) -> bool {
+        matches!(
+            self,
+            CvWriteError::TrackSwitchError(_)
+                | CvWriteError::Timeout
+                | CvWriteError::AckDetectorError(AckError::HardwareError | AckError::Timeout)
+                | CvWriteError::SessionError(SessionError::TrackSwitchError(_))
+        )
+    }
+}
+
 // --- Trait Abstractions ---
 
 /// Trait for track relay switching between main and programming track
-pub trait TrackSwitch {
+pub(crate) trait TrackSwitch {
     /// Switch relay to programming track output
     ///
     /// # Errors
@@ -259,7 +249,7 @@ pub trait TrackSwitch {
 }
 
 /// Trait for ACK pulse detection from programming track current
-pub trait AckDetector {
+pub(crate) trait AckDetector {
     /// Wait for ACK pulse (60-100mA current spike) within timeout
     ///
     /// # Errors
@@ -275,19 +265,19 @@ pub trait AckDetector {
 
 /// Mock track switch for testing (always succeeds)
 #[cfg(any(test, not(target_arch = "riscv32")))]
-pub struct MockTrackSwitch {
+pub(crate) struct MockTrackSwitch {
     in_programming_mode: bool,
 }
 
 #[cfg(any(test, not(target_arch = "riscv32")))]
 impl MockTrackSwitch {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             in_programming_mode: false,
         }
     }
 
-    pub fn is_in_programming_mode(&self) -> bool {
+    pub(crate) fn is_in_programming_mode(&self) -> bool {
         self.in_programming_mode
     }
 }
@@ -314,21 +304,21 @@ impl TrackSwitch for MockTrackSwitch {
 
 /// Mock ACK detector for testing (simulates ACK for expected CV/value pairs)
 #[cfg(any(test, not(target_arch = "riscv32")))]
-pub struct MockAckDetector {
+pub(crate) struct MockAckDetector {
     expected_cv: u16,
     expected_value: u8,
 }
 
 #[cfg(any(test, not(target_arch = "riscv32")))]
 impl MockAckDetector {
-    pub fn new(expected_cv: u16, expected_value: u8) -> Self {
+    pub(crate) fn new(expected_cv: u16, expected_value: u8) -> Self {
         Self {
             expected_cv,
             expected_value,
         }
     }
 
-    pub fn set_expected(&mut self, cv: u16, value: u8) {
+    pub(crate) fn set_expected(&mut self, cv: u16, value: u8) {
         self.expected_cv = cv;
         self.expected_value = value;
     }
@@ -351,26 +341,36 @@ impl AckDetector for MockAckDetector {
 
 // --- CV Address Validation ---
 
+/// Whether `cv` falls within the valid Direct Mode range (NMRA S-9.2.2, 1-256
+/// in V1). Shared by both the read and write validators, which only differ in
+/// which error type they wrap the out-of-range address in.
+#[cfg(any(test, target_arch = "riscv32"))]
+fn cv_in_range(cv: u16) -> bool {
+    (MIN_CV..=MAX_CV_V1).contains(&cv)
+}
+
 #[cfg(any(test, target_arch = "riscv32"))]
 fn validate_cv_address(cv: u16) -> Result<(), CvReadError> {
-    if !(MIN_CV..=MAX_CV_V1).contains(&cv) {
-        return Err(CvReadError::InvalidCvAddress(cv));
+    if cv_in_range(cv) {
+        Ok(())
+    } else {
+        Err(CvReadError::InvalidCvAddress(cv))
     }
-    Ok(())
 }
 
 #[cfg(target_arch = "riscv32")]
 fn validate_cv_address_write(cv: u16) -> Result<(), CvWriteError> {
-    if !(MIN_CV..=MAX_CV_V1).contains(&cv) {
-        return Err(CvWriteError::InvalidCvAddress(cv));
+    if cv_in_range(cv) {
+        Ok(())
+    } else {
+        Err(CvWriteError::InvalidCvAddress(cv))
     }
-    Ok(())
 }
 
 // --- CvProgrammer (Embedded Only) ---
 
 #[cfg(target_arch = "riscv32")]
-pub struct CvProgrammer<TS, AD>
+pub(crate) struct CvProgrammer<TS, AD>
 where
     TS: TrackSwitch,
     AD: AckDetector,
@@ -392,7 +392,7 @@ where
     AD: AckDetector,
 {
     /// Create a new programming track service
-    pub fn new(
+    pub(crate) fn new(
         track_switch: TS,
         ack_detector: AD,
         main_scheduler_tx: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
@@ -409,7 +409,7 @@ where
     }
 
     /// Create a new programming track service with fault manager event reporting.
-    pub fn new_with_fault_sender(
+    pub(crate) fn new_with_fault_sender(
         track_switch: TS,
         ack_detector: AD,
         main_scheduler_tx: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
@@ -428,110 +428,55 @@ where
 
     /// Read CV value via linear verify sequence (0→255)
     ///
+    /// Fails fast on `PacketTransportUnavailable` — the programming-track
+    /// packet transport does not exist yet — before ever touching the main
+    /// scheduler or track relay via `begin_session`. Once a real transport
+    /// lands, `read_cv_internal` will need the session already established,
+    /// so this ordering must be revisited then.
+    ///
     /// # Errors
     /// Returns error if CV address invalid, no ACK received, hardware failure,
     /// or system is in fault state
-    pub async fn read_cv(&mut self, cv: u16) -> Result<u8, CvReadError> {
+    pub(crate) async fn read_cv(&mut self, cv: u16) -> Result<u8, CvReadError> {
         validate_cv_address(cv)?;
-
-        // Check fault state
-        if self.fault_flag.load(Ordering::Acquire) {
-            return Err(CvReadError::SessionError(SessionError::SystemInFaultState));
-        }
-
-        if let Err(e) = self.enter_programming_mode().await {
-            self.latch_fault(FaultCause::CvService);
-            return Err(CvReadError::TrackSwitchError(e));
-        }
-
-        // Perform CV read
-        let result = self.read_cv_internal(cv).await;
-
-        let final_result = Self::merge_session_result(
-            result,
-            self.exit_programming_mode().await,
-            CvReadError::TrackSwitchError,
-        );
-
-        if let Err(err) = &final_result
-            && should_latch_read_fault(err)
-        {
-            self.latch_fault(FaultCause::CvService);
-        }
-        final_result
+        let value = self.read_cv_internal(cv).await?;
+        self.begin_session::<CvReadError>().await?;
+        self.end_session(Ok(value)).await
     }
 
     /// Write value to CV
     ///
+    /// Fails fast on `PacketTransportUnavailable` before touching the main
+    /// scheduler or track relay via `begin_session` (see `read_cv` doc for
+    /// why the internal stub runs first).
+    ///
     /// # Errors
     /// Returns error if CV address invalid, no ACK received, hardware failure,
     /// or system is in fault state
-    pub async fn write_cv(&mut self, cv: u16, value: u8) -> Result<(), CvWriteError> {
+    pub(crate) async fn write_cv(&mut self, cv: u16, value: u8) -> Result<(), CvWriteError> {
         validate_cv_address_write(cv)?;
-
-        // Check fault state
-        if self.fault_flag.load(Ordering::Acquire) {
-            return Err(CvWriteError::SessionError(SessionError::SystemInFaultState));
-        }
-
-        if let Err(e) = self.enter_programming_mode().await {
-            self.latch_fault(FaultCause::CvService);
-            return Err(CvWriteError::TrackSwitchError(e));
-        }
-
-        // Perform CV write
-        let result = self.write_cv_internal(cv, value).await;
-
-        let final_result = Self::merge_session_result(
-            result,
-            self.exit_programming_mode().await,
-            CvWriteError::TrackSwitchError,
-        );
-
-        if let Err(err) = &final_result
-            && should_latch_write_fault(err)
-        {
-            self.latch_fault(FaultCause::CvService);
-        }
-        final_result
+        self.write_cv_internal(cv, value).await?;
+        self.begin_session::<CvWriteError>().await?;
+        self.end_session(Ok(())).await
     }
 
     /// Verify CV has expected value (single check, no linear search)
     ///
+    /// Fails fast on `PacketTransportUnavailable` before touching the main
+    /// scheduler or track relay via `begin_session` (see `read_cv` doc for
+    /// why the internal stub runs first).
+    ///
     /// # Errors
     /// Returns error if CV address invalid, hardware failure, or system is in fault state
-    pub async fn verify_cv(&mut self, cv: u16, value: u8) -> Result<bool, CvReadError> {
+    pub(crate) async fn verify_cv(&mut self, cv: u16, value: u8) -> Result<bool, CvReadError> {
         validate_cv_address(cv)?;
-
-        // Check fault state
-        if self.fault_flag.load(Ordering::Acquire) {
-            return Err(CvReadError::SessionError(SessionError::SystemInFaultState));
-        }
-
-        if let Err(e) = self.enter_programming_mode().await {
-            self.latch_fault(FaultCause::CvService);
-            return Err(CvReadError::TrackSwitchError(e));
-        }
-
-        // Perform CV verify
-        let result = self.verify_cv_internal(cv, value).await;
-
-        let final_result = Self::merge_session_result(
-            result,
-            self.exit_programming_mode().await,
-            CvReadError::TrackSwitchError,
-        );
-
-        if let Err(err) = &final_result
-            && should_latch_read_fault(err)
-        {
-            self.latch_fault(FaultCause::CvService);
-        }
-        final_result
+        let matched = self.verify_cv_internal(cv, value).await?;
+        self.begin_session::<CvReadError>().await?;
+        self.end_session(Ok(matched)).await
     }
 
     /// Clear fault state after manual recovery
-    pub fn clear_fault(&mut self) {
+    pub(crate) fn clear_fault(&mut self) {
         self.fault_flag.store(false, Ordering::Release);
         if let Some(sender) = &self.fault_sender {
             let _ = sender.try_send(FaultEvent::FaultClearedByService);
@@ -540,7 +485,7 @@ where
     }
 
     /// Check if system is in fault state
-    pub fn is_faulted(&self) -> bool {
+    pub(crate) fn is_faulted(&self) -> bool {
         self.fault_flag.load(Ordering::Acquire)
     }
 
@@ -559,19 +504,38 @@ where
         switch_result
     }
 
-    fn merge_session_result<T, E, F>(
-        operation_result: Result<T, E>,
-        switch_result: Result<(), SwitchError>,
-        map_switch_error: F,
-    ) -> Result<T, E>
-    where
-        F: FnOnce(SwitchError) -> E,
-    {
-        match (operation_result, switch_result) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Err(e), _) => Err(e),
-            (Ok(_), Err(e)) => Err(map_switch_error(e)),
+    /// Refuses a new session when the service is already latched into a fault
+    /// state, then pauses the main scheduler and switches the relay to the
+    /// programming track. On enter failure the service latches a fault so the
+    /// next public call short-circuits cleanly.
+    async fn begin_session<E: CvSessionError>(&mut self) -> Result<(), E> {
+        if self.fault_flag.load(Ordering::Acquire) {
+            return Err(E::from(SessionError::SystemInFaultState));
         }
+        if let Err(e) = self.enter_programming_mode().await {
+            self.latch_fault(FaultCause::CvService);
+            return Err(E::from(e));
+        }
+        Ok(())
+    }
+
+    /// Releases the programming track and resumes the main scheduler, then
+    /// merges the inner operation result with the relay-switch result. An
+    /// unhealthy outcome (see `CvSessionError::should_latch`) latches the
+    /// service into a fault state.
+    async fn end_session<T, E: CvSessionError>(&mut self, op_result: Result<T, E>) -> Result<T, E> {
+        let switch_result = self.exit_programming_mode().await;
+        let final_result = match (op_result, switch_result) {
+            (Ok(v), Ok(())) => Ok(v),
+            (Err(e), _) => Err(e),
+            (Ok(_), Err(e)) => Err(E::from(e)),
+        };
+        if let Err(err) = &final_result
+            && err.should_latch()
+        {
+            self.latch_fault(FaultCause::CvService);
+        }
+        final_result
     }
 
     fn latch_fault(&self, cause: FaultCause) {
@@ -582,6 +546,13 @@ where
     }
 
     // --- Internal Methods ---
+    //
+    // Stubs: the programming-track packet transport does not exist yet, so
+    // `verify_cv_internal`/`write_cv_internal` unconditionally return
+    // `PacketTransportUnavailable`, and `read_cv_internal`'s linear-search
+    // loop below only ever runs its first iteration. Called from the public
+    // API *before* `begin_session`, so hitting this stub never pauses the
+    // scheduler or switches the track relay.
 
     async fn read_cv_internal(&mut self, cv: u16) -> Result<u8, CvReadError> {
         let start = Instant::now();
@@ -615,38 +586,6 @@ where
         Err(CvWriteError::PacketTransportUnavailable)
     }
 }
-
-#[cfg(any(test, target_arch = "riscv32"))]
-fn should_latch_read_fault(err: &CvReadError) -> bool {
-    match err {
-        CvReadError::TrackSwitchError(_)
-        | CvReadError::Timeout
-        | CvReadError::AckDetectorError(AckError::HardwareError | AckError::Timeout)
-        | CvReadError::SessionError(SessionError::TrackSwitchError(_)) => true,
-        CvReadError::InvalidCvAddress(_)
-        | CvReadError::NoAckReceived
-        | CvReadError::PacketTransportUnavailable
-        | CvReadError::AckDetectorError(AckError::NoAckReceived)
-        | CvReadError::SessionError(SessionError::SystemInFaultState) => false,
-    }
-}
-
-#[cfg(any(test, target_arch = "riscv32"))]
-fn should_latch_write_fault(err: &CvWriteError) -> bool {
-    match err {
-        CvWriteError::TrackSwitchError(_)
-        | CvWriteError::Timeout
-        | CvWriteError::AckDetectorError(AckError::HardwareError | AckError::Timeout)
-        | CvWriteError::SessionError(SessionError::TrackSwitchError(_)) => true,
-        CvWriteError::InvalidCvAddress(_)
-        | CvWriteError::PacketTransportUnavailable
-        | CvWriteError::AckDetectorError(AckError::NoAckReceived)
-        | CvWriteError::SessionError(SessionError::SystemInFaultState) => false,
-    }
-}
-
-// --- Tests ---
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,11 +641,7 @@ mod tests {
 
     #[test]
     fn test_transport_unavailable_does_not_latch_fault() {
-        assert!(!should_latch_read_fault(
-            &CvReadError::PacketTransportUnavailable
-        ));
-        assert!(!should_latch_write_fault(
-            &CvWriteError::PacketTransportUnavailable
-        ));
+        assert!(!CvReadError::PacketTransportUnavailable.should_latch());
+        assert!(!CvWriteError::PacketTransportUnavailable.should_latch());
     }
 }
