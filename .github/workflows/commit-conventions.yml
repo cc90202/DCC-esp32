@@ -1,0 +1,25 @@
+name: Commit conventions
+
+on:
+  pull_request:
+
+concurrency:
+  group: commit-conventions-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cocogitto
+        run: cargo install cocogitto --locked
+
+      - name: Check commit messages
+        run: cog check --ignore-merge-commits --ignore-fixup-commits "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
