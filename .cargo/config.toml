@@ -20,7 +20,7 @@ ESP_LOG = "info"
 
 [alias]
 # Host-side unit tests for protocol logic (fast feedback).
-test-host = "test --lib --target x86_64-unknown-linux-gnu"
+test-host = "test --lib --target x86_64-unknown-linux-gnu -- --test-threads=1"
 # Host-side linting for library/tests plus host-safe bin stub.
 clippy-host = "clippy --all-targets --all-features --target x86_64-unknown-linux-gnu"
 # Embedded target compile checks (no flashing required).
