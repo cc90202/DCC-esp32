@@ -4,7 +4,10 @@
 target = "riscv32imac-unknown-none-elf"
 
 [target.riscv32imac-unknown-none-elf]
-runner = "espflash flash --monitor"
+# --partition-table is required: without it espflash writes its default
+# 3-entry table and the firmware fails at boot with MissingPartition
+# because the dcc_cfg partition (WiFi credentials) does not exist.
+runner = "espflash flash --monitor --partition-table partitions.csv"
 rustflags = [
   "-C",
   "link-arg=-Tlinkall.x",

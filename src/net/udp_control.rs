@@ -21,13 +21,14 @@ use static_cell::StaticCell;
 
 use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
 use crate::dcc::{LogicalSpeed, PomRequest, PomResponse, SchedulerCommand};
+use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_dispatch::{encode_current_system_state, handle_packet, handle_status_event};
 use crate::net::z21_proto::{self, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 use crate::net::{LocoSlots, loco_is_moving};
 use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEvent};
 
-use super::wifi;
 pub use super::wifi::NetInitError;
+use super::{radio, wifi};
 
 const Z21_PORT: u16 = 21105;
 const DECEL_STEP_MS: u64 = 500;
@@ -38,8 +39,6 @@ static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static NET_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-// Controller must be 'static so WifiController and WifiDevice are 'static too.
-static RADIO_CONTROLLER: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
 
 pub struct NetTaskChannels {
     pub net_status: Receiver<'static, CriticalSectionRawMutex, SystemStatusEvent, 8>,
@@ -76,6 +75,7 @@ pub(super) struct Z21Ctx<'a> {
 pub async fn net_task(
     spawner: Spawner,
     wifi: esp_hal::peripherals::WIFI<'static>,
+    credentials: WifiCredentials,
     scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
     channels: NetTaskChannels,
@@ -89,21 +89,10 @@ pub async fn net_task(
         pom_response_receiver,
     } = channels;
 
-    let controller = esp_radio::init().map_err(|_| NetInitError::EspRadioInit)?;
-    let controller = RADIO_CONTROLLER.init(controller);
-
-    let (mut wifi_ctrl, interfaces) =
-        esp_radio::wifi::new(controller, wifi, esp_radio::wifi::Config::default())
-            .map_err(|_| NetInitError::WifiInit)?;
-
-    wifi_ctrl
-        .set_config(&wifi::client_mode_config())
-        .map_err(|_| NetInitError::WifiSetConfig)?;
-    wifi_ctrl
-        .start_async()
+    let (wifi_ctrl, interfaces) = radio::start_wifi(wifi, &wifi::client_mode_config(&credentials))
         .await
-        .map_err(|_| NetInitError::WifiStart)?;
-    info!("WiFi started, connecting to SSID: {}", wifi::WIFI_SSID);
+        .map_err(NetInitError::WifiBringup)?;
+    info!("WiFi started, connecting to SSID: {}", credentials.ssid());
 
     let net_config = Config::dhcpv4(Default::default());
     let rng = Rng::new();

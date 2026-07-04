@@ -10,14 +10,19 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer, with_timeout};
+use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_hal::gpio::{Flex, Level, Output};
 use esp_hal::rmt::{Rmt, TxChannelConfig, TxChannelCreator};
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::UartRx;
+use esp_storage::FlashStorage;
 use static_cell::StaticCell;
 
-use crate::control_buttons::{new_button_input, resume_button_task, stop_button_task};
+use crate::control_buttons::{
+    ProvisioningRequest, ProvisioningRequestChannel, new_button_input, resume_button_task,
+    stop_button_task, wait_for_boot_provisioning_override,
+};
 use crate::dcc::dcc_engine_task;
 use crate::dcc::engine::DccPacketChannel;
 use crate::dcc::packet_scheduler_task;
@@ -30,14 +35,20 @@ use crate::dcc::{
 use crate::fault_manager::{
     FaultManagerState, FaultManagerTaskContext, FaultStateWatch, fault_manager_task,
 };
+use crate::net::provisioning::{ProvisioningApError, run_provisioning_ap};
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
+use crate::net::wifi_config::{
+    EspFlashStoreError, EspWifiConfigStore, ProvisioningDecision, ProvisioningFlagStore,
+    StoreError, WifiCredentials, load_wifi_credentials_and_decision,
+    wifi_config_store_from_partition,
+};
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
 use crate::railcom::uart_reader::{
     RailcomRxOutput, RailcomUartRuntimeResultChannel, railcom_uart_rx_config,
 };
 use crate::short_detector::{new_short_detect_input, short_detector_task};
-use crate::status_led::{new_led_output, status_led_task};
+use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
 use crate::system_status::{
     BootReadyChannel, BootReadyEvent, BootStep, DisplayChannel, DisplayEvent, FaultEvent,
     FaultEventChannel, NetStatusChannel, OptionalPeripheralInit, SystemStatusChannel,
@@ -55,12 +66,14 @@ static FAULT_STATE: FaultStateWatch = FaultStateWatch::new_with(FaultManagerStat
 static DISPLAY_CHANNEL: DisplayChannel = DisplayChannel::new();
 static BOOT_READY: BootReadyChannel = BootReadyChannel::new();
 static BOOT_FAILURE: BootFailureChannel = BootFailureChannel::new();
+static PROVISIONING_REQUESTS: ProvisioningRequestChannel = ProvisioningRequestChannel::new();
 static RAILCOM_RUNTIME_RESULTS: RailcomUartRuntimeResultChannel =
     RailcomUartRuntimeResultChannel::new();
 static POM_REQUESTS: PomRequestChannel = PomRequestChannel::new();
 static POM_RESPONSES: PomResponseChannel = PomResponseChannel::new();
 static POM_TX_STARTED: PomTxStartedChannel = PomTxStartedChannel::new();
 static POM_RAILCOM_RESULTS: PomRailcomResultChannel = PomRailcomResultChannel::new();
+static WIFI_PARTITION_TABLE_BUFFER: StaticCell<[u8; PARTITION_TABLE_MAX_LEN]> = StaticCell::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -113,6 +126,8 @@ pub enum CriticalTask {
     RailcomUartDispatch,
     Net,
     FaultManager,
+    ProvisioningRequest,
+    ProvisioningLed,
     StopButton,
     ResumeButton,
     ShortDetector,
@@ -122,8 +137,26 @@ pub enum CriticalTask {
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum CriticalTaskInit {
     Net(NetInitError),
+    ProvisioningAp(ProvisioningApError),
+    WifiConfig(WifiConfigInitError),
     FaultStateReceiverUnavailable,
     ReadinessTimeout,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum WifiConfigInitError {
+    Partition(EspFlashStoreError),
+    Store(StoreError),
+}
+
+impl WifiConfigInitError {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Partition(_) => "WiFi config partition unavailable",
+            Self::Store(_) => "WiFi config store operation failed",
+        }
+    }
 }
 
 pub type BootFailureChannel =
@@ -132,6 +165,7 @@ pub type BootFailureChannel =
 struct NetTaskWrapperContext {
     spawner: Spawner,
     wifi: esp_hal::peripherals::WIFI<'static>,
+    credentials: WifiCredentials,
     scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
     channels: NetTaskChannels,
@@ -212,6 +246,12 @@ impl BootError {
             Self::CriticalTaskSpawn(CriticalTask::FaultManager) => {
                 "failed to spawn fault_manager_task"
             }
+            Self::CriticalTaskSpawn(CriticalTask::ProvisioningRequest) => {
+                "failed to spawn provisioning_request_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::ProvisioningLed) => {
+                "failed to spawn provisioning_led_task"
+            }
             Self::CriticalTaskSpawn(CriticalTask::StopButton) => "failed to spawn stop_button_task",
             Self::CriticalTaskSpawn(CriticalTask::ResumeButton) => {
                 "failed to spawn resume_button_task"
@@ -223,6 +263,8 @@ impl BootError {
                 "fault-state watch receiver already taken"
             }
             Self::CriticalTaskInit(CriticalTaskInit::Net(error)) => error.as_str(),
+            Self::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)) => error.as_str(),
+            Self::CriticalTaskInit(CriticalTaskInit::WifiConfig(error)) => error.as_str(),
             Self::CriticalTaskInit(CriticalTaskInit::ReadinessTimeout) => {
                 "critical task readiness timeout"
             }
@@ -310,6 +352,63 @@ fn log_packet_bytes(label: &str, packet: DccPacket, error: BootError) -> Result<
     Ok(())
 }
 
+/// Open the `dcc_cfg` flash partition as the WiFi configuration store.
+fn open_wifi_config_store<'a, 'd>(
+    flash: &'a mut FlashStorage<'d>,
+    partition_table_buffer: &'a mut [u8; PARTITION_TABLE_MAX_LEN],
+) -> Result<EspWifiConfigStore<'a, 'd>, BootError> {
+    wifi_config_store_from_partition(flash, partition_table_buffer).map_err(|error| {
+        BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+            WifiConfigInitError::Partition(error),
+        ))
+    })
+}
+
+/// Grace period after the e-stop event so the fault manager can disable the
+/// track output before flash writes stall the CPU (cache disabled during
+/// erase/write) and the device reboots.
+const PROVISIONING_TRACK_DISABLE_GRACE: Duration = Duration::from_millis(100);
+
+/// Coordinates a runtime WiFi provisioning request from the Resume button:
+/// e-stop the track, persist the next-boot flag, then reboot into setup mode.
+#[embassy_executor::task]
+async fn provisioning_request_task(
+    mut flash: FlashStorage<'static>,
+    partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
+    fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
+    receiver: Receiver<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
+) -> ! {
+    loop {
+        match receiver.receive().await {
+            ProvisioningRequest::Requested => {
+                fault_sender.send(FaultEvent::StopPressed).await;
+                Timer::after(PROVISIONING_TRACK_DISABLE_GRACE).await;
+                warn!("WiFi provisioning requested; saving next-boot flag");
+                match set_force_provisioning_on_next_boot(&mut flash, partition_table_buffer) {
+                    Ok(()) => {
+                        warn!("WiFi provisioning flag saved; rebooting");
+                        esp_hal::system::software_reset();
+                    }
+                    Err(error) => {
+                        defmt::error!("WiFi provisioning flag save failed: {}", error);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn set_force_provisioning_on_next_boot(
+    flash: &mut FlashStorage<'static>,
+    partition_table_buffer: &mut [u8; PARTITION_TABLE_MAX_LEN],
+) -> Result<(), WifiConfigInitError> {
+    let mut store = wifi_config_store_from_partition(flash, partition_table_buffer)
+        .map_err(WifiConfigInitError::Partition)?;
+    store
+        .set_force_on_next_boot()
+        .map_err(WifiConfigInitError::Store)
+}
+
 fn verify_boot_packet_encoding() -> Result<(), BootError> {
     info!("boot: running DCC packet self-check");
 
@@ -371,13 +470,23 @@ async fn net_task_wrapper(context: NetTaskWrapperContext) {
     let NetTaskWrapperContext {
         spawner,
         wifi,
+        credentials,
         scheduler_sender,
         fault_sender,
         channels,
         failure_sender,
     } = context;
 
-    match net_task(spawner, wifi, scheduler_sender, fault_sender, channels).await {
+    match net_task(
+        spawner,
+        wifi,
+        credentials,
+        scheduler_sender,
+        fault_sender,
+        channels,
+    )
+    .await
+    {
         Ok(()) => unreachable!("net_task runs forever after successful initialization"),
         Err(error) => {
             defmt::error!("boot: network init failed: {}", error.as_str());
@@ -505,6 +614,53 @@ pub async fn run(
     // Initialize system status signal first to track startup progression.
     SYSTEM_STATUS.send(SystemStatusEvent::BootStarted).await;
     NET_STATUS.send(SystemStatusEvent::BootStarted).await;
+
+    let mut resume_btn = new_button_input(peripherals.GPIO21);
+    let boot_button_override = wait_for_boot_provisioning_override(&mut resume_btn).await;
+    let mut flash = FlashStorage::new(peripherals.FLASH);
+    let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
+
+    // Single decision path: button override, persistent flag and stored
+    // credentials all flow through `decide_provisioning`, which also clears
+    // the persistent flag once it has been observed.
+    let (wifi_decision, wifi_credentials) = {
+        let mut store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
+        load_wifi_credentials_and_decision(&mut store, boot_button_override).map_err(|error| {
+            BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(WifiConfigInitError::Store(
+                error,
+            )))
+        })?
+    };
+
+    let wifi_credentials = match wifi_decision {
+        ProvisioningDecision::StationMode => {
+            wifi_credentials.ok_or(BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+                WifiConfigInitError::Store(StoreError::MissingCredentials),
+            )))?
+        }
+        ProvisioningDecision::ProvisioningMode(reason) => {
+            warn!(
+                "boot: WiFi provisioning selected ({:?}); safe setup mode active",
+                reason
+            );
+            warn!("boot: DCC, RailCom, Z21, and track output remain disabled");
+
+            // Setup-mode LED feedback: red blink, same pattern as WiFi connecting.
+            spawner
+                .spawn(provisioning_led_task(
+                    new_led_output(peripherals.GPIO14),
+                    new_led_output(peripherals.GPIO15),
+                ))
+                .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::ProvisioningLed))?;
+
+            let store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
+            return run_provisioning_ap(spawner, peripherals.WIFI, store, DISPLAY_CHANNEL.sender())
+                .await
+                .map_err(|error| {
+                    BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error))
+                });
+        }
+    };
 
     verify_boot_packet_encoding()?;
 
@@ -643,6 +799,7 @@ pub async fn run(
         .spawn(net_task_wrapper(NetTaskWrapperContext {
             spawner,
             wifi: peripherals.WIFI,
+            credentials: wifi_credentials,
             scheduler_sender: scheduler_commands.sender(),
             fault_sender: FAULT_CHANNEL.sender(),
             channels: NetTaskChannels {
@@ -687,10 +844,19 @@ pub async fn run(
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::FaultManager))?;
     info!("boot: fault manager task spawned");
 
+    spawner
+        .spawn(provisioning_request_task(
+            flash,
+            partition_table_buffer,
+            FAULT_CHANNEL.sender(),
+            PROVISIONING_REQUESTS.receiver(),
+        ))
+        .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::ProvisioningRequest))?;
+    info!("boot: provisioning request task spawned");
+
     // Control buttons: GPIO22=stop (active-low), GPIO21=resume (active-low).
     // Spawned before the reset sequence so button events are never missed.
     let stop_btn = new_button_input(peripherals.GPIO22);
-    let resume_btn = new_button_input(peripherals.GPIO21);
     spawner
         .spawn(stop_button_task(
             stop_btn,
@@ -702,6 +868,7 @@ pub async fn run(
         .spawn(resume_button_task(
             resume_btn,
             FAULT_CHANNEL.sender(),
+            PROVISIONING_REQUESTS.sender(),
             BOOT_READY.sender(),
         ))
         .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::ResumeButton))?;
