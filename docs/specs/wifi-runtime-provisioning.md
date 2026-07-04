@@ -175,9 +175,9 @@ Define the storage boundary near the policy:
 
 ```rust
 pub trait WifiCredentialsStore {
-    fn load(&self) -> Result<Option<WifiCredentials>, StoreError>;
-    fn save(&self, credentials: &WifiCredentials) -> Result<(), StoreError>;
-    fn clear(&self) -> Result<(), StoreError>;
+    fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError>;
+    fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError>;
+    fn clear(&mut self) -> Result<(), StoreError>;
 }
 ```
 
@@ -234,7 +234,7 @@ Required partition change for the implementation task:
 
 ```text
 # Name,     Type, SubType, Offset,   Size,     Flags
-dcc_cfg,    data, 0x40,    0x1E0000, 0x2000,
+dcc_cfg,    data, 0x40,    0x1E0000, 0x3000,
 ```
 
 To keep a 2 MiB flash layout valid, shrink the current factory app partition
@@ -244,15 +244,20 @@ available for platform/radio use.
 
 Flash layout inside `dcc_cfg`:
 
-- two 4 KiB erase sectors;
+- three 4 KiB erase sectors, with the first two used by the store;
 - one fixed-size credential record per sector: slot A and slot B;
 - each record contains a monotonically increasing generation counter;
-- load chooses the valid record with the highest generation;
+- load chooses the newest valid record using wrapping generation comparison;
 - save erases and writes only the inactive sector, then subsequent loads prefer
   the newer valid slot after checksum validation;
 - clear erases both slots;
-- missing means both slots are erased or empty;
+- missing means both slots are erased (`0xff`);
 - corrupt means at least one slot contains non-empty bytes but no slot validates.
+
+The third sector is reserved to keep the implementation on
+`esp_bootloader_esp_idf::partitions::FlashRegion`: version `0.4.0` rejects an
+erase whose `to` bound is exactly the partition end, while slot B erase ends at
+`0x2000`.
 
 Record shape:
 
@@ -265,6 +270,7 @@ ssid_len: u8
 password_len: u8
 ssid bytes [32]
 password bytes [64]
+padding to 4-byte boundary
 checksum: u32
 ```
 
@@ -305,6 +311,7 @@ pub enum StoreError {
     FlashErase,
     FlashWrite,
     Corrupt,
+    MissingCredentials,
     BufferTooSmall,
 }
 ```

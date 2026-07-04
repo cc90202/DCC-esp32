@@ -15,6 +15,7 @@ path = "./src/bin/main.rs"
 [dependencies]
 # Platform-independent dependencies (available in tests)
 heapless         = "0.9"
+embedded-storage = "0.3.1"
 
 [target.'cfg(not(target_arch = "riscv32"))'.dependencies]
 critical-section = { version = "1.2.0", features = ["std"] }
@@ -37,6 +38,7 @@ esp-rtos = { version = "0.2.0", features = [
 
 defmt                  = "1.0.1"
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32c6"] }
+esp-storage = { version = "0.8.1", features = ["defmt", "esp32c6"] }
 
 esp-alloc = { version = "0.9.0", features = ["defmt"] }
 esp-println = { version = "0.16.1", features = ["defmt-espflash", "esp32c6"] }
