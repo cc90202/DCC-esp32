@@ -35,6 +35,7 @@ use crate::dcc::{
 use crate::fault_manager::{
     FaultManagerState, FaultManagerTaskContext, FaultStateWatch, fault_manager_task,
 };
+use crate::net::provisioning::{ProvisioningApError, run_provisioning_ap};
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
 use crate::net::wifi_config::{
     EspFlashStoreError, ProvisioningDecision, ProvisioningFlagStore, StoreError,
@@ -135,6 +136,7 @@ pub enum CriticalTask {
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum CriticalTaskInit {
     Net(NetInitError),
+    ProvisioningAp(ProvisioningApError),
     WifiConfig(WifiConfigInitError),
     FaultStateReceiverUnavailable,
     ReadinessTimeout,
@@ -257,6 +259,7 @@ impl BootError {
                 "fault-state watch receiver already taken"
             }
             Self::CriticalTaskInit(CriticalTaskInit::Net(error)) => error.as_str(),
+            Self::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)) => error.as_str(),
             Self::CriticalTaskInit(CriticalTaskInit::WifiConfig(error)) => error.as_str(),
             Self::CriticalTaskInit(CriticalTaskInit::ReadinessTimeout) => {
                 "critical task readiness timeout"
@@ -592,8 +595,16 @@ pub async fn run(
     let boot_button_override = wait_for_boot_provisioning_override(&mut resume_btn).await;
 
     if boot_button_override {
-        warn!("boot: WiFi provisioning selected by GPIO21 hold; setup AP not implemented yet");
-        return Ok(());
+        warn!("boot: WiFi provisioning selected by GPIO21 hold");
+        warn!("boot: safe setup mode active; DCC, RailCom, Z21, and track output remain disabled");
+        return run_provisioning_ap(
+            spawner,
+            peripherals.WIFI,
+            SYSTEM_STATUS.sender(),
+            DISPLAY_CHANNEL.sender(),
+        )
+        .await
+        .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)));
     }
 
     let mut flash = FlashStorage::new(peripherals.FLASH);
@@ -617,10 +628,18 @@ pub async fn run(
         }
         ProvisioningDecision::ProvisioningMode(reason) => {
             warn!(
-                "boot: WiFi provisioning selected ({:?}); setup AP not implemented yet",
+                "boot: WiFi provisioning selected ({:?}); safe setup mode active",
                 reason
             );
-            return Ok(());
+            warn!("boot: DCC, RailCom, Z21, and track output remain disabled");
+            return run_provisioning_ap(
+                spawner,
+                peripherals.WIFI,
+                SYSTEM_STATUS.sender(),
+                DISPLAY_CHANNEL.sender(),
+            )
+            .await
+            .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)));
         }
     };
 
