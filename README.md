@@ -59,25 +59,45 @@ Important:
 
 ## Getting Started
 
-1. Copy `.env.example` to `.env` and fill in your WiFi credentials:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   Edit `.env` with your network name and password.
-
-2. Build and flash the firmware:
+1. Build and flash the firmware:
 
    ```bash
    cargo run --release
    ```
 
-3. Once booted, the OLED display shows the station's IP address.
+2. Configure WiFi from the ESP32 setup page.
 
-4. In the **Roco Z21 app**, go to settings and enter that IP address as the command station.
+   On first boot, or whenever no valid WiFi credentials are stored, the ESP32
+   starts safe WiFi setup mode instead of the normal command-station runtime.
+   Track output, DCC, RailCom, and Z21 services remain disabled during setup.
 
-5. Select the locomotive address and drive.
+   Connect a phone or computer to:
+
+   - AP SSID: `DCC-Setup-XXXX`, where `XXXX` is derived from the ESP32 MAC
+     suffix
+   - AP password: `dcc-setup`
+   - Setup URL: `http://192.168.4.1`
+
+   The setup page asks for the station WiFi SSID and password. After a valid
+   save, the ESP32 sends the success page, reboots, and starts station mode
+   using the stored credentials.
+
+3. To re-enter setup mode later, hold the blue Resume button on GPIO21 for at
+   least 10 seconds.
+
+   Short GPIO21 presses still perform Resume. A press below the 10 second setup
+   threshold does not enter WiFi setup. The red Stop button on GPIO22 remains
+   Stop/E-stop and is unchanged by WiFi provisioning.
+
+4. Once station mode is connected, the OLED display shows the station's IP
+   address.
+
+5. In the **Roco Z21 app**, go to settings and enter that IP address as the command station.
+
+6. Select the locomotive address and drive.
+
+`.env` is no longer the primary user setup path for WiFi credentials. Runtime
+credentials are stored in flash by the setup page.
 
 > **Note:** CV programming support is under active development.
 > RailCom/POM read and write paths are being integrated, but full programming-track
