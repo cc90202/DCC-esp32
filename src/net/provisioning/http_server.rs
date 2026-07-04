@@ -8,12 +8,11 @@ use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer, with_timeout};
 use static_cell::StaticCell;
 
-use crate::net::provisioning_http::{MAX_REQUEST_BYTES, ParseError, ParsedRequest, parse_request};
-use crate::net::provisioning_net::SETUP_URL;
-use crate::net::provisioning_reboot::{PostSaveAction, post_save_action};
 use crate::net::wifi_config::WifiCredentialsStore;
 
 use super::html::{INVALID_FORM_PAGE, SAVE_ERROR_PAGE, SAVE_OK_PAGE, SETUP_PAGE};
+use super::http_parser::{MAX_REQUEST_BYTES, ParseError, ParsedRequest, parse_request};
+use super::net_config::SETUP_URL;
 
 const HTTP_PORT: u16 = 80;
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
@@ -51,41 +50,51 @@ async fn handle_connection<S>(socket: &mut TcpSocket<'_>, store: &mut S) -> bool
 where
     S: WifiCredentialsStore,
 {
-    let mut request = [0u8; MAX_REQUEST_BYTES];
-    let request_len = match read_request(socket, &mut request).await {
-        Ok(len) => len,
-        Err(ReadRequestError::Timeout) => {
+    let request = match read_request(socket).await {
+        RequestOutcome::Request(request) => request,
+        RequestOutcome::Invalid(ParseError::InvalidCredentials) => {
+            let _ = send_response(
+                socket,
+                Status::Ok,
+                "text/html; charset=utf-8",
+                INVALID_FORM_PAGE,
+            )
+            .await;
+            return false;
+        }
+        RequestOutcome::Invalid(error) => {
+            let status = Status::from_parse_error(error);
+            let _ = send_response(socket, status, "text/plain", status.reason()).await;
+            return false;
+        }
+        RequestOutcome::Timeout => {
             let _ = send_response(socket, Status::RequestTimeout, "text/plain", "Timeout").await;
             return false;
         }
-        Err(ReadRequestError::Connection) => return true,
+        RequestOutcome::Disconnected => return true,
     };
 
-    match parse_request(&request[..request_len]) {
-        Ok(ParsedRequest::GetRoot) => {
+    match request {
+        ParsedRequest::GetRoot => {
             let _ = send_response(socket, Status::Ok, "text/html; charset=utf-8", SETUP_PAGE).await;
         }
-        Ok(ParsedRequest::SaveCredentials(credentials)) => match store.save(&credentials) {
+        ParsedRequest::SaveCredentials(credentials) => match store.save(&credentials) {
             Ok(()) => {
                 info!("WiFi credentials saved from provisioning form");
-                let response_sent = match send_response(
-                    socket,
-                    Status::Ok,
-                    "text/html; charset=utf-8",
-                    SAVE_OK_PAGE,
-                )
-                .await
+                match send_response(socket, Status::Ok, "text/html; charset=utf-8", SAVE_OK_PAGE)
+                    .await
                 {
-                    Ok(()) => true,
+                    Ok(()) => {
+                        // Reboot only after the success page went out; a save
+                        // failure never reaches this arm, so a reboot with
+                        // unsaved credentials is impossible by construction.
+                        Timer::after(REBOOT_DELAY).await;
+                        info!("WiFi credentials saved; rebooting into station mode");
+                        esp_hal::system::software_reset();
+                    }
                     Err(_) => {
                         warn!("WiFi credential save succeeded but success response failed");
-                        false
                     }
-                };
-                if post_save_action(true, response_sent) == PostSaveAction::Reboot {
-                    Timer::after(REBOOT_DELAY).await;
-                    info!("WiFi credentials saved; rebooting into station mode");
-                    esp_hal::system::software_reset();
                 }
             }
             Err(_) => {
@@ -99,54 +108,39 @@ where
                 .await;
             }
         },
-        Err(ParseError::InvalidCredentials) => {
-            let _ = send_response(
-                socket,
-                Status::Ok,
-                "text/html; charset=utf-8",
-                INVALID_FORM_PAGE,
-            )
-            .await;
-        }
-        Err(error) => {
-            let status = Status::from_parse_error(error);
-            let _ = send_response(socket, status, "text/plain", status.reason()).await;
-        }
     }
     false
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReadRequestError {
+enum RequestOutcome {
+    Request(ParsedRequest),
+    Invalid(ParseError),
     Timeout,
-    Connection,
+    Disconnected,
 }
 
-async fn read_request(
-    socket: &mut TcpSocket<'_>,
-    request: &mut [u8; MAX_REQUEST_BYTES],
-) -> Result<usize, ReadRequestError> {
+async fn read_request(socket: &mut TcpSocket<'_>) -> RequestOutcome {
+    let mut request = [0u8; MAX_REQUEST_BYTES];
     let mut len = 0usize;
 
     loop {
         match parse_request(&request[..len]) {
-            Ok(_) => return Ok(len),
-            Err(ParseError::EarlyEof) => {}
-            Err(_) => return Ok(len),
+            Ok(request) => return RequestOutcome::Request(request),
+            Err(ParseError::EarlyEof) if len < request.len() => {}
+            // Buffer full while the request is still incomplete: too large.
+            Err(ParseError::EarlyEof) => {
+                return RequestOutcome::Invalid(ParseError::PayloadTooLarge);
+            }
+            Err(error) => return RequestOutcome::Invalid(error),
         }
 
-        if len == request.len() {
-            return Ok(len);
+        match with_timeout(SOCKET_TIMEOUT, socket.read(&mut request[len..])).await {
+            Err(_) => return RequestOutcome::Timeout,
+            Ok(Err(_)) => return RequestOutcome::Disconnected,
+            // Peer closed before completing the request.
+            Ok(Ok(0)) => return RequestOutcome::Invalid(ParseError::EarlyEof),
+            Ok(Ok(read)) => len += read,
         }
-
-        let read = with_timeout(SOCKET_TIMEOUT, socket.read(&mut request[len..]))
-            .await
-            .map_err(|_| ReadRequestError::Timeout)?
-            .map_err(|_| ReadRequestError::Connection)?;
-        if read == 0 {
-            return Ok(len);
-        }
-        len += read;
     }
 }
 
@@ -205,6 +199,7 @@ impl Status {
         match error {
             ParseError::BadRequest | ParseError::EarlyEof => Self::BadRequest,
             ParseError::HeaderTooLarge => Self::RequestHeaderFieldsTooLarge,
+            // Handled with the dedicated error page before reaching here.
             ParseError::InvalidCredentials => Self::Ok,
             ParseError::LengthRequired => Self::LengthRequired,
             ParseError::MethodNotAllowed => Self::MethodNotAllowed,

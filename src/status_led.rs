@@ -41,7 +41,7 @@
 //! Add 200Ω current-limiting resistors in series if using >5mA LEDs.
 
 use crate::system_status::{LedState, StatusModel};
-use embassy_time::{Duration, with_timeout};
+use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::gpio::{Level, Output};
 
 const BOOT_BLINK_MS: u64 = 125;
@@ -163,6 +163,24 @@ pub async fn status_led_task(
             blink_on = true;
             apply_status_event(&mut model, &mut prev_state, event, &display_sender).await;
         }
+    }
+}
+
+/// Provisioning-mode LED indication.
+///
+/// Reuses the WiFi-connecting pattern (red blink, 500 ms) for the whole
+/// setup session. Provisioning mode has no `StatusModel` consumers, so this
+/// deliberately bypasses the event-driven `status_led_task`.
+#[embassy_executor::task]
+pub async fn provisioning_led_task(
+    mut green_led: Output<'static>,
+    mut red_led: Output<'static>,
+) -> ! {
+    green_led.set_low();
+    red_led.set_low();
+    loop {
+        red_led.toggle();
+        Timer::after(Duration::from_millis(WIFI_BLINK_MS)).await;
     }
 }
 
