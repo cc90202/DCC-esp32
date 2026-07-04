@@ -5,7 +5,7 @@ use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{Duration, Timer};
 
-use crate::net::provisioning_dhcp::{
+use super::dhcp_codec::{
     BROADCAST_IP, DHCP_CLIENT_PORT, DHCP_PACKET_BUFFER_SIZE, DHCP_SERVER_PORT,
     DhcpReplyDestination, build_reply,
 };
