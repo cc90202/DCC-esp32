@@ -4,6 +4,8 @@
 mod pom_client;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod provisioning;
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod provisioning_http;
 #[cfg(target_arch = "riscv32")]
 mod radio;
 #[cfg(target_arch = "riscv32")]
