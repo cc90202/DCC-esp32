@@ -148,6 +148,12 @@ Configurati come input pull-up nel firmware → riposo HIGH, premuto LOW.
 - [ ] Resume (blu): zampa 1 → GPIO21, zampa opposta → rail −
 - [ ] C 100 nF in parallelo Resume (tra GPIO21 e GND)
 
+Funzioni firmware:
+
+- GPIO22 / Stop rosso: Stop/E-stop, invariato dalla configurazione WiFi.
+- GPIO21 / Resume blu: press breve → Resume; press >= 2 s e < 10 s → long
+  Resume; press >= 10 s → richiesta setup WiFi al prossimo boot sicuro.
+
 ---
 
 ## H — OLED SSD1306/SSD1315 (I2C)
@@ -251,6 +257,30 @@ Solo dopo che J è tutta verde. Alimentatore 15 V scollegato fisicamente o spent
 - [ ] LED verde reagisce (lampeggio o stato fisso)
 - [ ] Stop premuto → log/LED reagisce
 - [ ] Resume premuto → log/LED reagisce
+
+### K.1 — Test setup WiFi sicuro (USB only, B+ 15 V SPENTO)
+
+- [ ] Flash firmware senza credenziali WiFi salvate
+- [ ] ESP32 entra in setup WiFi senza avviare DCC/RailCom/Z21
+- [ ] OLED o serial log mostra SSID `DCC-Setup-XXXX`
+- [ ] OLED o serial log mostra URL `http://192.168.4.1`
+- [ ] OLED mostra stato track disabled, se display presente
+- [ ] Telefono/PC vede AP `DCC-Setup-XXXX`
+- [ ] Connessione AP con password `dcc-setup`
+- [ ] Client riceve DHCP nella rete `192.168.4.0/24`
+- [ ] Browser apre `http://192.168.4.1`
+- [ ] Submit con SSID/password non validi mostra errore e non salva
+- [ ] Submit con credenziali valide mostra pagina di successo
+- [ ] ESP32 riavvia e tenta station mode con le credenziali salvate
+- [ ] Power-cycle USB: credenziali persistono
+- [ ] WiFi configurato non disponibile: firmware ritenta station mode e non
+  cancella le credenziali salvate
+- [ ] GPIO21 premuto per >= 10 s richiede setup WiFi sicuro
+- [ ] GPIO21 press breve resta Resume
+- [ ] GPIO21 press >= 2 s e < 10 s resta long Resume, non setup WiFi
+- [ ] GPIO22 resta Stop/E-stop
+- [ ] Durante setup WiFi, GPIO2/RMT non emette pacchetti DCC
+- [ ] Durante setup WiFi, BTS7960 enable resta disabilitato
 
 Se uno fallisce: stacca subito USB e torna alla J.
 
