@@ -593,13 +593,23 @@ pub async fn run(
 
     let mut resume_btn = new_button_input(peripherals.GPIO21);
     let boot_button_override = wait_for_boot_provisioning_override(&mut resume_btn).await;
+    let mut flash = FlashStorage::new(peripherals.FLASH);
+    let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
 
     if boot_button_override {
         warn!("boot: WiFi provisioning selected by GPIO21 hold");
         warn!("boot: safe setup mode active; DCC, RailCom, Z21, and track output remain disabled");
+        let store = wifi_config_store_from_partition(&mut flash, partition_table_buffer).map_err(
+            |error| {
+                BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+                    WifiConfigInitError::Partition(error),
+                ))
+            },
+        )?;
         return run_provisioning_ap(
             spawner,
             peripherals.WIFI,
+            store,
             SYSTEM_STATUS.sender(),
             DISPLAY_CHANNEL.sender(),
         )
@@ -607,8 +617,6 @@ pub async fn run(
         .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)));
     }
 
-    let mut flash = FlashStorage::new(peripherals.FLASH);
-    let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
     let (wifi_decision, wifi_credentials) = {
         let mut store = wifi_config_store_from_partition(&mut flash, partition_table_buffer)
             .map_err(|error| {
@@ -632,9 +640,16 @@ pub async fn run(
                 reason
             );
             warn!("boot: DCC, RailCom, Z21, and track output remain disabled");
+            let store = wifi_config_store_from_partition(&mut flash, partition_table_buffer)
+                .map_err(|error| {
+                    BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+                        WifiConfigInitError::Partition(error),
+                    ))
+                })?;
             return run_provisioning_ap(
                 spawner,
                 peripherals.WIFI,
+                store,
                 SYSTEM_STATUS.sender(),
                 DISPLAY_CHANNEL.sender(),
             )
