@@ -14,10 +14,9 @@ use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
 };
 
+use super::radio::WifiBringupError;
+use crate::net::wifi_config::WifiCredentials;
 use crate::system_status::SystemStatusEvent;
-
-pub(super) const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PASS: &str = env!("WIFI_PASS");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
@@ -28,10 +27,7 @@ enum ConnectionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum NetInitError {
-    EspRadioInit,
-    WifiInit,
-    WifiSetConfig,
-    WifiStart,
+    WifiBringup(WifiBringupError),
     WifiRunnerSpawn,
     ConnectionSpawn,
     UdpBind,
@@ -40,10 +36,7 @@ pub enum NetInitError {
 impl NetInitError {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::EspRadioInit => "esp-radio init failed",
-            Self::WifiInit => "WiFi init failed",
-            Self::WifiSetConfig => "WiFi set_config failed",
-            Self::WifiStart => "WiFi start failed",
+            Self::WifiBringup(error) => error.as_str(),
             Self::WifiRunnerSpawn => "failed to spawn wifi_runner_task",
             Self::ConnectionSpawn => "failed to spawn connection_task",
             Self::UdpBind => "UDP bind on Z21 port failed",
@@ -51,18 +44,12 @@ impl NetInitError {
     }
 }
 
-impl core::fmt::Display for NetInitError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str((*self).as_str())
-    }
-}
-
-/// Build the WiFi client mode config from the compile-time SSID/password.
-pub(super) fn client_mode_config() -> ModeConfig {
+/// Build the WiFi client mode config from validated runtime credentials.
+pub(super) fn client_mode_config(credentials: &WifiCredentials) -> ModeConfig {
     ModeConfig::Client(
         ClientConfig::default()
-            .with_ssid(WIFI_SSID.to_string())
-            .with_password(WIFI_PASS.to_string())
+            .with_ssid(credentials.ssid().to_string())
+            .with_password(credentials.password().to_string())
             .with_auth_method(AuthMethod::Wpa2Personal),
     )
 }

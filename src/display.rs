@@ -77,6 +77,8 @@ fn draw_throbber<D: DrawTarget<Color = BinaryColor>>(target: &mut D, origin: Poi
 pub struct DisplayModel {
     boot_step: BootStep,
     ip: Option<[u8; 4]>,
+    provisioning_ssid: Option<heapless::String<14>>,
+    provisioning_setup_url: Option<&'static str>,
     state: LedState,
     loco_count: u8,
     fault: Option<FaultCause>,
@@ -90,6 +92,8 @@ impl DisplayModel {
         Self {
             boot_step: BootStep::PeripheralsInit,
             ip: None,
+            provisioning_ssid: None,
+            provisioning_setup_url: None,
             state: LedState::Booting,
             loco_count: 0,
             fault: None,
@@ -102,6 +106,10 @@ impl DisplayModel {
         match event {
             DisplayEvent::BootProgress(s) => self.boot_step = s,
             DisplayEvent::IpAssigned(addr) => self.ip = Some(addr),
+            DisplayEvent::ProvisioningMode { ssid, setup_url } => {
+                self.provisioning_ssid = Some(ssid);
+                self.provisioning_setup_url = Some(setup_url);
+            }
             DisplayEvent::SystemState(s) => self.state = s,
             DisplayEvent::ActiveLocoCount(n) => self.loco_count = n,
             DisplayEvent::Fault(f) => self.fault = Some(f),
@@ -178,6 +186,29 @@ async fn render(
 
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let _ = display.clear(BinaryColor::Off);
+
+    if let (Some(ssid), Some(setup_url)) = (&model.provisioning_ssid, model.provisioning_setup_url)
+    {
+        let _ = Text::new("DCC WiFi Setup", Point::new(0, 10), style).draw(display);
+
+        let mut line: heapless::String<21> = heapless::String::new();
+        let _ = write!(line, "AP: {}", ssid);
+        let _ = Text::new(&line, Point::new(0, 26), style).draw(display);
+
+        let _ = Text::new(setup_url, Point::new(0, 36), style).draw(display);
+        let _ = Text::new("Binario spento", Point::new(0, 46), style).draw(display);
+
+        if let Some(cause) = model.fault {
+            line.clear();
+            let _ = write!(line, "Fault: {}", fault_label(cause));
+            let _ = Text::new(&line, Point::new(0, 56), style).draw(display);
+        } else {
+            let _ = Text::new("Salva e riavvia", Point::new(0, 56), style).draw(display);
+        }
+
+        let _ = display.flush().await;
+        return;
+    }
 
     // Yellow zone (pixels 0-15): title
     let _ = Text::new("DCC Command Station", Point::new(0, 10), style).draw(display);
@@ -310,6 +341,8 @@ pub async fn display_task(
 
 #[cfg(test)]
 mod tests {
+    use crate::net::provisioning::net_config::SETUP_URL;
+
     use super::*;
 
     #[test]
@@ -318,6 +351,8 @@ mod tests {
         assert_eq!(model.boot_step, BootStep::PeripheralsInit);
         assert_eq!(model.state(), LedState::Booting);
         assert_eq!(model.ip, None);
+        assert!(model.provisioning_ssid.is_none());
+        assert!(model.provisioning_setup_url.is_none());
         assert_eq!(model.loco_count, 0);
         assert_eq!(model.fault, None);
         assert!(model.message.is_none());
@@ -332,6 +367,16 @@ mod tests {
 
         model.apply(DisplayEvent::IpAssigned([192, 168, 4, 1]));
         assert_eq!(model.ip, Some([192, 168, 4, 1]));
+
+        let mut ssid: heapless::String<14> = heapless::String::new();
+        ssid.push_str("DCC-Setup-ABCD")
+            .expect("fits in 14-byte buffer");
+        model.apply(DisplayEvent::ProvisioningMode {
+            ssid,
+            setup_url: SETUP_URL,
+        });
+        assert_eq!(model.provisioning_ssid.as_deref(), Some("DCC-Setup-ABCD"));
+        assert_eq!(model.provisioning_setup_url, Some(SETUP_URL));
 
         model.apply(DisplayEvent::SystemState(LedState::Running));
         assert_eq!(model.state(), LedState::Running);
