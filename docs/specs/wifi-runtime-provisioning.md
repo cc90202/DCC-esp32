@@ -386,6 +386,105 @@ AP password:
 - do not use an open AP;
 - document the password in README and, if useful, show it on the serial log.
 
+### AP Mode Spike Decision
+
+Use the SoftAP support already exposed by `esp-radio`; do not introduce a
+custom WiFi/AP abstraction or raw radio setup.
+
+Relevant upstream APIs in `esp-radio 0.17.0`:
+
+```rust
+esp_radio::wifi::ModeConfig::AccessPoint(AccessPointConfig)
+```
+
+`WifiController::set_config` maps `ModeConfig::AccessPoint` to the native
+`WIFI_MODE_AP` mode and applies the AP configuration through `apply_ap_config`.
+`esp_radio::wifi::Interfaces` already exposes both station and AP network
+devices:
+
+```rust
+pub struct Interfaces<'d> {
+    pub sta: WifiDevice<'d>,
+    pub ap: WifiDevice<'d>,
+}
+```
+
+Production provisioning mode should therefore use `interfaces.ap` with a
+separate `embassy-net` stack runner. The station path should keep using
+`interfaces.sta`.
+
+Minimal configuration shape:
+
+```rust
+let ap_config = ModeConfig::AccessPoint(
+    AccessPointConfig::default()
+        .with_ssid("DCC-Setup-ABCD".into())
+        .with_password("dcc-setup".into())
+        .with_auth_method(AuthMethod::Wpa2Personal)
+        .with_max_connections(1),
+);
+wifi_controller.set_config(&ap_config)?;
+wifi_controller.start_async().await?;
+```
+
+Keep `max_connections` low for setup mode so the AP admits only the expected
+single-phone provisioning flow.
+
+AP IP address:
+
+- bind the ESP32 AP interface to `192.168.4.1/24`;
+- use `embassy_net::Config::ipv4_static`;
+- no gateway is needed for the ESP32 setup page;
+- DNS servers can remain empty for the first release.
+
+Expected stack configuration:
+
+```rust
+let config = embassy_net::Config::ipv4_static(StaticConfigV4 {
+    address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 4, 1), 24),
+    gateway: None,
+    dns_servers: heapless::Vec::new(),
+});
+```
+
+DHCP decision:
+
+- phone clients need automatic IP assignment for acceptable UX;
+- `embassy-net`'s current `dhcpv4` feature is a DHCP client socket, not a DHCP
+  server;
+- `esp-radio` AP mode does not provide a DHCP server through `embassy-net`;
+- the production AP task must either add a small no-std DHCP server or select a
+  maintained crate compatible with the current stack;
+- static phone IP is acceptable only as a temporary HIL blocker workaround, not
+  as the product behavior.
+
+HTTP dependency decision:
+
+- the current `embassy-net` feature set is `dhcpv4`, `medium-ethernet`, `udp`;
+- serving the setup page requires TCP sockets;
+- the HTTP task must add the `tcp` feature before implementing the server;
+- AP-only provisioning does not need Z21 UDP sockets, station reconnect logic,
+  or normal network status events.
+
+Composition and lifetime decision:
+
+- `boot.rs` remains the composition root;
+- station mode and provisioning mode are mutually exclusive boot branches;
+- the provisioning branch owns `peripherals.WIFI`, starts AP + HTTP, and never
+  starts Z21 or DCC runtime tasks;
+- radio initialization should be factored so station and provisioning paths do
+  not duplicate `esp_radio::init` statics;
+- track output must stay disabled before and during AP/HTTP provisioning.
+
+HIL checks required before production HTTP work:
+
+- ESP32-C6 advertises `DCC-Setup-ABCD` with WPA2;
+- a phone can associate with the AP;
+- ESP32 binds `192.168.4.1/24` on `interfaces.ap`;
+- DHCP strategy assigns a phone address without manual static configuration;
+- added TCP/HTTP buffers fit RAM with display and control tasks disabled in
+  provisioning mode.
+
 ## HTTP Interface
 
 Initial routes:
