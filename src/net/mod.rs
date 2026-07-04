@@ -10,6 +10,8 @@ pub(crate) mod provisioning_dhcp;
 pub(crate) mod provisioning_http;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod provisioning_net;
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod provisioning_reboot;
 #[cfg(target_arch = "riscv32")]
 mod radio;
 #[cfg(target_arch = "riscv32")]

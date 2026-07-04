@@ -29,8 +29,7 @@ Provisioning mode now starts a safe SoftAP branch:
   stopped;
 - provisioning mode starts WPA2 AP `DCC-Setup-XXXX` on `192.168.4.1`;
 - provisioning DHCP assigns `192.168.4.2/24` to the setup client;
-- HTTP form handling and credential save are implemented;
-- post-save reboot is still pending;
+- HTTP form handling, credential save, and post-save reboot are implemented;
 - valid stored credentials start station mode;
 - runtime GPIO21 provisioning requests first request track stop, then set a
   next-boot flag and reboot into the safe SoftAP branch.
@@ -731,8 +730,9 @@ wait for the 10 second override window if GPIO21 is already active-low at the
 time the provisioning decision is made.
 
 Task 12 final behavior: after successful credential save, call
-`esp_hal::system::software_reset()` to reboot. Do not show reboot success or
-reset until the store reports that credentials were written successfully.
+`esp_hal::system::software_reset()` to reboot after the success response is
+sent and flushed successfully. Do not show reboot success or reset until the
+store reports that credentials were written successfully.
 
 ## Button Integration
 
@@ -786,7 +786,7 @@ Embedded/manual tests:
 - phone connects to `DCC-Setup-ABCD`;
 - `http://192.168.4.1` serves the setup page;
 - invalid form shows an error and does not save;
-- valid form saves credentials; Task 12 adds automatic reboot;
+- valid form saves credentials and triggers automatic reboot;
 - next boot connects to configured WiFi;
 - valid stored credentials with WiFi unavailable retry station mode and do not
   erase credentials;
