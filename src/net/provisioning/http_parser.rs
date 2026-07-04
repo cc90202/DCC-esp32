@@ -8,12 +8,15 @@ use heapless::String;
 
 use crate::net::wifi_config::WifiCredentials;
 
-pub(crate) const MAX_REQUEST_BYTES: usize = 1024;
-pub(crate) const MAX_HEADER_BYTES: usize = 768;
+// Limits sized for real phone browsers: Chrome/Safari send 15-25 headers
+// (client hints included) totalling 600-900 bytes, with User-Agent lines
+// well over 128 bytes. Tighter values bounce legitimate requests with 431.
+pub(crate) const MAX_REQUEST_BYTES: usize = 2048;
+pub(crate) const MAX_HEADER_BYTES: usize = MAX_REQUEST_BYTES - MAX_BODY_BYTES;
 pub(crate) const MAX_BODY_BYTES: usize = 256;
-pub(crate) const MAX_REQUEST_LINE_BYTES: usize = 128;
-pub(crate) const MAX_HEADER_LINE_BYTES: usize = 128;
-pub(crate) const MAX_HEADER_COUNT: usize = 16;
+pub(crate) const MAX_REQUEST_LINE_BYTES: usize = 256;
+pub(crate) const MAX_HEADER_LINE_BYTES: usize = 512;
+pub(crate) const MAX_HEADER_COUNT: usize = 32;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ParsedRequest {
@@ -270,6 +273,39 @@ mod tests {
     fn get_root_is_accepted() {
         assert_eq!(
             parse_request(b"GET / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n"),
+            Ok(ParsedRequest::GetRoot)
+        );
+    }
+
+    #[test]
+    fn realistic_phone_browser_request_is_accepted() {
+        // Regression: an Android Chrome GET / with client hints was bounced
+        // with 431 by the previous 128-byte line / 16-header / 768-byte
+        // section limits.
+        let request = concat!(
+            "GET / HTTP/1.1\r\n",
+            "Host: 192.168.4.1\r\n",
+            "Connection: keep-alive\r\n",
+            "Cache-Control: max-age=0\r\n",
+            "Upgrade-Insecure-Requests: 1\r\n",
+            "User-Agent: Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36\r\n",
+            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,\
+             image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\n",
+            "sec-ch-ua: \"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"\r\n",
+            "sec-ch-ua-mobile: ?1\r\n",
+            "sec-ch-ua-platform: \"Android\"\r\n",
+            "Sec-Fetch-Site: none\r\n",
+            "Sec-Fetch-Mode: navigate\r\n",
+            "Sec-Fetch-User: ?1\r\n",
+            "Sec-Fetch-Dest: document\r\n",
+            "Accept-Encoding: gzip, deflate\r\n",
+            "Accept-Language: it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7\r\n",
+            "\r\n"
+        );
+
+        assert_eq!(
+            parse_request(request.as_bytes()),
             Ok(ParsedRequest::GetRoot)
         );
     }
