@@ -96,8 +96,8 @@ Important:
 
 6. Select the locomotive address and drive.
 
-`.env` is no longer the primary user setup path for WiFi credentials. Runtime
-credentials are stored in flash by the setup page.
+Build-time `.env` credentials have been removed entirely: WiFi credentials are
+configured from the setup page and stored in flash.
 
 > **Note:** CV programming support is under active development.
 > RailCom/POM read and write paths are being integrated, but full programming-track
