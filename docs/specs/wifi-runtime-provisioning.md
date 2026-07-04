@@ -492,6 +492,154 @@ HIL checks required before production HTTP work:
 
 ## HTTP Interface
 
+### HTTP Implementation Spike Decision
+
+Use a minimal hand-written HTTP/1.1 handler on top of
+`embassy_net::tcp::TcpSocket`; do not add a web framework or generic HTTP
+server crate for the first provisioning release.
+
+Rationale:
+
+- the setup server has exactly two routes: `GET /` and `POST /save`;
+- the device serves a local, temporary, physically gated setup AP;
+- HTTPS, keep-alive, chunked transfer, compression, and file serving are out of
+  scope;
+- a small parser can be host-tested without WiFi hardware;
+- avoiding another HTTP dependency keeps binary size, feature interactions, and
+  no_std compatibility risks low.
+
+Required dependency change for the production HTTP task:
+
+```toml
+embassy-net = { version = "0.8.0", features = ["dhcpv4", "medium-ethernet", "tcp", "udp"] }
+```
+
+`embassy-net 0.8.0` does not expose a `TcpListener`; each server socket is a
+`TcpSocket` put into listening mode with `accept(80)`. The first production
+version should run one HTTP socket at a time:
+
+```rust
+let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
+socket.set_timeout(Some(Duration::from_secs(10)));
+socket.accept(80).await?;
+handle_one_request(&mut socket, store).await;
+socket.close();
+socket.flush().await?;
+```
+
+This matches the setup use case and avoids concurrency/resource bloat. If a
+phone opens parallel connections, extra connections may wait or fail; the user
+can retry. That is acceptable for the first setup flow.
+
+Use `abort()` only for hard failure paths where no well-formed response can be
+sent, such as oversized headers before request classification, timeout while
+reading the request, or socket-level connection reset.
+
+Parser boundary:
+
+- keep HTTP parsing in a pure host-testable module;
+- embedded socket code only reads bytes, enforces limits, writes responses, and
+  calls the parser;
+- no `async-trait`, trait objects, or generic parser abstraction are needed;
+- use fixed buffers and borrowed slices where possible.
+
+Request limits:
+
+```text
+max complete request bytes: 1024
+max header section bytes:   768  (includes request line and CRLF CRLF)
+max body bytes:             256
+max request line bytes:     128  (included in header section)
+max single header line:     128
+max header count:            16
+```
+
+Accounting:
+
+- request bytes are the exact bytes read before response generation;
+- header section bytes include request line, all header lines, and the terminal
+  `\r\n\r\n`;
+- for `POST /save`, `header section bytes + Content-Length` must be <= 1024;
+- body bytes must equal `Content-Length` and be <= 256;
+- `GET /` must not require a body; any received body bytes are ignored after
+  the response because the connection is closed.
+
+Supported requests:
+
+```text
+GET / HTTP/1.0
+GET / HTTP/1.1
+POST /save HTTP/1.0
+POST /save HTTP/1.1
+```
+
+Malformed or unsupported requests:
+
+- unsupported method: `405 Method Not Allowed`;
+- unsupported path: `404 Not Found`;
+- unsupported HTTP version: `505 HTTP Version Not Supported`;
+- request line longer than 128 bytes: `414 URI Too Long`;
+- header section larger than 768 bytes: `431 Request Header Fields Too Large`;
+- single header line longer than 128 bytes: `431 Request Header Fields Too Large`;
+- more than 16 headers: `431 Request Header Fields Too Large`;
+- missing `Content-Length` on `POST /save`: `411 Length Required`;
+- duplicate `Content-Length`: `400 Bad Request`;
+- invalid `Content-Length`: `400 Bad Request`;
+- `Content-Length` plus header section larger than 1024 bytes:
+  `413 Payload Too Large`;
+- early EOF before declared body length: close connection without saving and
+  without claiming success;
+- body larger than 256 bytes: `413 Payload Too Large`;
+- unsupported content type on `POST /save`: `415 Unsupported Media Type`;
+- malformed form or invalid percent encoding: `400 Bad Request`;
+- valid form with invalid WiFi credentials: `200 OK` with validation error
+  page, because the browser should stay on the setup form.
+
+Timeout behavior:
+
+- set a 10 second socket timeout for accept/read/write work;
+- if no complete request arrives before timeout, close or abort the socket
+  without saving credentials;
+- if the request is already classified and a response can still be sent, return
+  `408 Request Timeout` with `Connection: close`;
+- timeout must not block the single HTTP socket indefinitely.
+
+Response behavior:
+
+- always send `Connection: close`;
+- include `Content-Length`;
+- no chunked transfer;
+- no keep-alive;
+- no redirects in the first release;
+- never log the submitted station password.
+
+Form parsing:
+
+- content type: `application/x-www-form-urlencoded`;
+- accepted fields: `ssid`, `password`;
+- unknown fields ignored;
+- duplicate `ssid` or `password` rejected;
+- `+` decodes to space;
+- `%XX` percent escapes decode only valid bytes;
+- invalid percent escapes are rejected;
+- decoded SSID/password must be valid UTF-8;
+- decoded credentials are validated through `WifiCredentials::new`.
+
+Buffer decision:
+
+- TCP RX buffer: 1024 bytes;
+- TCP TX buffer: 1536 bytes for one full response page;
+- if the final HTML exceeds the TX buffer, split writes explicitly rather than
+  increasing buffers blindly;
+- keep `StackResources` sized for AP + HTTP + future DHCP after the production
+  task adds the exact sockets.
+
+Open item for Task 11:
+
+- implement and host-test the parser before wiring it to `TcpSocket`;
+- then add the `tcp` feature and compile the embedded server path;
+- HIL must prove a phone can load `http://192.168.4.1` and submit the form.
+
 Initial routes:
 
 ```text
