@@ -15,6 +15,8 @@ path = "./src/bin/main.rs"
 [dependencies]
 # Platform-independent dependencies (available in tests)
 heapless         = "0.9"
+embedded-storage = "0.3.1"
+smoltcp          = { version = "0.12.0", default-features = false, features = ["medium-ethernet", "proto-dhcpv4", "socket-dhcpv4"] }
 
 [target.'cfg(not(target_arch = "riscv32"))'.dependencies]
 critical-section = { version = "1.2.0", features = ["std"] }
@@ -37,6 +39,7 @@ esp-rtos = { version = "0.2.0", features = [
 
 defmt                  = "1.0.1"
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32c6"] }
+esp-storage = { version = "0.8.1", features = ["defmt", "esp32c6"] }
 
 esp-alloc = { version = "0.9.0", features = ["defmt"] }
 esp-println = { version = "0.16.1", features = ["defmt-espflash", "esp32c6"] }
@@ -49,7 +52,7 @@ static_cell      = "2.1.1"
 
 # Network stack (WiFi Z21 UDP)
 esp-radio         = { version = "0.17.0", features = ["esp32c6", "wifi", "unstable"] }
-embassy-net       = { version = "0.8.0",  features = ["dhcpv4", "medium-ethernet", "udp"] }
+embassy-net       = { version = "0.8.0",  features = ["dhcpv4", "medium-ethernet", "tcp", "udp"] }
 embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 
 [dev-dependencies]

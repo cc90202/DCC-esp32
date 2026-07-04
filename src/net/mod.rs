@@ -2,12 +2,19 @@
 
 #[cfg(target_arch = "riscv32")]
 mod pom_client;
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod provisioning;
+#[cfg(target_arch = "riscv32")]
+mod radio;
+#[cfg(target_arch = "riscv32")]
+pub use radio::{RadioInitError, WifiBringupError};
 #[cfg(target_arch = "riscv32")]
 mod railcom_lookup;
 #[cfg(target_arch = "riscv32")]
 pub mod udp_control;
 #[cfg(target_arch = "riscv32")]
 mod wifi;
+pub mod wifi_config;
 #[cfg(target_arch = "riscv32")]
 mod z21_dispatch;
 pub mod z21_proto;
