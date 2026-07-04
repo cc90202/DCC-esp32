@@ -21,6 +21,7 @@ use static_cell::StaticCell;
 
 use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
 use crate::dcc::{LogicalSpeed, PomRequest, PomResponse, SchedulerCommand};
+use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_dispatch::{encode_current_system_state, handle_packet, handle_status_event};
 use crate::net::z21_proto::{self, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 use crate::net::{LocoSlots, loco_is_moving};
@@ -76,6 +77,7 @@ pub(super) struct Z21Ctx<'a> {
 pub async fn net_task(
     spawner: Spawner,
     wifi: esp_hal::peripherals::WIFI<'static>,
+    credentials: WifiCredentials,
     scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
     fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
     channels: NetTaskChannels,
@@ -97,13 +99,13 @@ pub async fn net_task(
             .map_err(|_| NetInitError::WifiInit)?;
 
     wifi_ctrl
-        .set_config(&wifi::client_mode_config())
+        .set_config(&wifi::client_mode_config(&credentials))
         .map_err(|_| NetInitError::WifiSetConfig)?;
     wifi_ctrl
         .start_async()
         .await
         .map_err(|_| NetInitError::WifiStart)?;
-    info!("WiFi started, connecting to SSID: {}", wifi::WIFI_SSID);
+    info!("WiFi started, connecting to SSID: {}", credentials.ssid());
 
     let net_config = Config::dhcpv4(Default::default());
     let rng = Rng::new();
