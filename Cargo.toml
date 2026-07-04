@@ -16,6 +16,7 @@ path = "./src/bin/main.rs"
 # Platform-independent dependencies (available in tests)
 heapless         = "0.9"
 embedded-storage = "0.3.1"
+smoltcp          = { version = "0.12.0", default-features = false, features = ["medium-ethernet", "proto-dhcpv4", "socket-dhcpv4"] }
 
 [target.'cfg(not(target_arch = "riscv32"))'.dependencies]
 critical-section = { version = "1.2.0", features = ["std"] }

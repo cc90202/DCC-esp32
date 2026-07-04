@@ -517,6 +517,39 @@ Acceptance:
 - invalid submit does not save;
 - password is never logged.
 
+## Task 11.5: Provisioning DHCP Server
+
+Goal: assign an IP address automatically to a phone/laptop connected to the
+setup AP.
+
+Files likely involved:
+
+- `src/net/provisioning/dhcp.rs`
+- `src/net/provisioning_dhcp.rs`
+- `src/net/provisioning/ap.rs`
+
+Behavior:
+
+- listen on UDP port 67 in provisioning mode only;
+- answer DHCP Discover with Offer;
+- answer DHCP Request for this server/address with Ack;
+- lease only `192.168.4.2/24`;
+- advertise router/server `192.168.4.1`;
+- ignore unsupported DHCP messages instead of panicking.
+
+Implementation constraints:
+
+- use existing `smoltcp` DHCP wire packet/repr primitives;
+- keep parser/encoder host-testable;
+- do not start DHCP in station mode;
+- no captive portal/DNS in this task.
+
+Acceptance:
+
+- host tests cover Discover -> Offer and Request -> Ack;
+- phone can get an address without manual static IP setup;
+- provisioning still never starts DCC, RailCom, Z21, or track output.
+
 ## Task 12: Save, Reboot, And Recovery
 
 Goal: complete provisioning transaction safely.
@@ -623,9 +656,10 @@ Final checks:
 10. Task 9: Provisioning AP.
 11. Task 10: HTTP implementation spike.
 12. Task 11: HTTP setup server.
-13. Task 12: Save/reboot/recovery.
-14. Task 13: Operator feedback.
-15. Task 14: Docs and UAT.
+13. Task 11.5: Provisioning DHCP server.
+14. Task 12: Save/reboot/recovery.
+15. Task 13: Operator feedback.
+16. Task 14: Docs and UAT.
 
 ## Commit Strategy
 

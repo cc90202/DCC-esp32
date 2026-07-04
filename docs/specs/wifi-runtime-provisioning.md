@@ -28,8 +28,9 @@ Provisioning mode now starts a safe SoftAP branch:
 - missing credentials select provisioning mode and keep the normal Z21 runtime
   stopped;
 - provisioning mode starts WPA2 AP `DCC-Setup-XXXX` on `192.168.4.1`;
+- provisioning DHCP assigns `192.168.4.2/24` to the setup client;
 - HTTP form handling and credential save are implemented;
-- DHCP and post-save reboot are still pending;
+- post-save reboot is still pending;
 - valid stored credentials start station mode;
 - runtime GPIO21 provisioning requests first request track stop, then set a
   next-boot flag and reboot into the safe SoftAP branch.
@@ -458,16 +459,21 @@ DHCP decision:
 - `embassy-net`'s current `dhcpv4` feature is a DHCP client socket, not a DHCP
   server;
 - `esp-radio` AP mode does not provide a DHCP server through `embassy-net`;
-- the production AP task must either add a small no-std DHCP server or select a
-  maintained crate compatible with the current stack;
-- static phone IP is acceptable only as a temporary HIL blocker workaround, not
-  as the product behavior.
+- provisioning mode therefore runs a small DHCP server task over
+  `embassy_net::udp::UdpSocket`;
+- packet parsing and emission use existing `smoltcp::wire` DHCPv4 primitives;
+- the direct `smoltcp` dependency is intentionally feature-limited to
+  `proto-dhcpv4`, `medium-ethernet`, and `socket-dhcpv4`: `proto-dhcpv4`
+  exposes the DHCP wire types, `medium-ethernet` is required by those wire
+  types for Ethernet hardware addresses, and `socket-dhcpv4` satisfies
+  `smoltcp` 0.12's socket feature guard when `medium-ethernet` is enabled;
+- the first release intentionally leases only `192.168.4.2/24` and does not add
+  DNS or captive portal behavior.
 
 HTTP dependency decision:
 
-- the current `embassy-net` feature set is `dhcpv4`, `medium-ethernet`, `udp`;
-- serving the setup page requires TCP sockets;
-- the HTTP task must add the `tcp` feature before implementing the server;
+- the current `embassy-net` feature set is `dhcpv4`, `medium-ethernet`, `tcp`,
+  and `udp`;
 - AP-only provisioning does not need Z21 UDP sockets, station reconnect logic,
   or normal network status events.
 
@@ -631,8 +637,7 @@ Buffer decision:
 - TCP TX buffer: 1536 bytes for one full response page;
 - if the final HTML exceeds the TX buffer, split writes explicitly rather than
   increasing buffers blindly;
-- keep `StackResources` sized for AP + HTTP + future DHCP after the production
-  task adds the exact sockets.
+- keep `StackResources` sized for AP + HTTP + DHCP sockets.
 
 Open item for Task 11:
 
