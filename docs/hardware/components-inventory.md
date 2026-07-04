@@ -1,8 +1,8 @@
-# Components Inventory
+# Components inventory
 
-Hardware components available for the DCC Command Station project.
+Hardware components available for the DCC command station project.
 
-## Core Modules (in use on breadboard / planned for PCB)
+## Core modules (in use on breadboard, planned for PCB)
 
 | Component | Qty | Notes |
 |---|---|---|
@@ -11,9 +11,9 @@ Hardware components available for the DCC Command Station project.
 | BTS7960 43A H-Bridge (Binghe) | 1 | Track power driver, R_IS/L_IS current sense |
 | OLED SSD1306 1.3" I2C (128x64) | 1 | Main display, GPIO19=SDA, GPIO20=SCL |
 
-## Additional Components (available, not yet allocated)
+## Additional components (available, not yet allocated)
 
-### Active Components
+### Active components
 
 | Component | Qty | Package | Key Specs | Use |
 |---|---|---|---|---|
@@ -22,7 +22,7 @@ Hardware components available for the DCC Command Station project.
 | IRLZ44N N-channel MOSFET | 10 | TO-220AB | 55V, 47A, logic-level gate (Vgs_th ~1-2V) | RailCom v2 cutout switches (Qc1, Qc2) |
 | 1N5819 Schottky diode | 100 | DO-41 | 1A, 40V, Vf ~0.6V | General-purpose protection/clamping, flyback |
 
-### Needed For RailCom Option A (not yet in inventory)
+### Needed for RailCom option A (not yet in inventory)
 
 | Component | Qty | Package | Key Specs | Use |
 |---|---|---|---|---|
@@ -30,7 +30,7 @@ Hardware components available for the DCC Command Station project.
 | BAT54 / BAT54S small-signal Schottky diode | 4+ | through-hole adapter or SMD breakout | low capacitance preferred | Comparator input clamps for the cutout-only RailCom detector |
 | 2.7 Ω resistor, >= 0.5 W | 2 | through-hole | 1 W preferred for bench margin | RailCom cutout-only burden resistors |
 
-### Passive Components
+### Passive components
 
 | Component | Qty | Notes |
 |---|---|---|
@@ -49,14 +49,12 @@ Hardware components available for the DCC Command Station project.
 | Green status LED | 1 | Reused from old main DCC breadboard, GPIO14 |
 | Red status LED | 1 | Reused from old main DCC breadboard, GPIO15 |
 
-### Connectors & Mechanical
+### Connectors and mechanical
 
 | Component | Qty | Notes |
 |---|---|---|
 | WAGO 221-2411 lever connectors | 10 | 2-conductor, 4mm², quick-connect |
 
-## PCB Components (JLCPCB PCBA, not yet ordered)
+## PCB components (JLCPCB assembly, not yet ordered)
 
-See [PCB design spec](../superpowers/specs/2026-03-22-pcb-command-station-design.md) for full BOM.
-
-Key additions on PCB: MP1584EN buck converter (15V→5V), fuse holder, SMD passives, LED indicators, tactile buttons, screw terminals, test points.
+Key additions on PCB: MP1584EN buck converter (15V to 5V), fuse holder, SMD passives, LED indicators, tactile buttons, screw terminals, test points.

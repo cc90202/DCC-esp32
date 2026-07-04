@@ -1,6 +1,6 @@
 //! WiFi bring-up: esp-radio Embassy tasks, connection state machine, `NetInitError`.
 //!
-//! ESP32-C6 only - gated behind `#[cfg(target_arch = "riscv32")]` at the
+//! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
 
 extern crate alloc;
@@ -54,7 +54,7 @@ pub(super) fn client_mode_config(credentials: &WifiCredentials) -> ModeConfig {
     )
 }
 
-/// Runs the embassy-net stack driver - dedicated Embassy task per official example.
+/// Runs the embassy-net stack driver in a dedicated Embassy task, following the official example.
 #[embassy_executor::task]
 pub(super) async fn wifi_runner_task(
     mut runner: embassy_net::Runner<'static, WifiDevice<'static>>,

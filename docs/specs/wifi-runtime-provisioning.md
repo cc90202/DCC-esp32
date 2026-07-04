@@ -1,4 +1,4 @@
-# WiFi Runtime Provisioning Design
+# WiFi runtime provisioning
 
 ## Goal
 
@@ -17,7 +17,7 @@ The command station must:
 The first implementation should favor predictable embedded behavior over a
 fully featured captive portal.
 
-## Current State
+## Current state
 
 WiFi credentials are now loaded from the dedicated `dcc_cfg` flash partition
 before station mode starts. The old `.env`/`env!("WIFI_*")` path has been
@@ -43,9 +43,9 @@ The physical control buttons are already wired and used:
 
 GPIO0/BOOT is not part of this design.
 
-## User Flow
+## User flow
 
-### Normal Boot
+### Normal boot
 
 1. Firmware reads stored WiFi credentials from flash.
 2. If credentials exist and the blue button override is not active, it starts
@@ -57,7 +57,7 @@ firmware must keep retrying station mode and must not erase the stored
 credentials automatically. The operator can enter setup manually with the
 GPIO21 10 second press if the credentials need to be replaced.
 
-### First Boot Or Missing Credentials
+### First boot, or missing credentials
 
 1. Firmware finds no valid stored credentials.
 2. It enters WiFi setup mode.
@@ -70,7 +70,7 @@ GPIO21 10 second press if the credentials need to be replaced.
 9. Firmware reboots.
 10. Next boot starts station mode with the saved credentials.
 
-### Manual Setup
+### Manual setup
 
 The blue Resume button keeps its runtime behavior, with a longer threshold for
 provisioning:
@@ -105,7 +105,7 @@ so the goal is not many abstract layers. The useful boundary is:
 - hardware and protocol details should stay in outer modules;
 - the boot composition root wires the concrete pieces together.
 
-## Core Types
+## Core types
 
 Introduce a small pure module for WiFi configuration policy, for example:
 
@@ -145,7 +145,7 @@ test need for them.
 `password` uses capacity 64 so the type has headroom, but accepted WPA/WPA2
 password length is still 8..=63 bytes.
 
-## Provisioning Decision
+## Provisioning decision
 
 The boot decision should be testable on the host:
 
@@ -179,7 +179,7 @@ Connection failures after valid credentials are loaded are not a provisioning
 decision. They remain a station-mode reconnect problem until the operator
 explicitly requests setup or the stored config is found corrupt.
 
-## Storage Port
+## Storage port
 
 Define the storage boundary near the policy:
 
@@ -196,7 +196,7 @@ methods if trait ergonomics or lifetime constraints become awkward. The
 important part is the direction of dependency: WiFi policy should not know the
 flash driver.
 
-## Persistent Format
+## Persistent format
 
 Use a small versioned record in a dedicated application-owned flash partition.
 
@@ -222,7 +222,7 @@ Requirements:
 - allow clearing credentials later;
 - avoid logging secret contents.
 
-### Storage Spike Decision
+### Storage spike decision
 
 Decision for the first runtime provisioning release: use a dedicated versioned
 blob in a small application-owned flash partition, not NVS.
@@ -240,17 +240,18 @@ Rationale:
 - the concrete flash driver remains an outer detail and can be replaced later
   without changing WiFi provisioning policy.
 
-Required partition change for the implementation task:
+The partition added for this feature, as it appears in `partitions.csv`:
 
 ```text
-# Name,     Type, SubType, Offset,   Size,     Flags
-dcc_cfg,    data, 0x40,    0x1E0000, 0x3000,
+# Name,     Type, SubType, Offset,  Size,    Flags
+dcc_cfg,    data, nvs,     0x1E0000, 0x3000,
 ```
 
-To keep a 2 MiB flash layout valid, shrink the current factory app partition
-from `0x1F0000` to `0x1D0000` and place `dcc_cfg` at `0x1E0000`. Do not store
-application credentials in the existing `nvs` partition; leave that partition
-available for platform/radio use.
+To keep the 2 MiB flash layout valid, the factory app partition was shrunk from
+`0x1F0000` to `0x1D0000` so that `dcc_cfg` fits at `0x1E0000`. Application
+credentials are deliberately kept out of the pre-existing `nvs` partition, which
+stays available for platform and radio use: `dcc_cfg` shares its subtype but is
+a separate partition with its own offset, owned by the application.
 
 Flash layout inside `dcc_cfg`:
 
@@ -329,7 +330,7 @@ pub enum StoreError {
 The codec should distinguish `Missing` from `Corrupt`; the flash adapter should
 map driver errors to read/erase/write variants without logging credentials.
 
-## WiFi Module Changes
+## WiFi module changes
 
 `src/net/wifi.rs` no longer uses compile-time credentials:
 
@@ -347,7 +348,7 @@ pub(super) fn client_mode_config(credentials: &WifiCredentials) -> ModeConfig
 The network task receives credentials from boot wiring rather than reading them
 from environment variables.
 
-## Provisioning Mode
+## Provisioning mode
 
 Provisioning mode should be exclusive in the first implementation.
 
@@ -376,7 +377,7 @@ Operator feedback:
 - status LEDs may keep the existing WiFi-connecting indication unless a
   dedicated setup pattern is added later.
 
-## Access Point
+## Access point
 
 Initial AP:
 
@@ -393,7 +394,7 @@ AP password:
 - do not use an open AP;
 - document the password in README; do not print it on the serial log.
 
-### AP Mode Spike Decision
+### Access point spike decision
 
 Use the SoftAP support already exposed by `esp-radio`; do not introduce a
 custom WiFi/AP abstraction or raw radio setup.
@@ -497,9 +498,9 @@ HIL checks required before production HTTP work:
 - added TCP/HTTP buffers fit RAM with display and control tasks disabled in
   provisioning mode.
 
-## HTTP Interface
+## HTTP interface
 
-### HTTP Implementation Spike Decision
+### HTTP implementation spike decision
 
 Use a minimal hand-written HTTP/1.1 handler on top of
 `embassy_net::tcp::TcpSocket`; do not add a web framework or generic HTTP
@@ -685,7 +686,7 @@ UI guidelines:
 
 Keep it visually polished but simple. No frontend framework.
 
-## Captive Portal
+## Captive portal
 
 Do not include captive portal in the first implementation.
 
@@ -702,7 +703,7 @@ Future release:
 Captive portal is useful but adds DNS behavior and mobile OS edge cases. It is
 not required to validate the main provisioning path.
 
-## Boot Integration
+## Boot integration
 
 High-level boot flow:
 
@@ -736,7 +737,7 @@ Task 12 final behavior: after successful credential save, call
 sent and flushed successfully. Do not show reboot success or reset until the
 store reports that credentials were written successfully.
 
-## Button Integration
+## Button integration
 
 `control_buttons` should classify GPIO21 press duration into a richer enum:
 
@@ -797,7 +798,7 @@ Embedded/manual tests:
 - red Stop/GPIO22 behavior is unchanged;
 - blue short and long Resume behavior is unchanged below 10 seconds.
 
-## Hardware UAT Checklist
+## Hardware acceptance checklist
 
 Software validation can cover parsing, storage, policy, reboot decisions, and
 target builds. The following checks require ESP32-C6 hardware, OLED when
@@ -829,10 +830,10 @@ installed, and a phone or computer connected to the provisioning AP:
 
 Current validation status in this task: `cargo test-host`, `cargo check-esp`,
 `cargo build-esp-release`, `cargo fmt --check`, host `cargo clippy`, and
-`git diff --check` passed. Hardware-in-the-loop UAT remains required before
+`git diff --check` passed. Hardware-in-the-loop acceptance testing remains required before
 treating the feature as physically validated on the command-station board.
 
-## Security And Safety
+## Security and safety
 
 Safety:
 
@@ -850,22 +851,22 @@ Security:
 First implementation does not need HTTPS. The setup AP is local, temporary,
 and physically gated. This is acceptable for the project scope.
 
-## Implementation Phases
+## Implementation phases
 
-### Phase 1: Policy And Button Classification
+### Phase 1: policy and button classification
 
 - Add `WifiCredentials`.
 - Add validation.
 - Add provisioning decision logic.
 - Add GPIO21 duration classification tests.
 
-### Phase 2: Runtime Credentials Input
+### Phase 2: runtime credentials input
 
 - Change `wifi::client_mode_config` to accept `WifiCredentials`.
 - Remove direct `env!` usage from normal WiFi path.
 - Do not retain `.env` as a runtime credential path.
 
-### Phase 3: Persistent Store
+### Phase 3: persistent store
 
 - Implement `dcc_cfg` flash blob storage.
 - Add encode/decode tests for stored record format.
@@ -874,7 +875,7 @@ and physically gated. This is acceptable for the project scope.
   sector erase/write.
 - Prefer the newer generation only after the inactive slot validates.
 
-### Phase 4: Provisioning AP And HTTP
+### Phase 4: provisioning access point and HTTP
 
 - Start AP mode.
 - Serve embedded HTML.
@@ -882,14 +883,14 @@ and physically gated. This is acceptable for the project scope.
 - Save credentials.
 - Reboot.
 
-### Phase 5: Documentation And UAT
+### Phase 5: documentation and acceptance testing
 
 - Update README setup instructions.
 - Update hardware docs for GPIO21 10 second setup action.
 - Run host tests and `cargo check-esp`.
 - Perform hardware provisioning test from phone.
 
-## Explicit Non-Goals For First Version
+## Non-goals for the first version
 
 - captive portal DNS;
 - WiFi network scanning;

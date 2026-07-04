@@ -637,7 +637,7 @@ mod tests {
         let new = credentials("DCC-New", "password456");
 
         // Three saves: the active record (DCC-New) lives in slot A, the
-        // stale one (DCC-Old) in slot B - the case a fixed A-then-B erase
+        // stale one (DCC-Old) in slot B, the case a fixed A-then-B erase
         // order gets wrong.
         assert_eq!(store.save(&old), Ok(()));
         assert_eq!(store.save(&old), Ok(()));

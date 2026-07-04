@@ -13,9 +13,6 @@ Cargo.lock
 *.swo
 *~
 
-# Claude Code
-.claude/
-
 # Cargo
 .cargo/*
 !.cargo/config.toml
@@ -34,9 +31,6 @@ Thumbs.db
 
 # WiFi credentials (never commit)
 .env
-
-# Local tool state
-.codex
 
 # Python
 __pycache__/
