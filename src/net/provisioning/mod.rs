@@ -1,6 +1,7 @@
 //! Runtime WiFi provisioning support.
 
 mod ap;
+mod dhcp;
 mod html;
 mod http;
 
