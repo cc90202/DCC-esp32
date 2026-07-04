@@ -7,7 +7,9 @@ use esp_storage::FlashStorage;
 
 use super::store::WifiConfigStore;
 
-pub const DCC_CFG_PARTITION_LABEL: &str = "dcc_cfg";
+pub(crate) const DCC_CFG_PARTITION_LABEL: &str = "dcc_cfg";
+// 3 x 4 KiB sectors: slot A + slot B used by `WifiConfigStore`, plus one
+// spare sector reserved for future config records (see partitions.csv).
 const DCC_CFG_PARTITION_SIZE: usize = 0x3000;
 
 pub type EspWifiConfigStore<'a, 'd> = WifiConfigStore<FlashRegion<'a, FlashStorage<'d>>>;

@@ -14,9 +14,23 @@ const VALID_FLAGS_MASK: u8 = FLAG_FORCE_PROVISIONING;
 const SSID_MAX_LEN: usize = 32;
 const PASSWORD_MAX_LEN: usize = 64;
 const SECTOR_SIZE: usize = 4096;
-const RECORD_BODY_LEN: usize = MAGIC.len() + 1 + 4 + 1 + 1 + 1 + SSID_MAX_LEN + PASSWORD_MAX_LEN;
+
+// Record layout, shared by `encode_record` and `decode_record`.
+const OFFSET_VERSION: usize = MAGIC.len();
+const OFFSET_GENERATION: usize = OFFSET_VERSION + 1;
+const OFFSET_FLAGS: usize = OFFSET_GENERATION + 4;
+const OFFSET_SSID_LEN: usize = OFFSET_FLAGS + 1;
+const OFFSET_PASSWORD_LEN: usize = OFFSET_SSID_LEN + 1;
+const OFFSET_SSID: usize = OFFSET_PASSWORD_LEN + 1;
+const OFFSET_PASSWORD: usize = OFFSET_SSID + SSID_MAX_LEN;
+const RECORD_BODY_LEN: usize = OFFSET_PASSWORD + PASSWORD_MAX_LEN;
 const RECORD_LEN: usize = (RECORD_BODY_LEN + 4).next_multiple_of(4);
 const CHECKSUM_OFFSET: usize = RECORD_LEN - 4;
+
+// esp-storage writes must be 4-byte aligned, and both slots must fit their
+// own erase sector.
+const _: () = assert!(RECORD_LEN.is_multiple_of(4));
+const _: () = assert!(RECORD_LEN <= SECTOR_SIZE);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -104,21 +118,27 @@ where
 
     fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError> {
         let latest = self.load_latest()?;
-        let (slot, generation, force_provisioning) = match latest {
-            LatestRecord::Missing | LatestRecord::Corrupt => (ConfigSlot::A, 1, false),
-            LatestRecord::Valid { slot, record } => (
-                slot.inactive_after(),
-                next_generation(record.generation),
-                record.force_provisioning,
-            ),
+        let (slot, generation) = match latest {
+            LatestRecord::Missing | LatestRecord::Corrupt => (ConfigSlot::A, 1),
+            LatestRecord::Valid { slot, record } => {
+                (slot.inactive_after(), next_generation(record.generation))
+            }
         };
 
-        self.write_slot(slot, credentials, generation, force_provisioning)
+        // A successful save always clears any pending force-provisioning
+        // flag: rebooting after saving must reach station mode.
+        self.write_slot(slot, credentials, generation, false)
     }
 
     fn clear(&mut self) -> Result<(), StoreError> {
-        self.erase_slot(ConfigSlot::A)?;
-        self.erase_slot(ConfigSlot::B)?;
+        // Erase the inactive (older) slot first so a power loss between the
+        // two erases cannot resurrect a stale record.
+        let first = match self.load_latest() {
+            Ok(LatestRecord::Valid { slot, .. }) => slot.inactive_after(),
+            _ => ConfigSlot::A,
+        };
+        self.erase_slot(first)?;
+        self.erase_slot(first.inactive_after())?;
         Ok(())
     }
 }
@@ -140,18 +160,10 @@ where
     }
 
     fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError> {
-        match self.load_latest()? {
-            LatestRecord::Missing => Ok(()),
-            LatestRecord::Valid { slot, record } => {
-                let next_slot = slot.inactive_after();
-                self.write_slot(
-                    next_slot,
-                    &record.credentials,
-                    next_generation(record.generation),
-                    false,
-                )
-            }
-            LatestRecord::Corrupt => Err(StoreError::Corrupt),
+        match self.update_force_flag(false) {
+            // Clearing with no stored record is a no-op, not an error.
+            Err(StoreError::MissingCredentials) => Ok(()),
+            result => result,
         }
     }
 }
@@ -286,14 +298,13 @@ fn encode_record(
 
     let mut record = [0u8; RECORD_LEN];
     record[..MAGIC.len()].copy_from_slice(MAGIC);
-    record[7] = VERSION;
-    record[8..12].copy_from_slice(&generation.to_le_bytes());
-    record[12] = u8::from(force_provisioning);
-    record[13] = ssid.len() as u8;
-    record[14] = password.len() as u8;
-    record[15..15 + ssid.len()].copy_from_slice(ssid);
-    let password_offset = 15 + SSID_MAX_LEN;
-    record[password_offset..password_offset + password.len()].copy_from_slice(password);
+    record[OFFSET_VERSION] = VERSION;
+    record[OFFSET_GENERATION..OFFSET_FLAGS].copy_from_slice(&generation.to_le_bytes());
+    record[OFFSET_FLAGS] = u8::from(force_provisioning);
+    record[OFFSET_SSID_LEN] = ssid.len() as u8;
+    record[OFFSET_PASSWORD_LEN] = password.len() as u8;
+    record[OFFSET_SSID..OFFSET_SSID + ssid.len()].copy_from_slice(ssid);
+    record[OFFSET_PASSWORD..OFFSET_PASSWORD + password.len()].copy_from_slice(password);
 
     let checksum = checksum(&record[..CHECKSUM_OFFSET]);
     record[CHECKSUM_OFFSET..].copy_from_slice(&checksum.to_le_bytes());
@@ -304,7 +315,7 @@ fn decode_record(record: &[u8]) -> Option<StoredRecord> {
     if record.len() < RECORD_LEN || &record[..MAGIC.len()] != MAGIC {
         return None;
     }
-    if record[7] != VERSION {
+    if record[OFFSET_VERSION] != VERSION {
         return None;
     }
 
@@ -313,23 +324,22 @@ fn decode_record(record: &[u8]) -> Option<StoredRecord> {
         return None;
     }
 
-    let flags = record[12];
+    let flags = record[OFFSET_FLAGS];
     if flags & !VALID_FLAGS_MASK != 0 {
         return None;
     }
 
-    let ssid_len = record[13] as usize;
-    let password_len = record[14] as usize;
+    let ssid_len = record[OFFSET_SSID_LEN] as usize;
+    let password_len = record[OFFSET_PASSWORD_LEN] as usize;
     if ssid_len > SSID_MAX_LEN || password_len > PASSWORD_MAX_LEN {
         return None;
     }
 
-    let password_offset = 15 + SSID_MAX_LEN;
-    let ssid = core::str::from_utf8(&record[15..15 + ssid_len]).ok()?;
+    let ssid = core::str::from_utf8(&record[OFFSET_SSID..OFFSET_SSID + ssid_len]).ok()?;
     let password =
-        core::str::from_utf8(&record[password_offset..password_offset + password_len]).ok()?;
+        core::str::from_utf8(&record[OFFSET_PASSWORD..OFFSET_PASSWORD + password_len]).ok()?;
     let credentials = WifiCredentials::new(ssid, password).ok()?;
-    let generation = u32::from_le_bytes(record[8..12].try_into().ok()?);
+    let generation = u32::from_le_bytes(record[OFFSET_GENERATION..OFFSET_FLAGS].try_into().ok()?);
 
     Some(StoredRecord {
         credentials,
@@ -338,6 +348,10 @@ fn decode_record(record: &[u8]) -> Option<StoredRecord> {
     })
 }
 
+/// FNV-1a 32-bit hash (offset basis 0x811c9dc5, prime 0x01000193).
+///
+/// Detects flash corruption and torn writes; it is not a cryptographic
+/// integrity check and does not need to be.
 fn checksum(bytes: &[u8]) -> u32 {
     let mut hash = 0x811c_9dc5u32;
     for byte in bytes {
@@ -364,7 +378,8 @@ mod tests {
     #[derive(Debug)]
     struct MockFlash {
         sectors: [[u8; SECTOR_SIZE]; 2],
-        fail_next_erase: bool,
+        /// `Some(n)`: the erase after `n` successful ones fails once.
+        erases_before_failure: Option<u8>,
         fail_next_write: bool,
     }
 
@@ -372,7 +387,7 @@ mod tests {
         const fn erased() -> Self {
             Self {
                 sectors: [[0xff; SECTOR_SIZE]; 2],
-                fail_next_erase: false,
+                erases_before_failure: None,
                 fail_next_write: false,
             }
         }
@@ -412,9 +427,13 @@ mod tests {
         const ERASE_SIZE: usize = SECTOR_SIZE;
 
         fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
-            if self.fail_next_erase {
-                self.fail_next_erase = false;
-                return Err(MockFlashError);
+            match self.erases_before_failure {
+                Some(0) => {
+                    self.erases_before_failure = None;
+                    return Err(MockFlashError);
+                }
+                Some(remaining) => self.erases_before_failure = Some(remaining - 1),
+                None => {}
             }
             if to != from + SECTOR_SIZE as u32 {
                 return Err(MockFlashError);
@@ -512,6 +531,19 @@ mod tests {
     }
 
     #[test]
+    fn save_clears_pending_force_flag() {
+        let mut store = WifiConfigStore::new(MockFlash::erased());
+        let old = credentials("DCC-Old", "password123");
+        let new = credentials("DCC-New", "password456");
+
+        assert_eq!(store.save(&old), Ok(()));
+        assert_eq!(store.set_force_on_next_boot(), Ok(()));
+        assert_eq!(store.save(&new), Ok(()));
+
+        assert_eq!(store.force_on_next_boot(), Ok(false));
+    }
+
+    #[test]
     fn completed_save_selects_newer_generation() {
         let mut store = WifiConfigStore::new(MockFlash::erased());
         let old = credentials("DCC-Old", "password123");
@@ -547,7 +579,7 @@ mod tests {
         let new = credentials("DCC-New", "password456");
 
         assert_eq!(store.save(&old), Ok(()));
-        store.flash.fail_next_erase = true;
+        store.flash.erases_before_failure = Some(0);
         assert_eq!(store.save(&new), Err(StoreError::FlashErase));
 
         let loaded = store.load().unwrap().unwrap();
@@ -599,12 +631,25 @@ mod tests {
     }
 
     #[test]
-    fn encoded_record_length_is_word_aligned_for_esp_flash() {
-        assert_eq!(RECORD_LEN % 4, 0);
-    }
+    fn clear_erases_the_inactive_slot_first() {
+        let mut store = WifiConfigStore::new(MockFlash::erased());
+        let old = credentials("DCC-Old", "password123");
+        let new = credentials("DCC-New", "password456");
 
-    #[test]
-    fn encoded_record_fits_inside_one_flash_sector() {
-        assert!(RECORD_LEN <= SECTOR_SIZE);
+        // Three saves: the active record (DCC-New) lives in slot A, the
+        // stale one (DCC-Old) in slot B — the case a fixed A-then-B erase
+        // order gets wrong.
+        assert_eq!(store.save(&old), Ok(()));
+        assert_eq!(store.save(&old), Ok(()));
+        assert_eq!(store.save(&new), Ok(()));
+
+        // Fail the second erase: with the correct order (inactive B first)
+        // only the stale record is gone and DCC-New survives. With the wrong
+        // order the active slot A would be erased first and DCC-Old would
+        // resurrect.
+        store.flash.erases_before_failure = Some(1);
+        assert_eq!(store.clear(), Err(StoreError::FlashErase));
+        let survivor = store.load().unwrap().unwrap();
+        assert_eq!(survivor.ssid(), "DCC-New");
     }
 }

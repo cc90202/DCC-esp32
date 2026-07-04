@@ -12,8 +12,7 @@ mod store;
 pub use credentials::{CredentialError, WifiCredentials};
 #[cfg(target_arch = "riscv32")]
 pub use esp_flash_store::{
-    DCC_CFG_PARTITION_LABEL, EspFlashStoreError, EspWifiConfigStore,
-    wifi_config_store_from_partition,
+    EspFlashStoreError, EspWifiConfigStore, wifi_config_store_from_partition,
 };
 pub use provisioning_policy::{
     ProvisioningDecision, ProvisioningReason, StoredCredentialsState, decide_provisioning,
