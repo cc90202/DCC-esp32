@@ -51,7 +51,7 @@ static_cell      = "2.1.1"
 
 # Network stack (WiFi Z21 UDP)
 esp-radio         = { version = "0.17.0", features = ["esp32c6", "wifi", "unstable"] }
-embassy-net       = { version = "0.8.0",  features = ["dhcpv4", "medium-ethernet", "udp"] }
+embassy-net       = { version = "0.8.0",  features = ["dhcpv4", "medium-ethernet", "tcp", "udp"] }
 embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 
 [dev-dependencies]

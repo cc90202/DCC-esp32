@@ -10,16 +10,17 @@ use embassy_executor::Spawner;
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, StackResources, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Sender;
-use embassy_time::{Duration, Timer};
 use esp_hal::rng::Rng;
 use esp_radio::wifi::{AccessPointConfig, AuthMethod, ModeConfig};
 use heapless::String;
 use static_cell::StaticCell;
 
+use crate::net::wifi_config::WifiCredentialsStore;
 use crate::system_status::{DisplayEvent, SystemStatusEvent};
 
 use super::super::radio::RadioInitError;
 use super::super::{radio, wifi};
+use super::http::run_http_server;
 
 const AP_SSID_PREFIX: &str = "DCC-Setup-";
 const AP_PASSWORD: &str = "dcc-setup";
@@ -27,7 +28,7 @@ const AP_ADDRESS: [u8; 4] = [192, 168, 4, 1];
 const AP_PREFIX_LEN: u8 = 24;
 const CLIENT_STATIC_IP_HINT: &str = "192.168.4.2/24";
 
-static PROVISIONING_NET_RESOURCES: StaticCell<StackResources<1>> = StaticCell::new();
+static PROVISIONING_NET_RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -91,14 +92,18 @@ fn provisioning_net_config() -> Config {
 /// Starts provisioning SoftAP mode and keeps the AP stack alive.
 ///
 /// This safe setup mode does not start DCC, RailCom, Z21, or track output.
-/// DHCP and HTTP are intentionally deferred to later tasks. Until the DHCP
-/// task lands, clients must use a static address such as 192.168.4.2/24.
-pub async fn run_provisioning_ap(
+/// DHCP is intentionally deferred to a later task. Until the DHCP task lands,
+/// clients must use a static address such as 192.168.4.2/24.
+pub async fn run_provisioning_ap<S>(
     spawner: Spawner,
     wifi_peripheral: esp_hal::peripherals::WIFI<'static>,
+    mut store: S,
     status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
     display_sender: Sender<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
-) -> Result<(), ProvisioningApError> {
+) -> Result<(), ProvisioningApError>
+where
+    S: WifiCredentialsStore,
+{
     let ssid = provisioning_ssid()?;
     status_sender.send(SystemStatusEvent::WifiConnecting).await;
 
@@ -139,12 +144,10 @@ pub async fn run_provisioning_ap(
     info!("AP SSID: {}", ssid.as_str());
     info!("AP password: {}", AP_PASSWORD);
     warn!(
-        "DHCP server not implemented yet; configure client static IP {} and open http://192.168.4.1",
+        "DHCP server not implemented yet; configure client static IP {}",
         CLIENT_STATIC_IP_HINT
     );
+    info!("Provisioning HTTP ready: http://192.168.4.1");
 
-    loop {
-        Timer::after(Duration::from_secs(60)).await;
-        info!("WiFi provisioning AP active: {}", ssid.as_str());
-    }
+    run_http_server(stack, &mut store).await;
 }
