@@ -23,14 +23,16 @@ WiFi credentials are now loaded from the dedicated `dcc_cfg` flash partition
 before station mode starts. The old `.env`/`env!("WIFI_*")` path has been
 removed from the runtime and build script.
 
-Provisioning AP and HTTP setup are still pending:
+Provisioning mode now starts a safe SoftAP branch:
 
 - missing credentials select provisioning mode and keep the normal Z21 runtime
   stopped;
+- provisioning mode starts WPA2 AP `DCC-Setup-XXXX` on `192.168.4.1`;
+- DHCP, HTTP form handling, credential save, and post-save reboot are still
+  pending;
 - valid stored credentials start station mode;
 - runtime GPIO21 provisioning requests first request track stop, then set a
-  next-boot flag and reboot;
-- the setup AP and HTML form are implemented in later tasks.
+  next-boot flag and reboot into the safe SoftAP branch.
 
 The physical control buttons are already wired and used:
 
@@ -352,13 +354,16 @@ When active:
 
 - do not start normal Z21 networking;
 - keep track power disabled;
+- do not initialize DCC/RMT, RailCom, scheduler, or track-output tasks;
 - start WiFi AP mode;
 - start HTTP server;
 - save credentials;
 - reboot after successful save.
 
 This is safer and simpler than trying to run setup mode while the DCC runtime
-is active.
+is active. Provisioning is a safe setup branch: while credentials are being
+configured, every train on the circuit must remain stopped because no DCC
+waveform or track enable path is started.
 
 Operator feedback:
 
