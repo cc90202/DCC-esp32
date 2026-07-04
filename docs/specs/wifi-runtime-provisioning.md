@@ -62,7 +62,7 @@ GPIO21 10 second press if the credentials need to be replaced.
 1. Firmware finds no valid stored credentials.
 2. It enters WiFi setup mode.
 3. Track power remains disabled.
-4. ESP32 starts an access point, for example `DCC-Setup-ABCD`.
+4. ESP32 starts an access point named `DCC-Setup-XXXX`.
 5. User connects from phone or laptop.
 6. User opens `http://192.168.4.1`.
 7. The page asks for SSID and password.
@@ -381,11 +381,11 @@ Operator feedback:
 Initial AP:
 
 ```text
-SSID: DCC-Setup-ABCD
+SSID: DCC-Setup-XXXX
 URL:  http://192.168.4.1
 ```
 
-`ABCD` should be derived from a stable chip identifier or MAC suffix when easy.
+`XXXX` is derived from a stable chip identifier or MAC suffix.
 
 AP password:
 
@@ -425,7 +425,7 @@ Minimal configuration shape:
 ```rust
 let ap_config = ModeConfig::AccessPoint(
     AccessPointConfig::default()
-        .with_ssid("DCC-Setup-ABCD".into())
+        .with_ssid("DCC-Setup-XXXX".into())
         .with_password("dcc-setup".into())
         .with_auth_method(AuthMethod::Wpa2Personal)
         .with_max_connections(1),
@@ -490,7 +490,7 @@ Composition and lifetime decision:
 
 HIL checks required before production HTTP work:
 
-- ESP32-C6 advertises `DCC-Setup-ABCD` with WPA2;
+- ESP32-C6 advertises `DCC-Setup-XXXX` with WPA2;
 - a phone can associate with the AP;
 - ESP32 binds `192.168.4.1/24` on `interfaces.ap`;
 - DHCP strategy assigns a phone address without manual static configuration;
@@ -691,7 +691,7 @@ Do not include captive portal in the first implementation.
 
 First release:
 
-- user connects to `DCC-Setup-ABCD`;
+- user connects to `DCC-Setup-XXXX`;
 - user opens `http://192.168.4.1`.
 
 Future release:
@@ -785,7 +785,7 @@ Host tests:
 Embedded/manual tests:
 
 - flash without credentials enters AP setup;
-- phone connects to `DCC-Setup-ABCD`;
+- phone connects to `DCC-Setup-XXXX`;
 - `http://192.168.4.1` serves the setup page;
 - invalid form shows an error and does not save;
 - valid form saves credentials and triggers automatic reboot;
@@ -796,6 +796,41 @@ Embedded/manual tests:
 - boot without GPIO21 pressed does not wait 10 seconds;
 - red Stop/GPIO22 behavior is unchanged;
 - blue short and long Resume behavior is unchanged below 10 seconds.
+
+## Hardware UAT Checklist
+
+Software validation can cover parsing, storage, policy, reboot decisions, and
+target builds. The following checks require ESP32-C6 hardware, OLED when
+installed, and a phone or computer connected to the provisioning AP:
+
+- flash firmware with erased or missing WiFi credentials;
+- verify setup mode starts automatically;
+- verify DCC, RailCom, Z21 UDP, and track output are not started in setup mode;
+- verify AP SSID format `DCC-Setup-XXXX`;
+- connect to the AP with password `dcc-setup`;
+- verify DHCP assigns the client an address on `192.168.4.0/24`;
+- open `http://192.168.4.1`;
+- submit invalid SSID/password and verify an error page with no save;
+- submit valid credentials and verify the success page;
+- verify ESP32 reboots after the success response;
+- verify next boot connects to the configured WiFi;
+- power-cycle and verify credentials persist;
+- make configured WiFi unavailable and verify station reconnect retry without
+  erasing credentials;
+- hold GPIO21 for at least 10 seconds and verify safe setup mode on next boot;
+- verify GPIO21 short press still performs Resume;
+- verify GPIO21 press >= 2 seconds and < 10 seconds still performs long Resume
+  behavior and does not enter setup;
+- verify GPIO22 Stop/E-stop behavior is unchanged;
+- verify OLED shows setup mode, AP SSID, `http://192.168.4.1`, and
+  track-disabled state when display is installed;
+- capture serial logs and verify they show AP SSID and setup URL but never the
+  fixed AP password or submitted station password.
+
+Current validation status in this task: `cargo test-host`, `cargo check-esp`,
+`cargo build-esp-release`, `cargo fmt --check`, host `cargo clippy`, and
+`git diff --check` passed. Hardware-in-the-loop UAT remains required before
+treating the feature as physically validated on the command-station board.
 
 ## Security And Safety
 
@@ -828,7 +863,7 @@ and physically gated. This is acceptable for the project scope.
 
 - Change `wifi::client_mode_config` to accept `WifiCredentials`.
 - Remove direct `env!` usage from normal WiFi path.
-- Keep `.env` only as temporary dev fallback if needed.
+- Do not retain `.env` as a runtime credential path.
 
 ### Phase 3: Persistent Store
 
