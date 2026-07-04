@@ -19,6 +19,7 @@ const RECORD_LEN: usize = (RECORD_BODY_LEN + 4).next_multiple_of(4);
 const CHECKSUM_OFFSET: usize = RECORD_LEN - 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum StoreError {
     FlashRead,
     FlashErase,

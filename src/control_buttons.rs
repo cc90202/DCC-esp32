@@ -53,12 +53,17 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer, with_timeout};
+use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_hal::gpio::{Input, InputConfig, Pull};
+use esp_storage::FlashStorage;
 
 use crate::control_logic::{
     DebouncedPress, DebouncedRelease, RESUME_LONG_PRESS_MS, RESUME_PROVISIONING_PRESS_MS,
     ResumeButtonAction, ResumePress, debounce_active_low_press, debounce_active_low_release,
     resume_action_for_press,
+};
+use crate::net::wifi_config::{
+    EspFlashStoreError, ProvisioningFlagStore, StoreError, wifi_config_store_from_partition,
 };
 
 const DEBOUNCE_MS: u64 = 30;
@@ -72,17 +77,72 @@ pub enum ProvisioningRequest {
     Requested,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+enum RuntimeProvisioningError {
+    Partition(EspFlashStoreError),
+    Store(StoreError),
+}
+
 #[embassy_executor::task]
 pub async fn provisioning_request_task(
+    mut flash: FlashStorage<'static>,
+    partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
+    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
     receiver: Receiver<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
 ) -> ! {
     loop {
         match receiver.receive().await {
             ProvisioningRequest::Requested => {
-                defmt::warn!("WiFi provisioning requested; runtime transition not implemented yet");
+                fault_sender
+                    .send(crate::system_status::FaultEvent::StopPressed)
+                    .await;
+                Timer::after(Duration::from_millis(100)).await;
+                defmt::warn!("WiFi provisioning requested; saving next-boot flag");
+                match set_force_provisioning_on_next_boot(&mut flash, partition_table_buffer) {
+                    Ok(()) => {
+                        defmt::warn!("WiFi provisioning flag saved; rebooting");
+                        esp_hal::system::software_reset();
+                    }
+                    Err(error) => {
+                        defmt::error!("WiFi provisioning flag save failed: {}", error);
+                    }
+                }
             }
         }
     }
+}
+
+fn set_force_provisioning_on_next_boot(
+    flash: &mut FlashStorage<'static>,
+    partition_table_buffer: &mut [u8; PARTITION_TABLE_MAX_LEN],
+) -> Result<(), RuntimeProvisioningError> {
+    let mut store = wifi_config_store_from_partition(flash, partition_table_buffer)
+        .map_err(RuntimeProvisioningError::Partition)?;
+    store
+        .set_force_on_next_boot()
+        .map_err(RuntimeProvisioningError::Store)
+}
+
+pub async fn wait_for_boot_provisioning_override(button: &mut Input<'static>) -> bool {
+    if button.is_high() {
+        return false;
+    }
+
+    Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
+    if !matches!(
+        debounce_active_low_press(true, button.is_low()),
+        DebouncedPress::Confirmed
+    ) {
+        return false;
+    }
+
+    with_timeout(
+        Duration::from_millis(RESUME_PROVISIONING_PRESS_MS),
+        wait_for_debounced_release(button),
+    )
+    .await
+    .is_err()
 }
 
 async fn wait_for_debounced_press(button: &mut Input<'static>) {
