@@ -9,6 +9,7 @@ use embassy_time::{Duration, Timer, with_timeout};
 use static_cell::StaticCell;
 
 use crate::net::provisioning_http::{MAX_REQUEST_BYTES, ParseError, ParsedRequest, parse_request};
+use crate::net::provisioning_net::SETUP_URL;
 use crate::net::provisioning_reboot::{PostSaveAction, post_save_action};
 use crate::net::wifi_config::WifiCredentialsStore;
 
@@ -31,7 +32,7 @@ where
     socket.set_timeout(Some(SOCKET_TIMEOUT));
 
     loop {
-        info!("Provisioning HTTP listening on http://192.168.4.1");
+        info!("Provisioning HTTP listening on {}", SETUP_URL);
         let abort = match socket.accept(HTTP_PORT).await {
             Ok(()) => handle_connection(&mut socket, store).await,
             Err(_) => {

@@ -424,8 +424,9 @@ Rules:
 
 - WPA2 AP, not open.
 - `ABCD` derived from stable MAC/chip suffix when practical.
-- Serial log may print AP SSID and AP password.
-- Serial log must not print submitted station password.
+- Serial log may print AP SSID and setup URL.
+- Serial log must not print any password, including the fixed AP password and
+  submitted station password.
 
 Acceptance:
 
@@ -587,8 +588,8 @@ Files likely involved:
 
 First version:
 
-- OLED shows setup mode, AP SSID, and `http://192.168.4.1` when display is
-  available.
+- OLED shows setup mode, AP SSID, `http://192.168.4.1`, and track-disabled
+  state when display is available.
 - Status LEDs may reuse WiFi connecting pattern.
 - Serial logs show AP SSID and setup URL.
 
@@ -599,7 +600,8 @@ Non-goal:
 
 Acceptance:
 
-- User can discover AP SSID and URL from OLED or serial log.
+- User can discover AP SSID, URL, and track-disabled state from OLED or serial
+  log.
 - Fault/estop LED semantics remain unchanged outside provisioning.
 
 ## Task 14: Documentation And UAT

@@ -15,7 +15,7 @@ use esp_radio::wifi::{AccessPointConfig, AuthMethod, ModeConfig};
 use heapless::String;
 use static_cell::StaticCell;
 
-use crate::net::provisioning_net::{PREFIX_LEN, SERVER_IP_OCTETS};
+use crate::net::provisioning_net::{PREFIX_LEN, SERVER_IP_OCTETS, SETUP_URL};
 use crate::net::wifi_config::WifiCredentialsStore;
 use crate::system_status::{DisplayEvent, SystemStatusEvent};
 
@@ -143,13 +143,16 @@ where
         .map_err(|_| ProvisioningApError::DhcpServerSpawn)?;
     status_sender.send(SystemStatusEvent::WifiConnected).await;
     let _ = display_sender.try_send(DisplayEvent::IpAssigned(SERVER_IP_OCTETS));
-    if let Ok(message) = heapless::String::try_from("Setup 192.168.4.1") {
-        let _ = display_sender.try_send(DisplayEvent::Message(message));
-    }
 
     info!("WiFi provisioning AP started");
     info!("AP SSID: {}", ssid.as_str());
-    info!("Provisioning HTTP ready after DHCP lease: http://192.168.4.1");
+    info!("Provisioning HTTP ready after DHCP lease: {}", SETUP_URL);
+    display_sender
+        .send(DisplayEvent::ProvisioningMode {
+            ssid,
+            setup_url: SETUP_URL,
+        })
+        .await;
 
     run_http_server(stack, &mut store).await;
 }
