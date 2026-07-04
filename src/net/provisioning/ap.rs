@@ -15,14 +15,14 @@ use esp_radio::wifi::{AccessPointConfig, AuthMethod, ModeConfig};
 use heapless::String;
 use static_cell::StaticCell;
 
-use crate::net::provisioning_net::{PREFIX_LEN, SERVER_IP_OCTETS, SETUP_URL};
+use crate::net::radio::{self, WifiBringupError};
+use crate::net::wifi::wifi_runner_task;
 use crate::net::wifi_config::WifiCredentialsStore;
-use crate::system_status::{DisplayEvent, SystemStatusEvent};
+use crate::system_status::DisplayEvent;
 
-use super::super::radio::RadioInitError;
-use super::super::{radio, wifi};
-use super::dhcp::run_dhcp_server;
-use super::http::run_http_server;
+use super::dhcp_server::run_dhcp_server;
+use super::http_server::run_http_server;
+use super::net_config::{PREFIX_LEN, SERVER_IP_OCTETS, SETUP_URL};
 
 const AP_SSID_PREFIX: &str = "DCC-Setup-";
 const AP_PASSWORD: &str = "dcc-setup";
@@ -32,10 +32,7 @@ static PROVISIONING_NET_RESOURCES: StaticCell<StackResources<2>> = StaticCell::n
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum ProvisioningApError {
-    EspRadioInit(RadioInitError),
-    WifiInit,
-    WifiSetConfig,
-    WifiStart,
+    WifiBringup(WifiBringupError),
     WifiRunnerSpawn,
     DhcpServerSpawn,
     SsidBuild,
@@ -44,20 +41,11 @@ pub enum ProvisioningApError {
 impl ProvisioningApError {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::EspRadioInit(_) => "esp-radio init failed",
-            Self::WifiInit => "WiFi AP init failed",
-            Self::WifiSetConfig => "WiFi AP set_config failed",
-            Self::WifiStart => "WiFi AP start failed",
+            Self::WifiBringup(error) => error.as_str(),
             Self::WifiRunnerSpawn => "failed to spawn provisioning wifi_runner_task",
             Self::DhcpServerSpawn => "failed to spawn provisioning DHCP server",
             Self::SsidBuild => "WiFi AP SSID build failed",
         }
-    }
-}
-
-impl core::fmt::Display for ProvisioningApError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str((*self).as_str())
     }
 }
 
@@ -102,30 +90,19 @@ pub async fn run_provisioning_ap<S>(
     spawner: Spawner,
     wifi_peripheral: esp_hal::peripherals::WIFI<'static>,
     mut store: S,
-    status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
     display_sender: Sender<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
 ) -> Result<(), ProvisioningApError>
 where
     S: WifiCredentialsStore,
 {
     let ssid = provisioning_ssid()?;
-    status_sender.send(SystemStatusEvent::WifiConnecting).await;
 
-    let controller = radio::init_controller().map_err(ProvisioningApError::EspRadioInit)?;
-    let (mut wifi_ctrl, interfaces) = esp_radio::wifi::new(
-        controller,
-        wifi_peripheral,
-        esp_radio::wifi::Config::default(),
-    )
-    .map_err(|_| ProvisioningApError::WifiInit)?;
-
-    wifi_ctrl
-        .set_config(&access_point_mode_config(ssid.as_str()))
-        .map_err(|_| ProvisioningApError::WifiSetConfig)?;
-    wifi_ctrl
-        .start_async()
-        .await
-        .map_err(|_| ProvisioningApError::WifiStart)?;
+    // The controller must stay alive for the whole provisioning session;
+    // dropping it would stop the radio.
+    let (_wifi_ctrl, interfaces) =
+        radio::start_wifi(wifi_peripheral, &access_point_mode_config(ssid.as_str()))
+            .await
+            .map_err(ProvisioningApError::WifiBringup)?;
 
     let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
@@ -134,15 +111,13 @@ where
         embassy_net::new(interfaces.ap, provisioning_net_config(), resources, seed);
 
     spawner
-        .spawn(wifi::wifi_runner_task(runner))
+        .spawn(wifi_runner_task(runner))
         .map_err(|_| ProvisioningApError::WifiRunnerSpawn)?;
 
     stack.wait_config_up().await;
     spawner
         .spawn(run_dhcp_server(stack))
         .map_err(|_| ProvisioningApError::DhcpServerSpawn)?;
-    status_sender.send(SystemStatusEvent::WifiConnected).await;
-    let _ = display_sender.try_send(DisplayEvent::IpAssigned(SERVER_IP_OCTETS));
 
     info!("WiFi provisioning AP started");
     info!("AP SSID: {}", ssid.as_str());
@@ -154,5 +129,7 @@ where
         })
         .await;
 
+    // Never returns: the `!` type coerces into the `Result`, so `Ok` is
+    // unreachable and this function only ever exits through the `?` above.
     run_http_server(stack, &mut store).await;
 }

@@ -6,7 +6,7 @@ use smoltcp::wire::{
 };
 use smoltcp::wire::{DhcpMessageType, DhcpPacket, DhcpRepr, Ipv4Address};
 
-use crate::net::provisioning_net::{CLIENT_IP_OCTETS, SERVER_IP_OCTETS, SUBNET_MASK_OCTETS};
+use super::net_config::{CLIENT_IP_OCTETS, SERVER_IP_OCTETS, SUBNET_MASK_OCTETS};
 
 pub(crate) const SERVER_IP: Ipv4Address = Ipv4Address::new(
     SERVER_IP_OCTETS[0],

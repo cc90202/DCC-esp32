@@ -2,20 +2,12 @@
 
 #[cfg(target_arch = "riscv32")]
 mod pom_client;
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod provisioning;
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) mod provisioning_dhcp;
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) mod provisioning_http;
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) mod provisioning_net;
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) mod provisioning_reboot;
 #[cfg(target_arch = "riscv32")]
 mod radio;
 #[cfg(target_arch = "riscv32")]
-pub use radio::RadioInitError;
+pub use radio::{RadioInitError, WifiBringupError};
 #[cfg(target_arch = "riscv32")]
 mod railcom_lookup;
 #[cfg(target_arch = "riscv32")]

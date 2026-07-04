@@ -89,19 +89,9 @@ pub async fn net_task(
         pom_response_receiver,
     } = channels;
 
-    let controller = radio::init_controller().map_err(NetInitError::EspRadioInit)?;
-
-    let (mut wifi_ctrl, interfaces) =
-        esp_radio::wifi::new(controller, wifi, esp_radio::wifi::Config::default())
-            .map_err(|_| NetInitError::WifiInit)?;
-
-    wifi_ctrl
-        .set_config(&wifi::client_mode_config(&credentials))
-        .map_err(|_| NetInitError::WifiSetConfig)?;
-    wifi_ctrl
-        .start_async()
+    let (wifi_ctrl, interfaces) = radio::start_wifi(wifi, &wifi::client_mode_config(&credentials))
         .await
-        .map_err(|_| NetInitError::WifiStart)?;
+        .map_err(NetInitError::WifiBringup)?;
     info!("WiFi started, connecting to SSID: {}", credentials.ssid());
 
     let net_config = Config::dhcpv4(Default::default());

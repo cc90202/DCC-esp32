@@ -196,7 +196,7 @@ async fn render(
         let _ = Text::new(&line, Point::new(0, 26), style).draw(display);
 
         let _ = Text::new(setup_url, Point::new(0, 36), style).draw(display);
-        let _ = Text::new("Track disabled", Point::new(0, 46), style).draw(display);
+        let _ = Text::new("Binario spento", Point::new(0, 46), style).draw(display);
 
         if let Some(cause) = model.fault {
             line.clear();
@@ -341,7 +341,7 @@ pub async fn display_task(
 
 #[cfg(test)]
 mod tests {
-    use crate::net::provisioning_net::SETUP_URL;
+    use crate::net::provisioning::net_config::SETUP_URL;
 
     use super::*;
 

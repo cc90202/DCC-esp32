@@ -20,7 +20,7 @@ use esp_storage::FlashStorage;
 use static_cell::StaticCell;
 
 use crate::control_buttons::{
-    ProvisioningRequestChannel, new_button_input, provisioning_request_task, resume_button_task,
+    ProvisioningRequest, ProvisioningRequestChannel, new_button_input, resume_button_task,
     stop_button_task, wait_for_boot_provisioning_override,
 };
 use crate::dcc::dcc_engine_task;
@@ -38,8 +38,8 @@ use crate::fault_manager::{
 use crate::net::provisioning::{ProvisioningApError, run_provisioning_ap};
 use crate::net::udp_control::{NetInitError, NetTaskChannels, net_task};
 use crate::net::wifi_config::{
-    EspFlashStoreError, ProvisioningDecision, ProvisioningFlagStore, StoreError,
-    StoredCredentialsState, WifiCredentials, WifiCredentialsStore, decide_provisioning,
+    EspFlashStoreError, EspWifiConfigStore, ProvisioningDecision, ProvisioningFlagStore,
+    StoreError, WifiCredentials, load_wifi_credentials_and_decision,
     wifi_config_store_from_partition,
 };
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
@@ -48,7 +48,7 @@ use crate::railcom::uart_reader::{
     RailcomRxOutput, RailcomUartRuntimeResultChannel, railcom_uart_rx_config,
 };
 use crate::short_detector::{new_short_detect_input, short_detector_task};
-use crate::status_led::{new_led_output, status_led_task};
+use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
 use crate::system_status::{
     BootReadyChannel, BootReadyEvent, BootStep, DisplayChannel, DisplayEvent, FaultEvent,
     FaultEventChannel, NetStatusChannel, OptionalPeripheralInit, SystemStatusChannel,
@@ -127,6 +127,7 @@ pub enum CriticalTask {
     Net,
     FaultManager,
     ProvisioningRequest,
+    ProvisioningLed,
     StopButton,
     ResumeButton,
     ShortDetector,
@@ -248,6 +249,9 @@ impl BootError {
             Self::CriticalTaskSpawn(CriticalTask::ProvisioningRequest) => {
                 "failed to spawn provisioning_request_task"
             }
+            Self::CriticalTaskSpawn(CriticalTask::ProvisioningLed) => {
+                "failed to spawn provisioning_led_task"
+            }
             Self::CriticalTaskSpawn(CriticalTask::StopButton) => "failed to spawn stop_button_task",
             Self::CriticalTaskSpawn(CriticalTask::ResumeButton) => {
                 "failed to spawn resume_button_task"
@@ -348,41 +352,61 @@ fn log_packet_bytes(label: &str, packet: DccPacket, error: BootError) -> Result<
     Ok(())
 }
 
-fn map_store_error(error: StoreError) -> WifiConfigInitError {
-    WifiConfigInitError::Store(error)
+/// Open the `dcc_cfg` flash partition as the WiFi configuration store.
+fn open_wifi_config_store<'a, 'd>(
+    flash: &'a mut FlashStorage<'d>,
+    partition_table_buffer: &'a mut [u8; PARTITION_TABLE_MAX_LEN],
+) -> Result<EspWifiConfigStore<'a, 'd>, BootError> {
+    wifi_config_store_from_partition(flash, partition_table_buffer).map_err(|error| {
+        BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+            WifiConfigInitError::Partition(error),
+        ))
+    })
 }
 
-fn load_wifi_credentials_and_decision<S>(
-    store: &mut S,
-    button_override: bool,
-) -> Result<(ProvisioningDecision, Option<WifiCredentials>), WifiConfigInitError>
-where
-    S: WifiCredentialsStore + ProvisioningFlagStore,
-{
-    let loaded_credentials = store.load().map_err(map_store_error);
-    let (stored_state, credentials) = match loaded_credentials {
-        Ok(Some(credentials)) => (StoredCredentialsState::Present, Some(credentials)),
-        Ok(None) => (StoredCredentialsState::Missing, None),
-        Err(WifiConfigInitError::Store(StoreError::Corrupt)) => {
-            (StoredCredentialsState::Invalid, None)
+/// Grace period after the e-stop event so the fault manager can disable the
+/// track output before flash writes stall the CPU (cache disabled during
+/// erase/write) and the device reboots.
+const PROVISIONING_TRACK_DISABLE_GRACE: Duration = Duration::from_millis(100);
+
+/// Coordinates a runtime WiFi provisioning request from the Resume button:
+/// e-stop the track, persist the next-boot flag, then reboot into setup mode.
+#[embassy_executor::task]
+async fn provisioning_request_task(
+    mut flash: FlashStorage<'static>,
+    partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
+    fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
+    receiver: Receiver<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
+) -> ! {
+    loop {
+        match receiver.receive().await {
+            ProvisioningRequest::Requested => {
+                fault_sender.send(FaultEvent::StopPressed).await;
+                Timer::after(PROVISIONING_TRACK_DISABLE_GRACE).await;
+                warn!("WiFi provisioning requested; saving next-boot flag");
+                match set_force_provisioning_on_next_boot(&mut flash, partition_table_buffer) {
+                    Ok(()) => {
+                        warn!("WiFi provisioning flag saved; rebooting");
+                        esp_hal::system::software_reset();
+                    }
+                    Err(error) => {
+                        defmt::error!("WiFi provisioning flag save failed: {}", error);
+                    }
+                }
+            }
         }
-        Err(error) => return Err(error),
-    };
-
-    let persistent_override = match store.force_on_next_boot() {
-        Ok(force) => force,
-        Err(StoreError::Corrupt) => false,
-        Err(error) => return Err(WifiConfigInitError::Store(error)),
-    };
-
-    let decision = decide_provisioning(stored_state, button_override, persistent_override);
-    if persistent_override {
-        store
-            .clear_force_on_next_boot()
-            .map_err(WifiConfigInitError::Store)?;
     }
+}
 
-    Ok((decision, credentials))
+fn set_force_provisioning_on_next_boot(
+    flash: &mut FlashStorage<'static>,
+    partition_table_buffer: &mut [u8; PARTITION_TABLE_MAX_LEN],
+) -> Result<(), WifiConfigInitError> {
+    let mut store = wifi_config_store_from_partition(flash, partition_table_buffer)
+        .map_err(WifiConfigInitError::Partition)?;
+    store
+        .set_force_on_next_boot()
+        .map_err(WifiConfigInitError::Store)
 }
 
 fn verify_boot_packet_encoding() -> Result<(), BootError> {
@@ -596,36 +620,16 @@ pub async fn run(
     let mut flash = FlashStorage::new(peripherals.FLASH);
     let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
 
-    if boot_button_override {
-        warn!("boot: WiFi provisioning selected by GPIO21 hold");
-        warn!("boot: safe setup mode active; DCC, RailCom, Z21, and track output remain disabled");
-        let store = wifi_config_store_from_partition(&mut flash, partition_table_buffer).map_err(
-            |error| {
-                BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-                    WifiConfigInitError::Partition(error),
-                ))
-            },
-        )?;
-        return run_provisioning_ap(
-            spawner,
-            peripherals.WIFI,
-            store,
-            SYSTEM_STATUS.sender(),
-            DISPLAY_CHANNEL.sender(),
-        )
-        .await
-        .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)));
-    }
-
+    // Single decision path: button override, persistent flag and stored
+    // credentials all flow through `decide_provisioning`, which also clears
+    // the persistent flag once it has been observed.
     let (wifi_decision, wifi_credentials) = {
-        let mut store = wifi_config_store_from_partition(&mut flash, partition_table_buffer)
-            .map_err(|error| {
-                BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-                    WifiConfigInitError::Partition(error),
-                ))
-            })?;
-        load_wifi_credentials_and_decision(&mut store, false)
-            .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(error)))?
+        let mut store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
+        load_wifi_credentials_and_decision(&mut store, boot_button_override).map_err(|error| {
+            BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(WifiConfigInitError::Store(
+                error,
+            )))
+        })?
     };
 
     let wifi_credentials = match wifi_decision {
@@ -640,21 +644,21 @@ pub async fn run(
                 reason
             );
             warn!("boot: DCC, RailCom, Z21, and track output remain disabled");
-            let store = wifi_config_store_from_partition(&mut flash, partition_table_buffer)
+
+            // Setup-mode LED feedback: red blink, same pattern as WiFi connecting.
+            spawner
+                .spawn(provisioning_led_task(
+                    new_led_output(peripherals.GPIO14),
+                    new_led_output(peripherals.GPIO15),
+                ))
+                .map_err(|_| BootError::CriticalTaskSpawn(CriticalTask::ProvisioningLed))?;
+
+            let store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
+            return run_provisioning_ap(spawner, peripherals.WIFI, store, DISPLAY_CHANNEL.sender())
+                .await
                 .map_err(|error| {
-                    BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-                        WifiConfigInitError::Partition(error),
-                    ))
-                })?;
-            return run_provisioning_ap(
-                spawner,
-                peripherals.WIFI,
-                store,
-                SYSTEM_STATUS.sender(),
-                DISPLAY_CHANNEL.sender(),
-            )
-            .await
-            .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)));
+                    BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error))
+                });
         }
     };
 

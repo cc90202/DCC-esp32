@@ -12,27 +12,9 @@
 //! - Resume press classification (<2s, 2s..10s, >=10s)
 //! - Direct integration with the fault manager via channel
 //!
-//! # Examples
-//!
-//! **Spawning the button tasks (in main.rs):**
-//!
-//! ```no_run
-//! use esp_hal::gpio::Input;
-//! use dcc_esp32::control_buttons::{stop_button_task, resume_button_task};
-//!
-//! // Assuming button GPIO pins were already split from `peripherals.GPIO`
-//! // and configured as Input with pull-ups enabled:
-//! // let stop_button: Input<'static> = ...;
-//! // let resume_button: Input<'static> = ...;
-//!
-//! // Get the fault event channel sender from fault_manager_task setup
-//! // let fault_sender = ...;
-//! // let provisioning_sender = ...;
-//!
-//! // Spawn the tasks (returns ! - never returns)
-//! // embassy_executor::task::spawn(stop_button_task(stop_button, fault_sender, ready_sender));
-//! // embassy_executor::task::spawn(resume_button_task(resume_button, fault_sender, provisioning_sender, ready_sender));
-//! ```
+//! The runtime provisioning request itself is only *emitted* here; the
+//! coordinator that disables track output, persists the next-boot flag and
+//! reboots lives in `boot.rs`.
 //!
 //! # Button Behavior
 //!
@@ -43,7 +25,7 @@
 //! **Resume Button:**
 //! - Press + release (<2s) → sends `FaultEvent::ResumeShortPressed` → clears e-stop (if in EstopLatched)
 //! - Press + release (2s..10s) → sends `FaultEvent::ResumeLongPressed` → force-clears any latched fault
-//! - Press + hold (>=10s) → sends `ProvisioningRequest::Requested` → later task handles WiFi setup mode
+//! - Press + hold (>=10s) → sends `ProvisioningRequest::Requested` → boot coordinator handles WiFi setup mode
 //!
 //! # Hardware
 //!
@@ -51,19 +33,13 @@
 //! Press pulls the line LOW; release lets pull-up drive it HIGH.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
-use embassy_time::{Duration, Timer, with_timeout};
-use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
+use embassy_sync::channel::Sender;
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::gpio::{Input, InputConfig, Pull};
-use esp_storage::FlashStorage;
 
 use crate::control_logic::{
-    DebouncedPress, DebouncedRelease, RESUME_LONG_PRESS_MS, RESUME_PROVISIONING_PRESS_MS,
-    ResumeButtonAction, ResumePress, debounce_active_low_press, debounce_active_low_release,
+    RESUME_PROVISIONING_PRESS_MS, ResumeButtonAction, ResumePress, classify_resume_press,
     resume_action_for_press,
-};
-use crate::net::wifi_config::{
-    EspFlashStoreError, ProvisioningFlagStore, StoreError, wifi_config_store_from_partition,
 };
 
 const DEBOUNCE_MS: u64 = 30;
@@ -77,63 +53,17 @@ pub enum ProvisioningRequest {
     Requested,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-enum RuntimeProvisioningError {
-    Partition(EspFlashStoreError),
-    Store(StoreError),
-}
-
-#[embassy_executor::task]
-pub async fn provisioning_request_task(
-    mut flash: FlashStorage<'static>,
-    partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
-    receiver: Receiver<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
-) -> ! {
-    loop {
-        match receiver.receive().await {
-            ProvisioningRequest::Requested => {
-                fault_sender
-                    .send(crate::system_status::FaultEvent::StopPressed)
-                    .await;
-                Timer::after(Duration::from_millis(100)).await;
-                defmt::warn!("WiFi provisioning requested; saving next-boot flag");
-                match set_force_provisioning_on_next_boot(&mut flash, partition_table_buffer) {
-                    Ok(()) => {
-                        defmt::warn!("WiFi provisioning flag saved; rebooting");
-                        esp_hal::system::software_reset();
-                    }
-                    Err(error) => {
-                        defmt::error!("WiFi provisioning flag save failed: {}", error);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn set_force_provisioning_on_next_boot(
-    flash: &mut FlashStorage<'static>,
-    partition_table_buffer: &mut [u8; PARTITION_TABLE_MAX_LEN],
-) -> Result<(), RuntimeProvisioningError> {
-    let mut store = wifi_config_store_from_partition(flash, partition_table_buffer)
-        .map_err(RuntimeProvisioningError::Partition)?;
-    store
-        .set_force_on_next_boot()
-        .map_err(RuntimeProvisioningError::Store)
-}
-
+/// Return whether GPIO21 is held through the full provisioning window at boot.
+///
+/// Returns immediately with `false` when the button is not pressed at
+/// decision time, so a normal boot never waits.
 pub async fn wait_for_boot_provisioning_override(button: &mut Input<'static>) -> bool {
     if button.is_high() {
         return false;
     }
 
     Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-    if !matches!(
-        debounce_active_low_press(true, button.is_low()),
-        DebouncedPress::Confirmed
-    ) {
+    if button.is_high() {
         return false;
     }
 
@@ -149,20 +79,14 @@ async fn wait_for_debounced_press(button: &mut Input<'static>) {
     loop {
         if button.is_low() {
             Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-            if matches!(
-                debounce_active_low_press(true, button.is_low()),
-                DebouncedPress::Confirmed
-            ) {
+            if button.is_low() {
                 return;
             }
         }
 
         button.wait_for_falling_edge().await;
         Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-        if matches!(
-            debounce_active_low_press(true, button.is_low()),
-            DebouncedPress::Confirmed
-        ) {
+        if button.is_low() {
             return;
         }
     }
@@ -176,49 +100,25 @@ async fn wait_for_debounced_release(button: &mut Input<'static>) {
     loop {
         if button.is_high() {
             Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-            if matches!(
-                debounce_active_low_release(true, button.is_high()),
-                DebouncedRelease::Confirmed
-            ) {
+            if button.is_high() {
                 return;
             }
         }
 
         button.wait_for_rising_edge().await;
         Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-        if matches!(
-            debounce_active_low_release(true, button.is_high()),
-            DebouncedRelease::Confirmed
-        ) {
+        if button.is_high() {
             return;
         }
     }
 }
 
+/// Measure the confirmed press until debounced release, then classify the
+/// duration through the pure `classify_resume_press` policy.
 async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePress {
-    if with_timeout(
-        Duration::from_millis(RESUME_LONG_PRESS_MS),
-        wait_for_debounced_release(button),
-    )
-    .await
-    .is_ok()
-    {
-        return ResumePress::Short;
-    }
-
-    let provisioning_window_ms = RESUME_PROVISIONING_PRESS_MS - RESUME_LONG_PRESS_MS;
-    if with_timeout(
-        Duration::from_millis(provisioning_window_ms),
-        wait_for_debounced_release(button),
-    )
-    .await
-    .is_ok()
-    {
-        return ResumePress::Long;
-    }
-
+    let pressed_at = Instant::now();
     wait_for_debounced_release(button).await;
-    ResumePress::Provisioning
+    classify_resume_press(pressed_at.elapsed().as_millis())
 }
 
 async fn send_resume_action(
@@ -302,35 +202,4 @@ pub async fn resume_button_task(
 pub fn new_button_input(pin: impl esp_hal::gpio::InputPin + 'static) -> Input<'static> {
     let input_config = InputConfig::default().with_pull(Pull::Up);
     Input::new(pin, input_config)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::control_logic::{
-        DebouncedPress, DebouncedRelease, debounce_active_low_press, debounce_active_low_release,
-    };
-
-    #[test]
-    fn test_press_debounce_helper_matches_task_expectation() {
-        assert_eq!(
-            debounce_active_low_press(true, true),
-            DebouncedPress::Confirmed
-        );
-        assert_eq!(
-            debounce_active_low_press(true, false),
-            DebouncedPress::IgnoredBounce
-        );
-    }
-
-    #[test]
-    fn test_release_debounce_helper_matches_task_expectation() {
-        assert_eq!(
-            debounce_active_low_release(true, true),
-            DebouncedRelease::Confirmed
-        );
-        assert_eq!(
-            debounce_active_low_release(true, false),
-            DebouncedRelease::IgnoredBounce
-        );
-    }
 }

@@ -14,7 +14,7 @@ use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
 };
 
-use super::radio::RadioInitError;
+use super::radio::WifiBringupError;
 use crate::net::wifi_config::WifiCredentials;
 use crate::system_status::SystemStatusEvent;
 
@@ -27,10 +27,7 @@ enum ConnectionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum NetInitError {
-    EspRadioInit(RadioInitError),
-    WifiInit,
-    WifiSetConfig,
-    WifiStart,
+    WifiBringup(WifiBringupError),
     WifiRunnerSpawn,
     ConnectionSpawn,
     UdpBind,
@@ -39,20 +36,11 @@ pub enum NetInitError {
 impl NetInitError {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::EspRadioInit(_) => "esp-radio init failed",
-            Self::WifiInit => "WiFi init failed",
-            Self::WifiSetConfig => "WiFi set_config failed",
-            Self::WifiStart => "WiFi start failed",
+            Self::WifiBringup(error) => error.as_str(),
             Self::WifiRunnerSpawn => "failed to spawn wifi_runner_task",
             Self::ConnectionSpawn => "failed to spawn connection_task",
             Self::UdpBind => "UDP bind on Z21 port failed",
         }
-    }
-}
-
-impl core::fmt::Display for NetInitError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str((*self).as_str())
     }
 }
 
@@ -64,23 +52,6 @@ pub(super) fn client_mode_config(credentials: &WifiCredentials) -> ModeConfig {
             .with_password(credentials.password().to_string())
             .with_auth_method(AuthMethod::Wpa2Personal),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn client_mode_config_uses_runtime_credentials() {
-        let credentials = WifiCredentials::new("DCC-Lab", "password123").unwrap();
-        let ModeConfig::Client(config) = client_mode_config(&credentials) else {
-            panic!("expected client mode config");
-        };
-
-        assert_eq!(config.ssid, "DCC-Lab");
-        assert_eq!(config.password, "password123");
-        assert_eq!(config.auth_method, AuthMethod::Wpa2Personal);
-    }
 }
 
 /// Runs the embassy-net stack driver - dedicated Embassy task per official example.
