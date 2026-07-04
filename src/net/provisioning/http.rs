@@ -9,12 +9,14 @@ use embassy_time::{Duration, Timer, with_timeout};
 use static_cell::StaticCell;
 
 use crate::net::provisioning_http::{MAX_REQUEST_BYTES, ParseError, ParsedRequest, parse_request};
+use crate::net::provisioning_reboot::{PostSaveAction, post_save_action};
 use crate::net::wifi_config::WifiCredentialsStore;
 
 use super::html::{INVALID_FORM_PAGE, SAVE_ERROR_PAGE, SAVE_OK_PAGE, SETUP_PAGE};
 
 const HTTP_PORT: u16 = 80;
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+const REBOOT_DELAY: Duration = Duration::from_millis(500);
 
 static HTTP_RX_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
 static HTTP_TX_BUFFER: StaticCell<[u8; 1536]> = StaticCell::new();
@@ -65,8 +67,25 @@ where
         Ok(ParsedRequest::SaveCredentials(credentials)) => match store.save(&credentials) {
             Ok(()) => {
                 info!("WiFi credentials saved from provisioning form");
-                let _ = send_response(socket, Status::Ok, "text/html; charset=utf-8", SAVE_OK_PAGE)
-                    .await;
+                let response_sent = match send_response(
+                    socket,
+                    Status::Ok,
+                    "text/html; charset=utf-8",
+                    SAVE_OK_PAGE,
+                )
+                .await
+                {
+                    Ok(()) => true,
+                    Err(_) => {
+                        warn!("WiFi credential save succeeded but success response failed");
+                        false
+                    }
+                };
+                if post_save_action(true, response_sent) == PostSaveAction::Reboot {
+                    Timer::after(REBOOT_DELAY).await;
+                    info!("WiFi credentials saved; rebooting into station mode");
+                    esp_hal::system::software_reset();
+                }
             }
             Err(_) => {
                 warn!("WiFi credential save failed");
