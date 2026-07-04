@@ -27,8 +27,8 @@ use crate::net::z21_proto::{self, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 use crate::net::{LocoSlots, loco_is_moving};
 use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEvent};
 
-use super::wifi;
 pub use super::wifi::NetInitError;
+use super::{radio, wifi};
 
 const Z21_PORT: u16 = 21105;
 const DECEL_STEP_MS: u64 = 500;
@@ -39,8 +39,6 @@ static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static NET_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-// Controller must be 'static so WifiController and WifiDevice are 'static too.
-static RADIO_CONTROLLER: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
 
 pub struct NetTaskChannels {
     pub net_status: Receiver<'static, CriticalSectionRawMutex, SystemStatusEvent, 8>,
@@ -91,8 +89,7 @@ pub async fn net_task(
         pom_response_receiver,
     } = channels;
 
-    let controller = esp_radio::init().map_err(|_| NetInitError::EspRadioInit)?;
-    let controller = RADIO_CONTROLLER.init(controller);
+    let controller = radio::init_controller().map_err(NetInitError::EspRadioInit)?;
 
     let (mut wifi_ctrl, interfaces) =
         esp_radio::wifi::new(controller, wifi, esp_radio::wifi::Config::default())

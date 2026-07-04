@@ -3,6 +3,12 @@
 #[cfg(target_arch = "riscv32")]
 mod pom_client;
 #[cfg(target_arch = "riscv32")]
+pub(crate) mod provisioning;
+#[cfg(target_arch = "riscv32")]
+mod radio;
+#[cfg(target_arch = "riscv32")]
+pub use radio::RadioInitError;
+#[cfg(target_arch = "riscv32")]
 mod railcom_lookup;
 #[cfg(target_arch = "riscv32")]
 pub mod udp_control;

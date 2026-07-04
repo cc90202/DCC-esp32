@@ -14,6 +14,7 @@ use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
 };
 
+use super::radio::RadioInitError;
 use crate::net::wifi_config::WifiCredentials;
 use crate::system_status::SystemStatusEvent;
 
@@ -26,7 +27,7 @@ enum ConnectionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum NetInitError {
-    EspRadioInit,
+    EspRadioInit(RadioInitError),
     WifiInit,
     WifiSetConfig,
     WifiStart,
@@ -38,7 +39,7 @@ pub enum NetInitError {
 impl NetInitError {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::EspRadioInit => "esp-radio init failed",
+            Self::EspRadioInit(_) => "esp-radio init failed",
             Self::WifiInit => "WiFi init failed",
             Self::WifiSetConfig => "WiFi set_config failed",
             Self::WifiStart => "WiFi start failed",
