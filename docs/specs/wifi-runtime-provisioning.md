@@ -30,6 +30,7 @@ Provisioning mode now starts a safe SoftAP branch:
 - provisioning mode starts WPA2 AP `DCC-Setup-XXXX` on `192.168.4.1`;
 - provisioning DHCP assigns `192.168.4.2/24` to the setup client;
 - HTTP form handling, credential save, and post-save reboot are implemented;
+- OLED feedback shows setup mode, AP SSID, setup URL, and track-disabled state;
 - valid stored credentials start station mode;
 - runtime GPIO21 provisioning requests first request track stop, then set a
   next-boot flag and reboot into the safe SoftAP branch.
@@ -367,10 +368,11 @@ waveform or track enable path is started.
 
 Operator feedback:
 
-- OLED, when available, should show setup mode, AP SSID, and
-  `http://192.168.4.1`;
-- serial logs may show AP SSID and AP password;
-- serial logs must never show the submitted WiFi password;
+- OLED, when available, should show setup mode, AP SSID,
+  `http://192.168.4.1`, and track-disabled state;
+- serial logs may show AP SSID and setup URL;
+- serial logs must never show passwords, including the submitted station
+  password and the fixed provisioning AP password;
 - status LEDs may keep the existing WiFi-connecting indication unless a
   dedicated setup pattern is added later.
 
@@ -389,7 +391,7 @@ AP password:
 
 - first version uses WPA2 with fixed password `dcc-setup`;
 - do not use an open AP;
-- document the password in README and, if useful, show it on the serial log.
+- document the password in README; do not print it on the serial log.
 
 ### AP Mode Spike Decision
 

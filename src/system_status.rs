@@ -322,6 +322,10 @@ pub enum BootStep {
 pub enum DisplayEvent {
     BootProgress(BootStep),
     IpAssigned([u8; 4]),
+    ProvisioningMode {
+        ssid: heapless::String<14>,
+        setup_url: &'static str,
+    },
     SystemState(LedState),
     ActiveLocoCount(u8),
     Fault(FaultCause),
