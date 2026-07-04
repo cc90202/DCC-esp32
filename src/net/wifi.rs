@@ -14,10 +14,8 @@ use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
 };
 
+use crate::net::wifi_config::WifiCredentials;
 use crate::system_status::SystemStatusEvent;
-
-pub(super) const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PASS: &str = env!("WIFI_PASS");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
@@ -57,14 +55,31 @@ impl core::fmt::Display for NetInitError {
     }
 }
 
-/// Build the WiFi client mode config from the compile-time SSID/password.
-pub(super) fn client_mode_config() -> ModeConfig {
+/// Build the WiFi client mode config from validated runtime credentials.
+pub(super) fn client_mode_config(credentials: &WifiCredentials) -> ModeConfig {
     ModeConfig::Client(
         ClientConfig::default()
-            .with_ssid(WIFI_SSID.to_string())
-            .with_password(WIFI_PASS.to_string())
+            .with_ssid(credentials.ssid().to_string())
+            .with_password(credentials.password().to_string())
             .with_auth_method(AuthMethod::Wpa2Personal),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_mode_config_uses_runtime_credentials() {
+        let credentials = WifiCredentials::new("DCC-Lab", "password123").unwrap();
+        let ModeConfig::Client(config) = client_mode_config(&credentials) else {
+            panic!("expected client mode config");
+        };
+
+        assert_eq!(config.ssid, "DCC-Lab");
+        assert_eq!(config.password, "password123");
+        assert_eq!(config.auth_method, AuthMethod::Wpa2Personal);
+    }
 }
 
 /// Runs the embassy-net stack driver — dedicated Embassy task per official example.

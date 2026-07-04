@@ -19,11 +19,18 @@ fully featured captive portal.
 
 ## Current State
 
-WiFi credentials are compiled into the firmware:
+WiFi credentials are now loaded from the dedicated `dcc_cfg` flash partition
+before station mode starts. The old `.env`/`env!("WIFI_*")` path has been
+removed from the runtime and build script.
 
-- `build.rs` reads `.env`;
-- `src/net/wifi.rs` uses `env!("WIFI_SSID")` and `env!("WIFI_PASS")`;
-- WiFi client mode is configured before the network task starts.
+Provisioning AP and HTTP setup are still pending:
+
+- missing credentials select provisioning mode and keep the normal Z21 runtime
+  stopped;
+- valid stored credentials start station mode;
+- runtime GPIO21 provisioning requests first request track stop, then set a
+  next-boot flag and reboot;
+- the setup AP and HTML form are implemented in later tasks.
 
 The physical control buttons are already wired and used:
 
@@ -321,7 +328,7 @@ map driver errors to read/erase/write variants without logging credentials.
 
 ## WiFi Module Changes
 
-Change `src/net/wifi.rs` from compile-time credentials:
+`src/net/wifi.rs` no longer uses compile-time credentials:
 
 ```rust
 env!("WIFI_SSID")
@@ -334,11 +341,8 @@ to runtime input:
 pub(super) fn client_mode_config(credentials: &WifiCredentials) -> ModeConfig
 ```
 
-The network task should receive credentials from boot wiring rather than read
-them from environment variables.
-
-`.env` can remain temporarily as a developer fallback, but it should not be the
-normal product path once provisioning storage works.
+The network task receives credentials from boot wiring rather than reading them
+from environment variables.
 
 ## Provisioning Mode
 

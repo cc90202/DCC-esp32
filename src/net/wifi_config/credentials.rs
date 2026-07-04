@@ -11,11 +11,23 @@ const PASSWORD_MAX_LEN: usize = 63;
 
 /// Validation error for WiFi station credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum CredentialError {
     EmptySsid,
     SsidTooLong,
     PasswordTooShort,
     PasswordTooLong,
+}
+
+impl CredentialError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptySsid => "SSID is empty",
+            Self::SsidTooLong => "SSID is too long",
+            Self::PasswordTooShort => "WiFi password is too short",
+            Self::PasswordTooLong => "WiFi password is too long",
+        }
+    }
 }
 
 /// Validated WPA/WPA2 station credentials.
