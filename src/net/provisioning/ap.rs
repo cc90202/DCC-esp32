@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::string::ToString;
 use core::fmt::Write;
 
-use defmt::{info, warn};
+use defmt::info;
 use embassy_executor::Spawner;
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, StackResources, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -15,18 +15,17 @@ use esp_radio::wifi::{AccessPointConfig, AuthMethod, ModeConfig};
 use heapless::String;
 use static_cell::StaticCell;
 
+use crate::net::provisioning_net::{PREFIX_LEN, SERVER_IP_OCTETS};
 use crate::net::wifi_config::WifiCredentialsStore;
 use crate::system_status::{DisplayEvent, SystemStatusEvent};
 
 use super::super::radio::RadioInitError;
 use super::super::{radio, wifi};
+use super::dhcp::run_dhcp_server;
 use super::http::run_http_server;
 
 const AP_SSID_PREFIX: &str = "DCC-Setup-";
 const AP_PASSWORD: &str = "dcc-setup";
-const AP_ADDRESS: [u8; 4] = [192, 168, 4, 1];
-const AP_PREFIX_LEN: u8 = 24;
-const CLIENT_STATIC_IP_HINT: &str = "192.168.4.2/24";
 
 static PROVISIONING_NET_RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
 
@@ -38,6 +37,7 @@ pub enum ProvisioningApError {
     WifiSetConfig,
     WifiStart,
     WifiRunnerSpawn,
+    DhcpServerSpawn,
     SsidBuild,
 }
 
@@ -49,6 +49,7 @@ impl ProvisioningApError {
             Self::WifiSetConfig => "WiFi AP set_config failed",
             Self::WifiStart => "WiFi AP start failed",
             Self::WifiRunnerSpawn => "failed to spawn provisioning wifi_runner_task",
+            Self::DhcpServerSpawn => "failed to spawn provisioning DHCP server",
             Self::SsidBuild => "WiFi AP SSID build failed",
         }
     }
@@ -81,8 +82,13 @@ fn access_point_mode_config(ssid: &str) -> ModeConfig {
 fn provisioning_net_config() -> Config {
     Config::ipv4_static(StaticConfigV4 {
         address: Ipv4Cidr::new(
-            Ipv4Address::new(AP_ADDRESS[0], AP_ADDRESS[1], AP_ADDRESS[2], AP_ADDRESS[3]),
-            AP_PREFIX_LEN,
+            Ipv4Address::new(
+                SERVER_IP_OCTETS[0],
+                SERVER_IP_OCTETS[1],
+                SERVER_IP_OCTETS[2],
+                SERVER_IP_OCTETS[3],
+            ),
+            PREFIX_LEN,
         ),
         gateway: None,
         dns_servers: Default::default(),
@@ -92,8 +98,6 @@ fn provisioning_net_config() -> Config {
 /// Starts provisioning SoftAP mode and keeps the AP stack alive.
 ///
 /// This safe setup mode does not start DCC, RailCom, Z21, or track output.
-/// DHCP is intentionally deferred to a later task. Until the DHCP task lands,
-/// clients must use a static address such as 192.168.4.2/24.
 pub async fn run_provisioning_ap<S>(
     spawner: Spawner,
     wifi_peripheral: esp_hal::peripherals::WIFI<'static>,
@@ -134,20 +138,18 @@ where
         .map_err(|_| ProvisioningApError::WifiRunnerSpawn)?;
 
     stack.wait_config_up().await;
+    spawner
+        .spawn(run_dhcp_server(stack))
+        .map_err(|_| ProvisioningApError::DhcpServerSpawn)?;
     status_sender.send(SystemStatusEvent::WifiConnected).await;
-    let _ = display_sender.try_send(DisplayEvent::IpAssigned(AP_ADDRESS));
+    let _ = display_sender.try_send(DisplayEvent::IpAssigned(SERVER_IP_OCTETS));
     if let Ok(message) = heapless::String::try_from("Setup 192.168.4.1") {
         let _ = display_sender.try_send(DisplayEvent::Message(message));
     }
 
     info!("WiFi provisioning AP started");
     info!("AP SSID: {}", ssid.as_str());
-    info!("AP password: {}", AP_PASSWORD);
-    warn!(
-        "DHCP server not implemented yet; configure client static IP {}",
-        CLIENT_STATIC_IP_HINT
-    );
-    info!("Provisioning HTTP ready: http://192.168.4.1");
+    info!("Provisioning HTTP ready after DHCP lease: http://192.168.4.1");
 
     run_http_server(stack, &mut store).await;
 }
