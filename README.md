@@ -20,9 +20,10 @@
 +++++*++++++*++++++++*++++++*++++++++*++++++*++++++++*=+++++*++++++++*++++++*++++++++*++++++*+++++=+
 ```
 
-# DCC-ESP32
+# DCC-esp32
 
-Rust firmware for an **ESP32-C6 based DCC command station** for model railroading.
+`no_std` Rust firmware for an **ESP32-C6 based DCC command station** for model
+railroading, built with `esp-hal`, Embassy async tasks, and `esp-wifi`.
 
 Together, this software and its companion hardware implement a complete DCC command station
 that can control **up to 12 active DCC locomotives/decoders at the same time**.
@@ -42,6 +43,7 @@ and runtime status/reporting.
 - Controls up to 12 active DCC locomotives/decoders simultaneously without signal degradation
 - Supports speed, direction, functions, emergency stop, and fault handling
 - Exposes control through the Roco Z21 app over a Z21-compatible UDP protocol layer
+- Provides runtime WiFi provisioning through a safe SoftAP setup mode
 - Targets real hardware with host-side tests for pure logic
 
 ## Hardware Documentation
@@ -153,7 +155,8 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 
 - `src/bin/main.rs`: firmware entrypoint
 - `src/dcc/`: DCC packet, encoder, timing, scheduler, validator, CV logic, ISR-driven RMT backend
-- `src/net/`: Z21-compatible network protocol and UDP control
+- `src/net/`: Z21-compatible network protocol, UDP control, WiFi, and provisioning
+- `src/railcom/`: RailCom capture, parsing, runtime dispatch, and POM integration
 - `docs/specs/`: protocol and standards references
 - `docs/hardware/`: wiring and hardware usage notes
 
