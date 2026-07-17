@@ -19,7 +19,13 @@ pub const DCC_ZERO_LOW_US: u16 = 100;
 /// synchronise more reliably with a longer preamble. DCC-EX uses 20-22.
 pub const PREAMBLE_BITS: usize = 20;
 
+/// Duration of the fixed packet preamble in microseconds.
+#[cfg(any(test, target_arch = "riscv32"))]
+pub const PREAMBLE_DURATION_US: u32 =
+    PREAMBLE_BITS as u32 * (DCC_ONE_HIGH_US as u32 + DCC_ONE_LOW_US as u32);
+
 /// RMT clock frequency (1 MHz = 1μs resolution)
+#[cfg(target_arch = "riscv32")]
 pub const RMT_CLOCK_HZ: u32 = 1_000_000;
 
 /// Maximum number of DCC data pulses encodable in one RMT TX submission.
@@ -31,6 +37,7 @@ pub const RMT_CLOCK_HZ: u32 = 1_000_000;
 pub const DCC_MAX_PACKET_PULSES: usize = 128;
 
 /// Number of fixed preamble entries written at the start of the RMT RAM window.
+#[cfg(target_arch = "riscv32")]
 pub const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
 
 /// Maximum number of RMT entries in the variable packet tail (start bit, data,
@@ -38,6 +45,7 @@ pub const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
 ///
 /// RCN-218 LOGON_SELECT is 10 bytes:
 /// 1 start + 10*8 data bits + 9 separators + 1 end = 91 entries.
+#[cfg(any(test, target_arch = "riscv32"))]
 pub const MAX_DATA_PULSES: usize = 96;
 
 /// RMT buffer capacity for the pre-built idle packet.
@@ -51,11 +59,5 @@ pub const MAX_DATA_PULSES: usize = 96;
 /// with zero inter-packet gap.  RMT channel memsize must be ≥ 2 blocks (96 slots)
 /// to fit idle (49 entries). Three blocks leave enough tail RAM for RCN-218
 /// LOGON_SELECT packets.
+#[cfg(target_arch = "riscv32")]
 pub const IDLE_RMT_SIZE: usize = 49; // 48 DCC pulses + 1 end marker
-
-/// Minimum Embassy executor yield time per DCC engine cycle (milliseconds).
-///
-/// During this period, the RMT hardware loops the current packet with zero gap,
-/// allowing other Embassy tasks (networking, buttons, short detector, LED) to run.
-/// Trade-off: higher = more executor freedom, lower = tighter packet refresh.
-pub const ENGINE_YIELD_MS: u64 = 2;

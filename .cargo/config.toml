@@ -20,6 +20,7 @@ rustflags = [
 [env]
 DEFMT_LOG = "info"
 ESP_LOG = "info"
+ESP_HAL_CONFIG_PLACE_RMT_DRIVER_IN_RAM = "true"
 
 [alias]
 # Host-side unit tests for protocol logic (fast feedback).

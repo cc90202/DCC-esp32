@@ -40,7 +40,8 @@
 //! Both LEDs can be driven directly from ESP32 GPIO (push-pull output, ~20mA max per pin).
 //! Add 200Ω current-limiting resistors in series if using >5mA LEDs.
 
-use crate::system_status::{LedState, StatusModel};
+use crate::application::StatusModel;
+use crate::system_status::LedState;
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::gpio::{Level, Output};
 

@@ -111,10 +111,8 @@ impl PackedDccAddress {
 ///
 /// The address occupies bits `0..=15` (see [`PackedDccAddress`]); flag `n`
 /// (0-based) occupies bit `16 + n`. This is the common backing storage for
-/// `track_output::PackedRailcomPacketMetadata` (2 flags: pom_requested,
-/// pom_read_requested) and `railcom::pom_dispatch::PendingPomRailcomMetadata`
-/// (1 flag: read_requested) - both used to exist as independent copies of the
-/// same mask/shift arithmetic before being unified here.
+/// `track_output::PackedRailcomPacketMetadata`, which records the POM mode and
+/// whether a separately stored request identifier is present.
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PackedAddressFlags(u32);
@@ -284,7 +282,10 @@ pub struct NmraSpeed28(u8);
 
 impl NmraSpeed28 {
     pub const fn new(speed: u8) -> Option<Self> {
-        if speed > 29 { None } else { Some(Self(speed)) }
+        match speed {
+            value @ 0..=29 => Some(Self(value)),
+            _ => None,
+        }
     }
 
     pub const fn value(self) -> u8 {
@@ -301,7 +302,10 @@ pub struct NmraSpeed128(u8);
 
 impl NmraSpeed128 {
     pub const fn new(speed: u8) -> Option<Self> {
-        if speed > 126 { None } else { Some(Self(speed)) }
+        match speed {
+            value @ 0..=126 => Some(Self(value)),
+            _ => None,
+        }
     }
 
     pub const fn value(self) -> u8 {
@@ -319,10 +323,9 @@ pub struct ServiceModeCv(u16);
 impl ServiceModeCv {
     #[must_use]
     pub const fn new(cv: u16) -> Option<Self> {
-        if cv >= 1 && cv <= 256 {
-            Some(Self(cv))
-        } else {
-            None
+        match cv {
+            value @ 1..=256 => Some(Self(value)),
+            _ => None,
         }
     }
 
@@ -342,10 +345,9 @@ pub struct PomCv(u16);
 impl PomCv {
     #[must_use]
     pub const fn new(cv: u16) -> Option<Self> {
-        if cv >= 1 && cv <= 1024 {
-            Some(Self(cv))
-        } else {
-            None
+        match cv {
+            value @ 1..=1024 => Some(Self(value)),
+            _ => None,
         }
     }
 

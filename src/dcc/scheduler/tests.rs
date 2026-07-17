@@ -1,3 +1,4 @@
+use super::core::handle_loco_request_message;
 use super::railcom_policy::{
     PacketClass, RAILCOM_MIN_PACKET_GAP, RailcomCutoutBudget, reset_railcom_scheduler_stats,
 };
@@ -6,6 +7,7 @@ use super::slot_manager::{
     allowed_slot_visits_without_function, scheduler_tick_ms_for_slot_count,
 };
 use super::*;
+use crate::dcc::CutoutMode;
 use crate::dcc::packet::PomCv;
 
 fn addr(n: u8) -> DccAddress {
@@ -16,8 +18,483 @@ fn pom_cv(cv: u16) -> PomCv {
     PomCv::new(cv).expect("test POM CV must be valid")
 }
 
+fn pom_id(value: u32) -> PomRequestId {
+    PomRequestId::new(value)
+}
+
 fn ls(value: u8, format: SpeedFormat) -> LogicalSpeed {
     LogicalSpeed::new(value, format).expect("test speed value must be valid for format")
+}
+
+fn set_function(
+    manager: &mut SlotManager,
+    address: DccAddress,
+    function: u8,
+    enabled: bool,
+) -> bool {
+    let function = FunctionIndex::new(function).expect("test function index must be valid");
+    let change = if enabled {
+        FunctionChange::Enable
+    } else {
+        FunctionChange::Disable
+    };
+    matches!(
+        manager.handle_loco_request(LocoRequest::SetFunction {
+            address,
+            function,
+            change,
+        }),
+        LocoRequestResult::Inserted(_)
+            | LocoRequestResult::Updated(_)
+            | LocoRequestResult::Replaced { .. }
+    )
+}
+
+fn fill_with_moving_locomotives(manager: &mut SlotManager) {
+    for value in 1..=12 {
+        assert!(matches!(
+            manager.handle_loco_request(LocoRequest::SetSpeed {
+                address: addr(value),
+                speed: ls(value, SpeedFormat::Speed128),
+                direction: Direction::Forward,
+            }),
+            LocoRequestResult::Inserted(_)
+        ));
+    }
+}
+
+fn drain_pending_slot_transmissions(manager: &mut SlotManager) {
+    for _ in 0..256 {
+        if !manager.has_pending_slot_transmissions_for_test() {
+            return;
+        }
+        assert!(manager.build_next_packet().is_some());
+    }
+    panic!("slot transmissions did not quiesce within the bounded test budget");
+}
+
+#[test]
+fn loco_request_id_preserves_wrapped_counter_values() {
+    let id = LocoRequestId::new(u32::MAX);
+    assert_eq!(id.value(), u32::MAX);
+}
+
+#[test]
+fn expired_loco_request_is_rejected_without_mutating_scheduler_state() {
+    let mut manager = SlotManager::new();
+    let message = LocoRequestMessage {
+        request_id: LocoRequestId::new(4),
+        request: LocoRequest::SetSpeed {
+            address: addr(3),
+            speed: ls(10, SpeedFormat::Speed128),
+            direction: Direction::Forward,
+        },
+        deadline: LocoRequestDeadline::from_ticks(100),
+    };
+
+    assert_eq!(
+        handle_loco_request_message(&mut manager, message, 100),
+        LocoResponse {
+            request_id: LocoRequestId::new(4),
+            result: LocoRequestResult::Expired,
+        }
+    );
+    assert!(manager.is_empty());
+}
+
+#[test]
+fn unexpired_loco_request_is_applied_before_its_deadline() {
+    let mut manager = SlotManager::new();
+    let message = LocoRequestMessage {
+        request_id: LocoRequestId::new(5),
+        request: LocoRequest::SetSpeed {
+            address: addr(3),
+            speed: ls(10, SpeedFormat::Speed128),
+            direction: Direction::Forward,
+        },
+        deadline: LocoRequestDeadline::from_ticks(101),
+    };
+
+    assert!(matches!(
+        handle_loco_request_message(&mut manager, message, 100),
+        LocoResponse {
+            request_id,
+            result: LocoRequestResult::Inserted(_),
+        } if request_id == LocoRequestId::new(5)
+    ));
+}
+
+#[test]
+fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
+    let mut manager = SlotManager::new();
+    let address = addr(3);
+
+    let inserted = manager.handle_loco_request(LocoRequest::SetSpeed {
+        address,
+        speed: ls(12, SpeedFormat::Speed28),
+        direction: Direction::Reverse,
+    });
+    assert!(matches!(
+        inserted,
+        LocoRequestResult::Inserted(LocoSnapshot {
+            address: snapshot_address,
+            speed,
+            direction: Direction::Reverse,
+            functions: 0,
+        }) if snapshot_address == address
+            && speed.value() == 12
+            && speed.format() == SpeedFormat::Speed28
+    ));
+
+    let function = FunctionIndex::new(4).unwrap();
+    let updated = manager.handle_loco_request(LocoRequest::SetFunction {
+        address,
+        function,
+        change: FunctionChange::Enable,
+    });
+    assert!(matches!(
+        updated,
+        LocoRequestResult::Updated(LocoSnapshot { functions, .. })
+            if functions == 1 << function.get()
+    ));
+
+    let found = manager.handle_loco_request(LocoRequest::GetState { address });
+    assert!(matches!(
+        found,
+        LocoRequestResult::Found(LocoSnapshot { speed, functions, .. })
+            if speed.value() == 12 && functions == 1 << function.get()
+    ));
+}
+
+#[test]
+fn function_toggle_is_resolved_against_scheduler_state() {
+    let mut manager = SlotManager::new();
+    let address = addr(9);
+    let function = FunctionIndex::new(2).unwrap();
+
+    for expected_enabled in [true, false, true] {
+        let result = manager.handle_loco_request(LocoRequest::SetFunction {
+            address,
+            function,
+            change: FunctionChange::Toggle,
+        });
+        assert!(matches!(
+            result,
+            LocoRequestResult::Inserted(LocoSnapshot { functions, .. })
+                | LocoRequestResult::Updated(LocoSnapshot { functions, .. })
+                if ((functions >> function.get()) & 1 != 0) == expected_enabled
+        ));
+    }
+}
+
+#[test]
+fn ensure_refresh_is_idempotent_and_get_unknown_does_not_create_slot() {
+    let mut manager = SlotManager::new();
+    let address = addr(7);
+
+    assert_eq!(
+        manager.handle_loco_request(LocoRequest::GetState { address }),
+        LocoRequestResult::NotFound
+    );
+    assert!(manager.is_empty());
+
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::EnsureRefresh {
+            address,
+            format: SpeedFormat::Speed128,
+        }),
+        LocoRequestResult::Inserted(LocoSnapshot {
+            speed,
+            ..
+        }) if speed.is_zero() && speed.format() == SpeedFormat::Speed128
+    ));
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::EnsureRefresh {
+            address,
+            format: SpeedFormat::Speed28,
+        }),
+        LocoRequestResult::Found(LocoSnapshot {
+            speed,
+            ..
+        }) if speed.format() == SpeedFormat::Speed128
+    ));
+    assert_eq!(manager.slot_count(), 1);
+}
+
+#[test]
+fn full_loco_table_with_all_moving_rejects_without_any_mutation() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    let before = manager.clone();
+
+    assert_eq!(
+        manager.handle_loco_request(LocoRequest::SetSpeed {
+            address: addr(13),
+            speed: ls(1, SpeedFormat::Speed128),
+            direction: Direction::Forward,
+        }),
+        LocoRequestResult::Full
+    );
+    assert_eq!(manager, before);
+}
+
+#[test]
+fn full_loco_table_replaces_only_the_oldest_stopped_slot() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(manager.request_emergency_stop(addr(2)));
+    assert!(manager.request_emergency_stop(addr(4)));
+    drain_pending_slot_transmissions(&mut manager);
+
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::SetSpeed {
+            address: addr(13),
+            speed: ls(40, SpeedFormat::Speed128),
+            direction: Direction::Reverse,
+        }),
+        LocoRequestResult::Replaced {
+            removed,
+            inserted: LocoSnapshot {
+                address: inserted,
+                speed,
+                direction: Direction::Reverse,
+                ..
+            },
+        } if removed == addr(2) && inserted == addr(13) && speed.value() == 40
+    ));
+    assert_eq!(manager.slot_count(), 12);
+    assert!(manager.loco_snapshot(addr(2)).is_none());
+    assert!(manager.loco_snapshot(addr(4)).is_some());
+}
+
+#[test]
+fn simultaneous_global_stop_uses_lowest_logical_index_as_tie_breaker() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    drain_pending_slot_transmissions(&mut manager);
+    manager.request_emergency_stop_all();
+    drain_pending_slot_transmissions(&mut manager);
+
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::SetFunction {
+            address: addr(13),
+            function: FunctionIndex::new(1).unwrap(),
+            change: FunctionChange::Enable,
+        }),
+        LocoRequestResult::Replaced {
+            removed,
+            inserted: LocoSnapshot {
+                address: inserted,
+                speed,
+                functions,
+                ..
+            },
+        } if removed == addr(1) && inserted == addr(13) && speed.is_zero() && functions == 1 << 1
+    ));
+}
+
+#[test]
+fn global_stop_preserves_the_age_of_slots_that_were_already_stopped() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(manager.request_emergency_stop(addr(7)));
+    drain_pending_slot_transmissions(&mut manager);
+    manager.request_emergency_stop_all();
+    drain_pending_slot_transmissions(&mut manager);
+
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::SetSpeed {
+            address: addr(13),
+            speed: ls(1, SpeedFormat::Speed128),
+            direction: Direction::Forward,
+        }),
+        LocoRequestResult::Replaced { removed, .. } if removed == addr(7)
+    ));
+}
+
+#[test]
+fn stopped_age_comparison_remains_correct_across_u64_wrap() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    drain_pending_slot_transmissions(&mut manager);
+    manager.set_mutation_sequence_for_test(u64::MAX - 2);
+    assert!(manager.request_emergency_stop(addr(3)));
+    assert!(manager.request_emergency_stop(addr(4)));
+    assert!(manager.request_emergency_stop(addr(5)));
+    drain_pending_slot_transmissions(&mut manager);
+
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::SetSpeed {
+            address: addr(13),
+            speed: ls(1, SpeedFormat::Speed128),
+            direction: Direction::Forward,
+        }),
+        LocoRequestResult::Replaced { removed, .. } if removed == addr(3)
+    ));
+}
+
+#[test]
+fn pending_targeted_estop_prevents_replacement_until_stop_is_queued() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(manager.request_emergency_stop(addr(2)));
+
+    let request = LocoRequest::SetSpeed {
+        address: addr(13),
+        speed: ls(20, SpeedFormat::Speed128),
+        direction: Direction::Forward,
+    };
+    assert_eq!(
+        manager.handle_loco_request(request),
+        LocoRequestResult::Full
+    );
+    assert!(matches!(
+        manager.build_next_packet(),
+        Some(DccPacket::EmergencyStop { address, .. }) if address == addr(2)
+    ));
+    assert_eq!(
+        manager.handle_loco_request(request),
+        LocoRequestResult::Full
+    );
+
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(matches!(
+        manager.handle_loco_request(request),
+        LocoRequestResult::Replaced { removed, .. } if removed == addr(2)
+    ));
+}
+
+#[test]
+fn dirty_normal_stop_prevents_replacement_until_all_retries_are_queued() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(manager.set_speed_with_format(
+        addr(3),
+        LogicalSpeed::zero(SpeedFormat::Speed128),
+        Direction::Forward,
+        SpeedFormat::Speed128,
+    ));
+
+    let request = LocoRequest::SetSpeed {
+        address: addr(13),
+        speed: ls(20, SpeedFormat::Speed128),
+        direction: Direction::Forward,
+    };
+    assert_eq!(
+        manager.handle_loco_request(request),
+        LocoRequestResult::Full
+    );
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(matches!(
+        manager.handle_loco_request(request),
+        LocoRequestResult::Replaced { removed, .. } if removed == addr(3)
+    ));
+}
+
+#[test]
+fn dirty_function_prevents_replacement_and_consist_does_not_keep_removed_address() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(manager.create_consist(1));
+    assert!(manager.add_to_consist(1, addr(4), false));
+    assert!(manager.request_emergency_stop(addr(4)));
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(set_function(&mut manager, addr(4), 2, true));
+
+    let request = LocoRequest::SetSpeed {
+        address: addr(13),
+        speed: ls(20, SpeedFormat::Speed128),
+        direction: Direction::Forward,
+    };
+    assert_eq!(
+        manager.handle_loco_request(request),
+        LocoRequestResult::Full
+    );
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(matches!(
+        manager.handle_loco_request(request),
+        LocoRequestResult::Replaced { removed, .. } if removed == addr(4)
+    ));
+    assert_eq!(
+        manager.set_consist_speed(1, ls(5, SpeedFormat::Speed28), Direction::Forward),
+        0
+    );
+}
+
+#[test]
+fn ensure_refresh_never_replaces_a_full_table_even_when_a_slot_is_stopped() {
+    let mut manager = SlotManager::new();
+    fill_with_moving_locomotives(&mut manager);
+    assert!(manager.request_emergency_stop(addr(1)));
+    let before = manager.clone();
+
+    assert_eq!(
+        manager.handle_loco_request(LocoRequest::EnsureRefresh {
+            address: addr(13),
+            format: SpeedFormat::Speed128,
+        }),
+        LocoRequestResult::Full
+    );
+    assert_eq!(manager, before);
+}
+
+#[test]
+fn stopped_age_changes_only_when_motion_state_changes() {
+    let mut manager = SlotManager::new();
+    let address = addr(6);
+    assert!(manager.set_speed(address, LogicalSpeed::ZERO, Direction::Forward));
+    let original_age = manager.stopped_since_for_test(address);
+    assert!(original_age.is_some());
+
+    assert!(manager.set_speed(address, LogicalSpeed::ZERO, Direction::Reverse));
+    assert!(set_function(&mut manager, address, 2, true));
+    assert_eq!(manager.stopped_since_for_test(address), original_age);
+
+    assert!(manager.set_speed(address, ls(1, SpeedFormat::Speed28), Direction::Forward));
+    assert_eq!(manager.stopped_since_for_test(address), None);
+    assert!(manager.request_emergency_stop(address));
+    assert_ne!(manager.stopped_since_for_test(address), original_age);
+}
+
+#[test]
+fn emergency_stop_request_requires_existing_slot_and_returns_stopped_state() {
+    let mut manager = SlotManager::new();
+    let address = addr(8);
+    assert_eq!(
+        manager.handle_loco_request(LocoRequest::EmergencyStop { address }),
+        LocoRequestResult::NotFound
+    );
+    assert!(manager.set_speed(address, ls(20, SpeedFormat::Speed28), Direction::Forward));
+
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::EmergencyStop { address }),
+        LocoRequestResult::Updated(LocoSnapshot {
+            speed: LogicalSpeed::ZERO,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn logical_speed_keeps_its_validated_format_when_applied() {
+    let mut manager = SlotManager::new();
+    let address = addr(9);
+    let speed_128 = ls(100, SpeedFormat::Speed128);
+
+    assert!(matches!(
+        manager.handle_loco_request(LocoRequest::SetSpeed {
+            address,
+            speed: speed_128,
+            direction: Direction::Forward,
+        }),
+        LocoRequestResult::Inserted(LocoSnapshot { speed, .. })
+            if speed.format() == SpeedFormat::Speed128 && speed.value() == 100
+    ));
 }
 
 #[test]
@@ -150,7 +627,7 @@ fn test_emergency_stop_all() {
     mgr.build_next_packet();
     mgr.build_next_packet();
 
-    mgr.emergency_stop_all();
+    mgr.request_emergency_stop_all();
 
     // Global e-stop must preempt queue and emit BroadcastStop first.
     let p0 = mgr.build_next_packet().unwrap();
@@ -179,7 +656,7 @@ fn test_emergency_stop_single() {
     mgr.build_next_packet();
     mgr.build_next_packet();
 
-    assert!(mgr.emergency_stop(addr(1)));
+    assert!(mgr.request_emergency_stop(addr(1)));
 
     let p = mgr.build_next_packet().unwrap();
     let DccPacket::EmergencyStop { address, .. } = p else {
@@ -250,16 +727,33 @@ fn test_remove_slot() {
     let _ = mgr.set_speed(addr(1), ls(10, SpeedFormat::Speed28), Direction::Forward);
     let _ = mgr.set_speed(addr(2), ls(20, SpeedFormat::Speed28), Direction::Forward);
 
+    assert!(!mgr.remove_slot(addr(1)));
+    assert!(mgr.set_speed(addr(1), LogicalSpeed::ZERO, Direction::Forward));
+    assert!(!mgr.remove_slot(addr(1)));
+    drain_pending_slot_transmissions(&mut mgr);
     assert!(mgr.remove_slot(addr(1)));
     assert_eq!(mgr.slot_count(), 1);
     assert!(!mgr.remove_slot(addr(1)));
 
-    mgr.build_next_packet();
     let p = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 { address, .. } = p else {
         panic!("expected Speed28, got {p:?}");
     };
     assert_eq!(address, addr(2));
+}
+
+#[test]
+fn remove_slot_rejects_pending_targeted_estop() {
+    let mut manager = SlotManager::new();
+    assert!(manager.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward,));
+    drain_pending_slot_transmissions(&mut manager);
+    assert!(manager.request_emergency_stop(addr(3)));
+
+    assert!(!manager.remove_slot(addr(3)));
+    assert!(matches!(
+        manager.build_next_packet(),
+        Some(DccPacket::EmergencyStop { address, .. }) if address == addr(3)
+    ));
 }
 
 #[test]
@@ -318,8 +812,8 @@ fn test_dirty_cleared_after_build() {
 #[test]
 fn test_set_function_generates_function_packets() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.set_function(addr(3), 0, true)); // FL
-    assert!(mgr.set_function(addr(3), 5, true)); // F5
+    assert!(set_function(&mut mgr, addr(3), 0, true)); // FL
+    assert!(set_function(&mut mgr, addr(3), 5, true)); // F5
 
     // Speed is dirty first (slot default).
     let _ = mgr.build_next_packet().unwrap();
@@ -340,7 +834,7 @@ fn test_set_function_generates_function_packets() {
 fn test_function_refresh_fairness_speed_then_function() {
     let mut mgr = SlotManager::new();
     let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_function(addr(1), 1, true);
+    let _ = set_function(&mut mgr, addr(1), 1, true);
 
     // Drain dirty speed + dirty function groups.
     for _ in 0..(1 + usize::from(DIRTY_FUNCTION_RETRY_COUNT)) {
@@ -406,7 +900,7 @@ fn test_emergency_stop_preempts_dirty_queue() {
     let mut mgr = SlotManager::new();
     let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
     let _ = mgr.set_speed(addr(2), ls(15, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_function(addr(1), 1, true);
+    let _ = set_function(&mut mgr, addr(1), 1, true);
 
     // Queue a global e-stop after normal dirty traffic exists.
     mgr.request_emergency_stop_all();
@@ -478,8 +972,8 @@ fn test_recovery_after_emergency_stop() {
 #[test]
 fn test_f13_f28_dirty_and_refresh() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.set_function(addr(3), 15, true)); // F15 in FG3
-    assert!(mgr.set_function(addr(3), 25, true)); // F25 in FG4
+    assert!(set_function(&mut mgr, addr(3), 15, true)); // F15 in FG3
+    assert!(set_function(&mut mgr, addr(3), 25, true)); // F25 in FG4
 
     // No dirty speed when slot is created by function-only command.
     // First two packets should be dirty function groups FG3 and FG4.
@@ -520,8 +1014,8 @@ fn test_function_refresh_bound_under_12_slots() {
     let mut mgr = SlotManager::new();
     for i in 1..=12 {
         assert!(mgr.set_speed(addr(i), ls(10, SpeedFormat::Speed28), Direction::Forward));
-        assert!(mgr.set_function(addr(i), 13, true));
-        assert!(mgr.set_function(addr(i), 21, true));
+        assert!(set_function(&mut mgr, addr(i), 13, true));
+        assert!(set_function(&mut mgr, addr(i), 21, true));
     }
 
     // Drain initial dirty speed/function traffic.
@@ -734,10 +1228,13 @@ fn test_program_on_main_emits_once_before_normal_traffic() {
     let mut mgr = SlotManager::new();
     let _ = mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward);
 
-    assert!(mgr.program_on_main(DccPacket::PomReadByte {
-        address: addr(3),
-        cv: pom_cv(29),
-    }));
+    assert!(mgr.program_on_main(
+        pom_id(1),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(29),
+        }
+    ));
 
     let packet = mgr
         .build_next_packet()
@@ -754,15 +1251,20 @@ fn test_program_on_main_emits_once_before_normal_traffic() {
 fn test_program_on_main_queues_multiple_pending_packets() {
     let mut mgr = SlotManager::new();
 
-    assert!(mgr.program_on_main(DccPacket::PomReadByte {
-        address: addr(3),
-        cv: pom_cv(1),
-    }));
-    assert!(mgr.program_on_main(DccPacket::PomWriteByte {
-        address: addr(3),
-        cv: pom_cv(29),
-        value: 6,
-    }));
+    assert!(mgr.program_on_main(
+        pom_id(2),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(1),
+        }
+    ));
+    assert!(mgr.program_on_main(
+        pom_id(2),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(29),
+        }
+    ));
 
     let first = mgr
         .build_next_packet()
@@ -772,7 +1274,35 @@ fn test_program_on_main_queues_multiple_pending_packets() {
     let second = mgr
         .build_next_packet()
         .expect("expected second programming packet");
-    assert!(matches!(second, DccPacket::PomWriteByte { cv, .. } if cv.value() == 29));
+    assert!(matches!(second, DccPacket::PomReadByte { cv, .. } if cv.value() == 29));
+}
+
+#[test]
+fn test_same_pom_request_cannot_change_target_or_operation() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.program_on_main(
+        pom_id(4),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(1),
+        },
+    ));
+
+    assert!(!mgr.program_on_main(
+        pom_id(4),
+        DccPacket::PomReadByte {
+            address: addr(4),
+            cv: pom_cv(1),
+        },
+    ));
+    assert!(!mgr.program_on_main(
+        pom_id(4),
+        DccPacket::PomWriteByte {
+            address: addr(3),
+            cv: pom_cv(1),
+            value: 7,
+        },
+    ));
 }
 
 #[test]
@@ -780,16 +1310,98 @@ fn test_program_on_main_rejects_when_queue_full() {
     let mut mgr = SlotManager::new();
 
     for cv in 1..=PENDING_POM_CAPACITY as u16 {
-        assert!(mgr.program_on_main(DccPacket::PomReadByte {
-            address: addr(3),
-            cv: pom_cv(cv),
-        }));
+        assert!(mgr.program_on_main(
+            pom_id(3),
+            DccPacket::PomReadByte {
+                address: addr(3),
+                cv: pom_cv(cv),
+            }
+        ));
     }
 
-    assert!(!mgr.program_on_main(DccPacket::PomReadByte {
+    assert!(!mgr.program_on_main(
+        pom_id(3),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(29),
+        }
+    ));
+}
+
+#[test]
+fn test_new_pom_request_discards_queued_packets_from_previous_request() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.program_on_main(
+        pom_id(10),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(1),
+        },
+    ));
+    assert!(mgr.program_on_main(
+        pom_id(11),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(2),
+        },
+    ));
+
+    let packet = mgr
+        .build_next_packet()
+        .expect("new request must remain queued");
+    assert!(matches!(packet, DccPacket::PomReadByte { cv, .. } if cv.value() == 2));
+}
+
+#[test]
+fn test_stale_close_cannot_clear_newer_pom_request() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.program_on_main(
+        pom_id(20),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(1),
+        },
+    ));
+    assert!(mgr.program_on_main(
+        pom_id(21),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(2),
+        },
+    ));
+
+    assert!(!mgr.close_program_on_main(pom_id(20)));
+    assert_eq!(
+        mgr.pom_context_for_packet(DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(2),
+        }),
+        Some((pom_id(21), CutoutMode::PomRead)),
+    );
+}
+
+#[test]
+fn test_pom_request_tags_followup_packets_until_matching_close() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.program_on_main(
+        pom_id(30),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(8),
+        },
+    ));
+    let followup = DccPacket::Speed128 {
         address: addr(3),
-        cv: pom_cv(29),
-    }));
+        speed: crate::dcc::NmraSpeed128::new(0).unwrap(),
+        direction: Direction::Forward,
+    };
+
+    assert_eq!(
+        mgr.pom_context_for_packet(followup),
+        Some((pom_id(30), CutoutMode::PomRead)),
+    );
+    assert!(mgr.close_program_on_main(pom_id(30)));
+    assert_eq!(mgr.pom_context_for_packet(followup), None);
 }
 
 #[test]
@@ -845,11 +1457,11 @@ fn test_ensure_railcom_refresh_slot_does_not_modify_existing_slot() {
 #[test]
 fn test_function_group_refreshed_after_all_off() {
     let mut mgr = SlotManager::new();
-    let _ = mgr.set_function_indexed(addr(3), FunctionIndex::new(0).unwrap(), true);
+    let _ = set_function(&mut mgr, addr(3), 0, true);
     // No dirty speed packet when slot is created by function-only command
     mgr.build_next_packet(); // dirty FunctionGroup1{fl:true}
 
-    let _ = mgr.set_function_indexed(addr(3), FunctionIndex::new(0).unwrap(), false);
+    let _ = set_function(&mut mgr, addr(3), 0, false);
     mgr.build_next_packet(); // dirty FunctionGroup1{fl:false}
 
     // After: functions=0, known_groups=0b00001
