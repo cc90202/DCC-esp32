@@ -1,10 +1,17 @@
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use heapless::Vec;
 
+use crate::cutout::CutoutMode;
+use crate::dcc::PomRequestId;
 use crate::dcc::packet::{DccAddress, DccPacket, Direction};
 use crate::dcc::speed28::logical_to_nmra_packet_speed;
 
 use super::railcom_policy::PacketClass;
-use super::{FunctionIndex, LogicalSpeed, MAX_FUNCTION_INDEX, SchedulerCommand, SpeedFormat};
+use super::{
+    FunctionChange, FunctionIndex, LocoRequest, LocoRequestResult, LocoSnapshot, LogicalSpeed,
+    SchedulerCommand, SpeedFormat,
+};
 
 /// Maximum number of active locomotive slots.
 const MAX_SLOTS: usize = 12;
@@ -16,6 +23,7 @@ const MAX_CONSIST_MEMBERS: usize = 8;
 const TARGET_SLOT_PERIOD_MS: u64 = 120;
 /// Minimum scheduler tick to avoid tight loops under high slot count.
 const MIN_TICK_MS: u64 = 5;
+static SCHEDULER_INVARIANT_RECOVERY_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Maximum allowed interval between refreshes of active function groups.
 pub(super) const MAX_FUNCTION_REFRESH_MS: u64 = 400;
 /// Additional immediate retransmissions after a function state change.
@@ -35,22 +43,26 @@ struct ConsistMember {
     reverse_in_consist: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone, PartialEq, Eq))]
 struct Consist {
     id: u8,
     members: Vec<ConsistMember, MAX_CONSIST_MEMBERS>,
 }
 
 /// A locomotive slot holding the current command state.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone, PartialEq, Eq))]
 struct Slot {
     address: DccAddress,
     // Logical speed value kept in runtime state.
     // Speed28 uses protocol semantics: 0=stop, 1..=28=steps.
     // Conversion to NMRA packet semantics happens only when building DCC packets.
     speed: LogicalSpeed,
+    /// Mutation sequence at which this locomotive most recently became stopped.
+    /// `None` means that the locomotive is currently moving.
+    stopped_since: Option<u64>,
     direction: Direction,
-    format: SpeedFormat,
     // Bit 0 = FL, bits 1..28 = F1..F28.
     functions: u32,
     dirty_speed: bool,
@@ -75,17 +87,12 @@ struct Slot {
 }
 
 impl Slot {
-    fn new(
-        address: DccAddress,
-        speed: LogicalSpeed,
-        direction: Direction,
-        format: SpeedFormat,
-    ) -> Self {
+    fn new(address: DccAddress, speed: LogicalSpeed, direction: Direction) -> Self {
         Self {
             address,
             speed,
+            stopped_since: None,
             direction,
-            format,
             functions: 0,
             dirty_speed: true,
             dirty_speed_retries: speed_retry_count(speed),
@@ -102,14 +109,21 @@ impl Slot {
         }
     }
 
+    fn snapshot(&self) -> LocoSnapshot {
+        LocoSnapshot {
+            address: self.address,
+            speed: self.speed,
+            direction: self.direction,
+            functions: self.functions,
+        }
+    }
+
     fn has_any_functions(&self) -> bool {
         self.functions != 0 || self.known_groups != 0
     }
 
-    fn set_function(&mut self, function: u8, enabled: bool) -> bool {
-        if function > MAX_FUNCTION_INDEX {
-            return false;
-        }
+    fn set_function(&mut self, function: FunctionIndex, enabled: bool) {
+        let function = function.get();
         let bit = 1u32 << function;
         if enabled {
             self.functions |= bit;
@@ -122,11 +136,14 @@ impl Slot {
         self.dirty_function_groups |= group_bit;
         self.set_dirty_retries(group, DIRTY_FUNCTION_RETRY_COUNT);
         self.known_groups |= group_bit;
-        true
+    }
+
+    fn has_pending_transmission(&self) -> bool {
+        self.dirty_speed || self.dirty_function_groups != 0
     }
 
     fn speed_packet(&self) -> Option<DccPacket> {
-        match self.format {
+        match self.speed.format() {
             SpeedFormat::Speed28 => DccPacket::speed_28step(
                 self.address,
                 logical_to_nmra_packet_speed(self.speed.value())?,
@@ -223,10 +240,11 @@ impl Slot {
             if !self.has_any_functions() {
                 return None;
             }
-            return Some(
-                self.next_active_function_packet()
-                    .expect("function-only slot has no active function group packet"),
-            );
+            let packet = self.next_active_function_packet();
+            if packet.is_none() {
+                record_scheduler_invariant_recovery();
+            }
+            return packet;
         }
 
         if !self.has_any_functions() {
@@ -252,7 +270,9 @@ impl Slot {
                 self.refresh_turns_since_function = 0;
                 return Some(packet);
             }
-            unreachable!("slot has active functions but no active function group packet available");
+            record_scheduler_invariant_recovery();
+            self.refresh_turns_since_function = self.refresh_turns_since_function.saturating_add(1);
+            return self.speed_packet();
         }
 
         self.refresh_speed_next = false;
@@ -315,16 +335,81 @@ impl Slot {
     }
 }
 
+fn record_scheduler_invariant_recovery() {
+    SCHEDULER_INVARIANT_RECOVERY_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(super) fn scheduler_invariant_recovery_count() -> u32 {
+    SCHEDULER_INVARIANT_RECOVERY_COUNT.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod invariant_recovery_tests {
+    use super::*;
+
+    fn invalid_group_slot() -> Slot {
+        let mut slot = Slot::new(
+            DccAddress::new_short(3).unwrap(),
+            LogicalSpeed::zero(SpeedFormat::Speed128),
+            Direction::Forward,
+        );
+        slot.functions = 0;
+        slot.known_groups = 0x80;
+        slot
+    }
+
+    #[test]
+    fn invalid_function_only_state_degrades_to_no_packet() {
+        let before = scheduler_invariant_recovery_count();
+        let mut slot = invalid_group_slot();
+        slot.speed_commanded = false;
+
+        assert_eq!(slot.next_refresh_packet_with_budget(1), None);
+        assert_eq!(scheduler_invariant_recovery_count().wrapping_sub(before), 1);
+    }
+
+    #[test]
+    fn invalid_mixed_state_degrades_to_speed_packet() {
+        let before = scheduler_invariant_recovery_count();
+        let mut slot = invalid_group_slot();
+        slot.refresh_speed_next = false;
+
+        assert!(matches!(
+            slot.next_refresh_packet_with_budget(1),
+            Some(DccPacket::Speed128 { .. })
+        ));
+        assert_eq!(scheduler_invariant_recovery_count().wrapping_sub(before), 1);
+    }
+}
+
 /// Manages active locomotive slots with round-robin scheduling.
+#[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
 pub struct SlotManager {
     slots: Vec<Slot, MAX_SLOTS>,
     consists: Vec<Consist, MAX_CONSISTS>,
     pending_broadcast_estop: bool,
     pending_estop_targets: Vec<DccAddress, MAX_SLOTS>,
     pending_pom: Vec<DccPacket, PENDING_POM_CAPACITY>,
+    active_pom: Option<ActivePomRequest>,
     pending_railcom_telemetry: Option<DccPacket>,
     next_index: usize,
+    mutation_sequence: u64,
     paused: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotAdmission {
+    Inserted,
+    Replaced { removed: DccAddress },
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActivePomRequest {
+    request_id: PomRequestId,
+    target_address: DccAddress,
+    cutout: CutoutMode,
 }
 
 impl Default for SlotManager {
@@ -343,13 +428,214 @@ impl SlotManager {
             pending_broadcast_estop: false,
             pending_estop_targets: Vec::new(),
             pending_pom: Vec::new(),
+            active_pom: None,
             pending_railcom_telemetry: None,
             next_index: 0,
+            mutation_sequence: 0,
             paused: false,
         }
     }
 
-    /// Set speed for a locomotive using Speed28 format.
+    /// Return a copy of the scheduler-owned state for one locomotive.
+    #[must_use]
+    pub fn loco_snapshot(&self, address: DccAddress) -> Option<LocoSnapshot> {
+        self.slots
+            .iter()
+            .find(|slot| slot.address == address)
+            .map(Slot::snapshot)
+    }
+
+    fn advance_mutation_sequence(&mut self) -> u64 {
+        self.mutation_sequence = self.mutation_sequence.wrapping_add(1);
+        self.mutation_sequence
+    }
+
+    fn update_speed_at(&mut self, index: usize, speed: LogicalSpeed, direction: Direction) {
+        let was_stopped = self.slots[index].speed.is_zero();
+        let is_stopped = speed.is_zero();
+        let stopped_since = match (was_stopped, is_stopped) {
+            (false, true) => Some(self.advance_mutation_sequence()),
+            (true, false) => {
+                self.advance_mutation_sequence();
+                None
+            }
+            _ => self.slots[index].stopped_since,
+        };
+
+        let slot = &mut self.slots[index];
+        slot.speed = speed;
+        slot.stopped_since = stopped_since;
+        slot.direction = direction;
+        slot.dirty_speed = true;
+        slot.dirty_speed_retries = speed_retry_count(speed);
+        slot.speed_commanded = true;
+    }
+
+    fn oldest_replaceable_stopped_slot_index(&self) -> Option<usize> {
+        let now = self.mutation_sequence;
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| {
+                !slot.has_pending_transmission()
+                    && !self.pending_estop_targets.contains(&slot.address)
+            })
+            .filter_map(|(index, slot)| {
+                slot.stopped_since
+                    .map(|stopped_since| (index, now.wrapping_sub(stopped_since)))
+            })
+            .fold(None, |oldest, candidate| match oldest {
+                Some((_, oldest_age)) if oldest_age >= candidate.1 => oldest,
+                _ => Some(candidate),
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn admit_new_slot(&mut self, mut slot: Slot, replace_stopped: bool) -> SlotAdmission {
+        debug_assert!(
+            self.slots
+                .iter()
+                .all(|existing| existing.address != slot.address)
+        );
+
+        if !self.slots.is_full() {
+            self.prepare_admitted_slot(&mut slot);
+            if self.slots.push(slot).is_err() {
+                return SlotAdmission::Full;
+            }
+            return SlotAdmission::Inserted;
+        }
+
+        if !replace_stopped {
+            return SlotAdmission::Full;
+        }
+
+        let Some(index) = self.oldest_replaceable_stopped_slot_index() else {
+            return SlotAdmission::Full;
+        };
+        let removed = self.slots[index].address;
+        self.prepare_admitted_slot(&mut slot);
+        self.slots[index] = slot;
+        self.remove_address_from_consists(removed);
+        SlotAdmission::Replaced { removed }
+    }
+
+    fn prepare_admitted_slot(&mut self, slot: &mut Slot) {
+        let sequence = self.advance_mutation_sequence();
+        slot.stopped_since = slot.speed.is_zero().then_some(sequence);
+    }
+
+    fn result_from_admission(
+        &self,
+        address: DccAddress,
+        admission: SlotAdmission,
+    ) -> LocoRequestResult {
+        let snapshot = || self.loco_snapshot(address);
+        match admission {
+            SlotAdmission::Inserted => {
+                snapshot().map_or(LocoRequestResult::Rejected, LocoRequestResult::Inserted)
+            }
+            SlotAdmission::Replaced { removed } => snapshot()
+                .map_or(LocoRequestResult::Rejected, |inserted| {
+                    LocoRequestResult::Replaced { removed, inserted }
+                }),
+            SlotAdmission::Full => LocoRequestResult::Full,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_mutation_sequence_for_test(&mut self, sequence: u64) {
+        self.mutation_sequence = sequence;
+    }
+
+    #[cfg(test)]
+    pub(super) fn stopped_since_for_test(&self, address: DccAddress) -> Option<u64> {
+        self.slots
+            .iter()
+            .find(|slot| slot.address == address)
+            .and_then(|slot| slot.stopped_since)
+    }
+
+    /// Apply a request from an external adapter and report the resulting state.
+    ///
+    /// A new command may atomically replace the oldest stopped slot only after
+    /// every accepted speed, function, and emergency-stop packet for that slot
+    /// has been handed to the DCC output queue. Refresh-only requests never
+    /// replace a slot. If no stopped slot is safe to replace, the request returns
+    /// [`LocoRequestResult::Full`] without mutation.
+    #[must_use]
+    pub fn handle_loco_request(&mut self, request: LocoRequest) -> LocoRequestResult {
+        match request {
+            LocoRequest::GetState { address } => self
+                .loco_snapshot(address)
+                .map_or(LocoRequestResult::NotFound, LocoRequestResult::Found),
+            LocoRequest::EnsureRefresh { address, format } => {
+                if let Some(snapshot) = self.loco_snapshot(address) {
+                    return LocoRequestResult::Found(snapshot);
+                }
+                if !self.ensure_railcom_refresh_slot(address, format) {
+                    return LocoRequestResult::Full;
+                }
+                let Some(snapshot) = self.loco_snapshot(address) else {
+                    return LocoRequestResult::Rejected;
+                };
+                LocoRequestResult::Inserted(snapshot)
+            }
+            LocoRequest::SetSpeed {
+                address,
+                speed,
+                direction,
+            } => {
+                if let Some(index) = self.slots.iter().position(|slot| slot.address == address) {
+                    self.update_speed_at(index, speed, direction);
+                    return self
+                        .loco_snapshot(address)
+                        .map_or(LocoRequestResult::Rejected, LocoRequestResult::Updated);
+                }
+                let slot = Slot::new(address, speed, direction);
+                let admission = self.admit_new_slot(slot, true);
+                self.result_from_admission(address, admission)
+            }
+            LocoRequest::SetFunction {
+                address,
+                function,
+                change,
+            } => {
+                if let Some(slot) = self.slots.iter_mut().find(|slot| slot.address == address) {
+                    let enabled = match change {
+                        FunctionChange::Enable => true,
+                        FunctionChange::Disable => false,
+                        FunctionChange::Toggle => !slot.function_enabled(function.get()),
+                    };
+                    slot.set_function(function, enabled);
+                    return LocoRequestResult::Updated(slot.snapshot());
+                }
+
+                let mut slot = Slot::new(
+                    address,
+                    LogicalSpeed::zero(SpeedFormat::Speed28),
+                    Direction::Forward,
+                );
+                slot.dirty_speed = false;
+                slot.speed_commanded = false;
+                let enabled = !matches!(change, FunctionChange::Disable);
+                slot.set_function(function, enabled);
+                let admission = self.admit_new_slot(slot, true);
+                self.result_from_admission(address, admission)
+            }
+            LocoRequest::EmergencyStop { address } => {
+                if !self.request_emergency_stop(address) {
+                    return LocoRequestResult::NotFound;
+                }
+                let Some(snapshot) = self.loco_snapshot(address) else {
+                    return LocoRequestResult::Rejected;
+                };
+                LocoRequestResult::Updated(snapshot)
+            }
+        }
+    }
+
+    /// Set a validated logical speed for a locomotive.
     #[must_use]
     pub fn set_speed(
         &mut self,
@@ -357,10 +643,18 @@ impl SlotManager {
         speed: LogicalSpeed,
         direction: Direction,
     ) -> bool {
-        self.set_speed_with_format(address, speed, direction, SpeedFormat::Speed28)
+        if let Some(index) = self.slots.iter().position(|slot| slot.address == address) {
+            self.update_speed_at(index, speed, direction);
+            return true;
+        }
+
+        matches!(
+            self.admit_new_slot(Slot::new(address, speed, direction), false),
+            SlotAdmission::Inserted
+        )
     }
 
-    /// Set speed with explicit format selection.
+    #[cfg(test)]
     #[must_use]
     pub fn set_speed_with_format(
         &mut self,
@@ -369,75 +663,21 @@ impl SlotManager {
         direction: Direction,
         format: SpeedFormat,
     ) -> bool {
-        for slot in self.slots.iter_mut() {
-            if slot.address == address {
-                slot.speed = speed;
-                slot.direction = direction;
-                slot.format = format;
-                slot.dirty_speed = true;
-                slot.dirty_speed_retries = speed_retry_count(speed);
-                slot.speed_commanded = true;
-                return true;
-            }
-        }
-
-        if self.slots.is_full() {
-            return false;
-        }
-
-        let _ = self
-            .slots
-            .push(Slot::new(address, speed, direction, format));
-        true
-    }
-
-    /// Set function state for a locomotive.
-    #[must_use]
-    pub fn set_function(&mut self, address: DccAddress, function: u8, enabled: bool) -> bool {
-        let Ok(function) = FunctionIndex::try_from(function) else {
-            return false;
-        };
-        self.set_function_indexed(address, function, enabled)
-    }
-
-    /// Set function state for a locomotive using a validated function index.
-    #[must_use]
-    pub fn set_function_indexed(
-        &mut self,
-        address: DccAddress,
-        function: FunctionIndex,
-        enabled: bool,
-    ) -> bool {
-        let function = function.get();
-        for slot in self.slots.iter_mut() {
-            if slot.address == address {
-                return slot.set_function(function, enabled);
-            }
-        }
-
-        if self.slots.is_full() {
-            return false;
-        }
-
-        let mut slot = Slot::new(
-            address,
-            LogicalSpeed::ZERO,
-            Direction::Forward,
-            SpeedFormat::Speed28,
-        );
-        slot.dirty_speed = false;
-        slot.speed_commanded = false;
-        if !slot.set_function(function, enabled) {
-            return false;
-        }
-        let _ = self.slots.push(slot);
-        true
+        speed.format() == format && self.set_speed(address, speed, direction)
     }
 
     /// Request global emergency stop.
     pub fn request_emergency_stop_all(&mut self) {
+        let stopped_since = self
+            .slots
+            .iter()
+            .any(|slot| !slot.speed.is_zero())
+            .then(|| self.advance_mutation_sequence());
         for slot in self.slots.iter_mut() {
-            slot.speed = LogicalSpeed::ZERO;
+            if !slot.speed.is_zero() {
+                slot.stopped_since = stopped_since;
+            }
+            slot.speed = LogicalSpeed::zero(slot.speed.format());
             slot.dirty_speed = true;
         }
         self.pending_broadcast_estop = true;
@@ -447,20 +687,17 @@ impl SlotManager {
     /// Request emergency stop for a single locomotive.
     #[must_use]
     pub fn request_emergency_stop(&mut self, address: DccAddress) -> bool {
-        let mut found = false;
-        for slot in self.slots.iter_mut() {
-            if slot.address == address {
-                slot.speed = LogicalSpeed::ZERO;
-                slot.dirty_speed = true;
-                slot.dirty_speed_retries = DIRTY_STOP_RETRY_COUNT;
-                found = true;
-                break;
-            }
-        }
-
-        if !found {
+        let Some(index) = self.slots.iter().position(|slot| slot.address == address) else {
             return false;
+        };
+
+        if !self.slots[index].speed.is_zero() {
+            self.slots[index].stopped_since = Some(self.advance_mutation_sequence());
         }
+        let slot = &mut self.slots[index];
+        slot.speed = LogicalSpeed::zero(slot.speed.format());
+        slot.dirty_speed = true;
+        slot.dirty_speed_retries = DIRTY_STOP_RETRY_COUNT;
 
         if !self.pending_estop_targets.contains(&address)
             && self.pending_estop_targets.push(address).is_err()
@@ -473,17 +710,6 @@ impl SlotManager {
             return false;
         }
         true
-    }
-
-    /// Backward-compatible alias for [`Self::request_emergency_stop_all`].
-    pub fn emergency_stop_all(&mut self) {
-        self.request_emergency_stop_all();
-    }
-
-    /// Backward-compatible alias for [`Self::request_emergency_stop`].
-    #[must_use]
-    pub fn emergency_stop(&mut self, address: DccAddress) -> bool {
-        self.request_emergency_stop(address)
     }
 
     /// Create an empty consist with given ID.
@@ -582,15 +808,37 @@ impl SlotManager {
     /// Remove a locomotive slot.
     #[must_use]
     pub fn remove_slot(&mut self, address: DccAddress) -> bool {
-        if let Some(idx) = self.slots.iter().position(|s| s.address == address) {
-            self.slots.swap_remove(idx);
-            if self.next_index >= self.slots.len() {
-                self.next_index = 0;
-            }
-            true
-        } else {
-            false
+        let Some(index) = self.slots.iter().position(|slot| slot.address == address) else {
+            return false;
+        };
+        let slot = &self.slots[index];
+        if !slot.speed.is_zero()
+            || slot.has_pending_transmission()
+            || self.pending_estop_targets.contains(&address)
+        {
+            return false;
         }
+
+        self.slots.swap_remove(index);
+        self.advance_mutation_sequence();
+        self.remove_address_from_consists(address);
+        if self.next_index >= self.slots.len() {
+            self.next_index = 0;
+        }
+        true
+    }
+
+    fn remove_address_from_consists(&mut self, address: DccAddress) {
+        for consist in &mut self.consists {
+            consist.members.retain(|member| member.address != address);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_pending_slot_transmissions_for_test(&self) -> bool {
+        self.pending_broadcast_estop
+            || !self.pending_estop_targets.is_empty()
+            || self.slots.iter().any(Slot::has_pending_transmission)
     }
 
     /// Pause packet emission. All slot state is preserved.
@@ -604,6 +852,7 @@ impl SlotManager {
     }
 
     /// Check if scheduler is currently paused.
+    #[cfg(test)]
     #[must_use]
     pub fn is_paused(&self) -> bool {
         self.paused
@@ -611,8 +860,50 @@ impl SlotManager {
 
     /// Queue one explicit POM packet for single transmission.
     #[must_use]
-    pub fn program_on_main(&mut self, packet: DccPacket) -> bool {
+    pub fn program_on_main(&mut self, request_id: PomRequestId, packet: DccPacket) -> bool {
+        let (target_address, cutout) = match packet {
+            DccPacket::PomReadByte { address, .. } => (address, CutoutMode::PomRead),
+            DccPacket::PomWriteByte { address, .. } => (address, CutoutMode::PomWrite),
+            _ => return false,
+        };
+        if let Some(active) = self.active_pom {
+            if active.request_id == request_id {
+                if active.target_address != target_address || active.cutout != cutout {
+                    return false;
+                }
+            } else {
+                self.pending_pom.clear();
+            }
+        }
+        self.active_pom = Some(ActivePomRequest {
+            request_id,
+            target_address,
+            cutout,
+        });
         self.pending_pom.push(packet).is_ok()
+    }
+
+    pub fn close_program_on_main(&mut self, request_id: PomRequestId) -> bool {
+        if !self
+            .active_pom
+            .is_some_and(|active| active.request_id == request_id)
+        {
+            return false;
+        }
+        self.active_pom = None;
+        self.pending_pom.clear();
+        true
+    }
+
+    #[cfg(any(test, target_arch = "riscv32"))]
+    pub(super) fn pom_context_for_packet(
+        &self,
+        packet: DccPacket,
+    ) -> Option<(PomRequestId, CutoutMode)> {
+        let target_address = packet.railcom_target_address()?;
+        self.active_pom
+            .filter(|active| active.target_address == target_address)
+            .map(|active| (active.request_id, active.cutout))
     }
 
     /// Ensure the scheduler has a non-dirty cyclic refresh slot for a decoder.
@@ -625,15 +916,10 @@ impl SlotManager {
         if self.slots.iter().any(|slot| slot.address == address) {
             return true;
         }
-        if self.slots.is_full() {
-            return false;
-        }
-
-        let mut slot = Slot::new(address, LogicalSpeed::ZERO, Direction::Forward, format);
+        let mut slot = Slot::new(address, LogicalSpeed::zero(format), Direction::Forward);
         slot.dirty_speed = false;
         slot.dirty_speed_retries = 0;
-        let _ = self.slots.push(slot);
-        true
+        matches!(self.admit_new_slot(slot, false), SlotAdmission::Inserted)
     }
 
     #[must_use]
@@ -646,6 +932,7 @@ impl SlotManager {
     }
 
     /// Build the next packet to transmit.
+    #[cfg(test)]
     pub fn build_next_packet(&mut self) -> Option<DccPacket> {
         self.build_next_packet_with_function_budget(allowed_slot_visits_without_function(
             self.slots.len(),
@@ -653,6 +940,7 @@ impl SlotManager {
     }
 
     /// Build next packet with an explicit function-refresh budget in slot visits.
+    #[cfg(test)]
     pub fn build_next_packet_with_function_budget(
         &mut self,
         max_slot_visits_without_function: u8,
@@ -759,6 +1047,7 @@ impl SlotManager {
     }
 
     /// Returns `true` if no slots are active.
+    #[cfg(test)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
@@ -768,27 +1057,18 @@ impl SlotManager {
     #[must_use]
     pub fn apply_command(&mut self, command: SchedulerCommand) -> bool {
         match command {
-            SchedulerCommand::SetSpeed {
-                address,
-                speed,
-                direction,
-                format,
-            } => self.set_speed_with_format(address, speed, direction, format),
-            SchedulerCommand::SetFunction {
-                address,
-                function,
-                enabled,
-            } => self.set_function_indexed(address, function, enabled),
             SchedulerCommand::EmergencyStopAll => {
                 self.request_emergency_stop_all();
                 true
             }
-            SchedulerCommand::EmergencyStop { address } => self.request_emergency_stop(address),
-            SchedulerCommand::ProgramOnMain { packet } => self.program_on_main(packet),
-            SchedulerCommand::SuspendRailcomDiscovery => true,
-            SchedulerCommand::EnsureRailcomRefresh { address, format } => {
-                self.ensure_railcom_refresh_slot(address, format)
+            SchedulerCommand::ProgramOnMain { request_id, packet } => {
+                self.program_on_main(request_id, packet)
             }
+            SchedulerCommand::CloseProgramOnMain { request_id } => {
+                self.close_program_on_main(request_id)
+            }
+            SchedulerCommand::SuspendRailcomDiscovery
+            | SchedulerCommand::RestartRailcomDiscovery => true,
             SchedulerCommand::RailcomTelemetry { packet } => self.railcom_telemetry_packet(packet),
             SchedulerCommand::CreateConsist { id } => self.create_consist(id),
             SchedulerCommand::AddToConsist {

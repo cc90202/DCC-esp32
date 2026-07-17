@@ -1,11 +1,13 @@
 [package]
 edition      = "2024"
 name         = "dcc-esp32"
+publish      = false
 rust-version = "1.88"
 version      = "0.1.0"
 
 [features]
 default = []
+dcc-validator = []
 rmt-stats = []
 
 [[bin]]
@@ -58,6 +60,8 @@ embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 [dev-dependencies]
 # For running tests on host platform
 heapless = "0.9"
+embassy-sync = "0.7.2"
+embassy-time = { version = "0.5.0", features = ["std", "generic-queue-8"] }
 
 [profile.dev]
 # Rust debug is too slow.

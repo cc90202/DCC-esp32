@@ -1,6 +1,6 @@
 use crate::dcc::{DccAddress, Direction, SpeedFormat};
-use crate::net::LocoState;
 
+use super::LocoInfo;
 use super::wire::*;
 
 /// Encode `LAN_X_LOCO_INFO` into `out`. Returns bytes written, or 0 if `out` is shorter than 14.
@@ -13,7 +13,7 @@ use super::wire::*;
 /// ```
 /// KKK: 0=14-step, 2=28-step, 4=128-step.  DB4: L=F0, F=F4, G=F3, H=F2, J=F1.
 /// Total: 14 bytes.
-pub fn encode_loco_info(state: &LocoState, out: &mut [u8]) -> usize {
+pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> usize {
     const LEN: usize = 14;
     if out.len() < LEN {
         return 0;
@@ -32,22 +32,22 @@ pub fn encode_loco_info(state: &LocoState, out: &mut [u8]) -> usize {
     }
 
     // DB2: 0000BKKK - B=0 (not busy), KKK=speed steps format
-    let kkk: u8 = match state.format {
+    let kkk: u8 = match state.speed.format() {
         SpeedFormat::Speed28 => 2,
         SpeedFormat::Speed128 => 4,
     };
     out[7] = kkk;
 
     // DB3: RVVVVVVV - direction + speed, encoded in the native format
-    let wire_speed: u8 = match state.format {
+    let wire_speed: u8 = match state.speed.format() {
         SpeedFormat::Speed128 => {
-            if state.speed == 0 {
+            if state.speed.is_zero() {
                 0
             } else {
-                state.speed.saturating_add(1) & 0x7F
+                state.speed.value().saturating_add(1) & 0x7F
             }
         }
-        SpeedFormat::Speed28 => logical_to_z21_wire(state.speed).unwrap_or(0),
+        SpeedFormat::Speed28 => logical_to_z21_wire(state.speed.value()).unwrap_or(0),
     };
     let dir_bit: u8 = if state.direction == Direction::Forward {
         0x80
@@ -160,12 +160,13 @@ pub fn encode_cv_nack(out: &mut [u8]) -> usize {
 /// XBus reply, header=0x0040, X-Header=0x43 (same byte as request).
 /// DB2=0x00 means state unknown - we have no accessory decoder support.
 /// Spec section: Z21 LAN Protocol v1.13, accessory decoder chapter.
-pub fn encode_turnout_info(address: u16, out: &mut [u8]) -> usize {
+pub fn encode_turnout_info(address: DccAddress, out: &mut [u8]) -> usize {
     // [DataLen:2][Header=0x0040:2][0x43][AddrH][AddrL][DB2=0x00][XCS]
     const LEN: usize = 9;
     if out.len() < LEN {
         return 0;
     }
+    let address = address.value();
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = XHEADER_TURNOUT_INFO;
     out[5] = (address >> 8) as u8;
@@ -285,8 +286,8 @@ pub fn encode_status(track_on: bool, estop: bool, out: &mut [u8]) -> usize {
 ///   [10-11] Temperature        i16 °C  (nominal 25)
 ///   [12-13] SupplyVoltage      u16 mV  (nominal 18 V)
 ///   [14-15] VCCVoltage         u16 mV  (nominal 3.3 V)
-///   [16]   CentralState: bit0=EmergencyStop, bit1=TrackVoltageOff, bit2=ShortCircuit
-///   [17]   CentralStateEx (0)
+///   \[16\]   CentralState: bit0=EmergencyStop, bit1=TrackVoltageOff, bit2=ShortCircuit
+///   \[17\]   CentralStateEx (0)
 ///   [18-19] reserved
 pub fn encode_system_state(
     track_on: bool,

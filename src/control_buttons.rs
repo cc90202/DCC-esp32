@@ -19,7 +19,8 @@
 //! # Button Behavior
 //!
 //! **Stop Button:**
-//! - Press → sends `FaultEvent::StopPressed` → transitions to EstopLatched state → cuts track power
+//! - Press → cuts track power immediately, then sends `FaultEvent::StopPressed`
+//!   to latch EstopLatched state
 //! - Release → no action (state remains latched)
 //!
 //! **Resume Button:**
@@ -160,6 +161,7 @@ pub async fn stop_button_task(
     loop {
         wait_for_debounced_press(&mut stop_button).await;
         defmt::info!("STOP pressed");
+        crate::track_safety::disable_track_intentionally();
         fault_sender
             .send(crate::system_status::FaultEvent::StopPressed)
             .await;

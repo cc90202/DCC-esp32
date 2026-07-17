@@ -27,29 +27,28 @@
 //! - 13-20 = F13-F20 (Function Group 3)
 //! - 21-28 = F21-F28 (Function Group 4)
 
+use crate::dcc::PomRequestId;
 use crate::dcc::packet::{DccAddress, DccPacket, Direction};
-#[cfg(target_arch = "riscv32")]
-use crate::dcc::{CutoutMode, DccFrame};
-#[cfg(target_arch = "riscv32")]
-use embassy_time::Instant;
 
-#[cfg(target_arch = "riscv32")]
-use railcom_discovery::RailcomDiscovery;
-#[cfg(target_arch = "riscv32")]
-use railcom_policy::record_track_search_throttled;
-#[cfg(target_arch = "riscv32")]
-use railcom_policy::{PacketClass, RailcomCutoutBudget};
-#[cfg(target_arch = "riscv32")]
-use slot_manager::allowed_slot_visits_without_function;
-
+#[cfg(any(test, target_arch = "riscv32"))]
+mod core;
 #[cfg(target_arch = "riscv32")]
 mod railcom_discovery;
 mod railcom_policy;
+#[cfg(target_arch = "riscv32")]
+mod runtime;
+#[cfg(any(test, target_arch = "riscv32"))]
 mod slot_manager;
 
+#[cfg(any(test, target_arch = "riscv32"))]
 pub use railcom_policy::{RailcomSchedulerStats, railcom_scheduler_stats};
+#[cfg(target_arch = "riscv32")]
+pub use runtime::{
+    LocoRequestChannel, LocoResponseChannel, SchedulerCommandChannel, packet_scheduler_task,
+};
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) use slot_manager::PENDING_POM_CAPACITY;
+#[cfg(any(test, target_arch = "riscv32"))]
 pub use slot_manager::SlotManager;
 
 /// Speed format for a locomotive slot
@@ -67,19 +66,18 @@ pub enum SpeedFormat {
 /// - Speed28  → `1..=28`  = speed steps
 /// - Speed128 → `1..=126` = speed steps
 ///
-/// The valid range depends on the [`SpeedFormat`] the value is validated
-/// against at construction time. The format itself is *not* stored inside
-/// this type - callers keep tracking it alongside (e.g. `Slot::format`,
-/// `SchedulerCommand::SetSpeed::format`), exactly as before this newtype
-/// existed. This is the single place that knows the logical speed ranges;
-/// there is no other validation of these ranges anywhere else in the crate.
+/// The format is stored with the value so a speed validated for one format
+/// cannot later be paired with another format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct LogicalSpeed(u8);
+pub struct LogicalSpeed {
+    value: u8,
+    format: SpeedFormat,
+}
 
 impl LogicalSpeed {
-    /// Stop, valid for any [`SpeedFormat`].
-    pub const ZERO: Self = Self(0);
+    /// Backward-compatible Speed28 stop value for internal scheduler tests.
+    pub const ZERO: Self = Self::zero(SpeedFormat::Speed28);
 
     /// Validate `value` as a logical speed for `format`.
     #[must_use]
@@ -88,13 +86,30 @@ impl LogicalSpeed {
             SpeedFormat::Speed28 => value <= 28,
             SpeedFormat::Speed128 => value <= 126,
         };
-        in_range.then_some(Self(value))
+        in_range.then_some(Self { value, format })
+    }
+
+    /// Build a stopped speed in the requested format.
+    #[must_use]
+    pub const fn zero(format: SpeedFormat) -> Self {
+        Self { value: 0, format }
     }
 
     /// Return the raw logical speed value.
     #[must_use]
     pub const fn value(self) -> u8 {
-        self.0
+        self.value
+    }
+
+    /// Return the format against which this speed was validated.
+    #[must_use]
+    pub const fn format(self) -> SpeedFormat {
+        self.format
+    }
+
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.value == 0
     }
 }
 
@@ -105,6 +120,7 @@ const MAX_FUNCTION_INDEX: u8 = 28;
 
 /// Validated function index (F0..F28).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct FunctionIndex(u8);
 
 /// Error returned when function index is out of range.
@@ -125,6 +141,139 @@ impl FunctionIndex {
     }
 }
 
+/// Correlates one network locomotive request with its scheduler response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct LocoRequestId(u32);
+
+impl LocoRequestId {
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+/// Monotonic scheduler tick after which a network request must not mutate
+/// locomotive state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct LocoRequestDeadline(u64);
+
+impl LocoRequestDeadline {
+    #[must_use]
+    pub const fn from_ticks(ticks: u64) -> Self {
+        Self(ticks)
+    }
+
+    #[must_use]
+    pub const fn is_expired_at(self, now_ticks: u64) -> bool {
+        now_ticks >= self.0
+    }
+}
+
+/// Authoritative scheduler state exposed across the network boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct LocoSnapshot {
+    pub address: DccAddress,
+    pub speed: LogicalSpeed,
+    pub direction: Direction,
+    pub functions: u32,
+}
+
+/// Requested change to one locomotive function.
+///
+/// Keeping `Toggle` inside the scheduler boundary ensures that the operation is
+/// resolved against authoritative state, not against a possibly stale network
+/// projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum FunctionChange {
+    Enable,
+    Disable,
+    Toggle,
+}
+
+/// Locomotive operation requested by the network adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum LocoRequest {
+    GetState {
+        address: DccAddress,
+    },
+    EnsureRefresh {
+        address: DccAddress,
+        format: SpeedFormat,
+    },
+    SetSpeed {
+        address: DccAddress,
+        speed: LogicalSpeed,
+        direction: Direction,
+    },
+    SetFunction {
+        address: DccAddress,
+        function: FunctionIndex,
+        change: FunctionChange,
+    },
+    EmergencyStop {
+        address: DccAddress,
+    },
+}
+
+impl LocoRequest {
+    #[must_use]
+    pub const fn address(self) -> DccAddress {
+        match self {
+            Self::GetState { address }
+            | Self::EnsureRefresh { address, .. }
+            | Self::SetSpeed { address, .. }
+            | Self::SetFunction { address, .. }
+            | Self::EmergencyStop { address } => address,
+        }
+    }
+}
+
+/// One correlated request placed on the scheduler boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct LocoRequestMessage {
+    pub request_id: LocoRequestId,
+    pub request: LocoRequest,
+    pub deadline: LocoRequestDeadline,
+}
+
+/// Result of applying a locomotive request to scheduler-owned state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum LocoRequestResult {
+    Found(LocoSnapshot),
+    Inserted(LocoSnapshot),
+    Updated(LocoSnapshot),
+    Replaced {
+        removed: DccAddress,
+        inserted: LocoSnapshot,
+    },
+    Full,
+    NotFound,
+    Rejected,
+    Expired,
+}
+
+/// Scheduler response carrying the request identity unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct LocoResponse {
+    pub request_id: LocoRequestId,
+    pub result: LocoRequestResult,
+}
+
 impl TryFrom<u8> for FunctionIndex {
     type Error = InvalidFunctionIndex;
 
@@ -136,35 +285,23 @@ impl TryFrom<u8> for FunctionIndex {
 /// Command messages sent to the packet scheduler actor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedulerCommand {
-    SetSpeed {
-        address: DccAddress,
-        speed: LogicalSpeed,
-        direction: Direction,
-        format: SpeedFormat,
-    },
-    SetFunction {
-        address: DccAddress,
-        function: FunctionIndex,
-        enabled: bool,
-    },
     EmergencyStopAll,
-    EmergencyStop {
-        address: DccAddress,
-    },
     ProgramOnMain {
+        request_id: PomRequestId,
         packet: DccPacket,
+    },
+    CloseProgramOnMain {
+        request_id: PomRequestId,
     },
     /// Stop startup RailCom discovery traffic before latency-sensitive POM.
     ///
     /// Discovery is useful while idle, but during POM reads CH2 must be left
     /// free for app:pom instead of logon/search responses.
     SuspendRailcomDiscovery,
+    /// Start a fresh discovery window after track power is physically enabled.
+    RestartRailcomDiscovery,
     /// Ensure periodic packets exist for a decoder address so RailCom feedback
     /// that is emitted after a POM command can be attributed to that decoder.
-    EnsureRailcomRefresh {
-        address: DccAddress,
-        format: SpeedFormat,
-    },
     /// Send one RailCom-related packet with a telemetry cutout.
     RailcomTelemetry {
         packet: DccPacket,
@@ -211,106 +348,6 @@ fn advance_safety_send_timeout_streak(streak: u8, timed_out: bool) -> u8 {
         streak.saturating_add(1)
     } else {
         0
-    }
-}
-
-// --- Embedded-only scheduler task ---
-#[cfg(target_arch = "riscv32")]
-use embassy_futures::yield_now;
-
-#[cfg(target_arch = "riscv32")]
-pub type SchedulerCommandChannel = embassy_sync::channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    SchedulerCommand,
-    32,
->;
-
-#[cfg(target_arch = "riscv32")]
-pub async fn packet_scheduler_task(
-    command_receiver: embassy_sync::channel::Receiver<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SchedulerCommand,
-        32,
-    >,
-    sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        DccFrame,
-        16,
-    >,
-    display_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::system_status::DisplayEvent,
-        8,
-    >,
-) -> ! {
-    let mut slot_manager = SlotManager::new();
-    let mut prev_slot_count: usize = 0;
-    let mut railcom_budget = RailcomCutoutBudget::new();
-    let mut discovery = RailcomDiscovery::new(Instant::now());
-
-    loop {
-        // Drain all pending commands before generating the next packet.
-        // Commands are processed with at most one packet interval (~8 ms) of latency.
-        while let Ok(cmd) = command_receiver.try_receive() {
-            let accepted = if matches!(cmd, SchedulerCommand::SuspendRailcomDiscovery) {
-                discovery.suspend(Instant::now());
-                true
-            } else {
-                slot_manager.apply_command(cmd)
-            };
-            if accepted && matches!(cmd, SchedulerCommand::Resume) {
-                discovery.restart(Instant::now());
-                defmt::info!("railcom discovery: restarted");
-            }
-            if !accepted {
-                defmt::warn!("scheduler command rejected");
-            }
-        }
-
-        let slot_count = slot_manager.slot_count();
-        if slot_count != prev_slot_count {
-            prev_slot_count = slot_count;
-            let _ = display_sender.try_send(crate::system_status::DisplayEvent::ActiveLocoCount(
-                slot_count as u8,
-            ));
-        }
-        let (mut packet, class) = slot_manager
-            .build_next_packet_classified_with_function_budget(
-                allowed_slot_visits_without_function(slot_count.max(1)),
-            )
-            .unwrap_or((DccPacket::Idle, PacketClass::Idle));
-        let now = Instant::now();
-        let idle_discovery_due = matches!(class, PacketClass::Idle) && discovery.is_due(now);
-        let cutout_requested = !matches!(class, PacketClass::Idle) || idle_discovery_due;
-        let cutout_allowed = if cutout_requested {
-            railcom_budget.allow_cutout_for(class)
-        } else {
-            railcom_budget.note_packet_without_cutout();
-            false
-        };
-        if idle_discovery_due {
-            if cutout_allowed {
-                packet = discovery.take_next_idle_packet(now);
-            } else {
-                record_track_search_throttled();
-            }
-        }
-        let cutout = match (cutout_allowed, class) {
-            (true, PacketClass::Programming) => CutoutMode::Pom,
-            (true, _) => CutoutMode::Telemetry,
-            (false, _) => CutoutMode::None,
-        };
-        let to_send = DccFrame::new(packet, cutout);
-
-        // send().await blocks until engine drains the channel - natural backpressure.
-        // This paces the scheduler exactly to the engine's transmission rate (~8 ms/packet),
-        // eliminating the old 120 ms tick that starved the channel with idle packets.
-        sender.send(to_send).await;
-
-        yield_now().await;
     }
 }
 

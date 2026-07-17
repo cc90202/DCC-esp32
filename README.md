@@ -37,7 +37,7 @@ and runtime status/reporting.
 
 ## What This Software Does
 
-- Generates gap-free DCC waveforms via ISR-driven RMT (interrupt swaps packets during preamble playback)
+- Generates gap-free DCC waveforms via ISR-driven RMT (interrupt swaps packets during preamble playback, CPU overhead <0.4%)
 - Encodes NMRA DCC packets for locomotive control and service mode
 - Continuously refreshes active locomotive state on the track
 - Controls up to 12 active DCC locomotives/decoders simultaneously without signal degradation
@@ -50,7 +50,14 @@ and runtime status/reporting.
 
 Read these first before wiring or powering anything:
 
-- [Breadboard Wiring Guide](docs/hardware/breadboard-wiring-guide.md)
+- [Hardware Documentation Index](docs/hardware/README.md)
+
+The project currently documents two track-driver options:
+
+- **BTS7960**: higher-current H-bridge option, with older breadboard and RailCom
+  notes still preserved.
+- **DRV8874 / Pololu #4035**: compact bench option now used for the current
+  DRV8874 bring-up and recovery testing.
 
 Important:
 
@@ -85,7 +92,8 @@ Important:
    using the stored credentials.
 
 3. To re-enter setup mode later, hold the blue Resume button on GPIO21 for at
-   least 10 seconds.
+   least 10 seconds, then release it. The board reboots and starts the setup
+   access point. This also works when the saved home WiFi network is absent.
 
    Short GPIO21 presses still perform Resume. A press below the 10 second setup
    threshold does not enter WiFi setup. The red Stop button on GPIO22 remains
@@ -115,6 +123,7 @@ Custom aliases are defined in `.cargo/config.toml` for common workflows:
 | `cargo check-esp` | Type-check for ESP32-C6 target (no flash) |
 | `cargo build-esp` | Build firmware for ESP32-C6 |
 | `cargo build-esp-release` | Release build (LTO enabled) |
+| `bash scripts/check-isr-ram.sh` | Verify RMT/cutout ISR symbols are linked in internal RAM |
 | `cargo clippy-host` | Lint for host target |
 | `cargo clippy-esp` | Lint for ESP32-C6 target |
 | `cargo run` | Flash to device via espflash and monitor |

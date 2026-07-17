@@ -1,5 +1,7 @@
-//! Network layer - WiFi + Z21 UDP control.
+//! Network infrastructure - WiFi, provisioning, and UDP transport adapters.
 
+#[cfg(any(test, target_arch = "riscv32"))]
+mod loco_client;
 #[cfg(target_arch = "riscv32")]
 mod pom_client;
 #[cfg(any(test, target_arch = "riscv32"))]
@@ -16,8 +18,17 @@ pub mod udp_control;
 mod wifi;
 pub mod wifi_config;
 #[cfg(target_arch = "riscv32")]
+mod z21_context;
+#[cfg(target_arch = "riscv32")]
 mod z21_dispatch;
-pub mod z21_proto;
+#[cfg(target_arch = "riscv32")]
+pub(crate) use loco_client::loco_response_timeout_count;
+#[cfg(target_arch = "riscv32")]
+pub(crate) use udp_control::{status_broadcast_send_failure_count, udp_receive_failure_count};
+#[cfg(target_arch = "riscv32")]
+pub(crate) use z21_dispatch::{loco_command_rejected_count, railcom_getdata_no_data_count};
+// Compatibility alias for callers using the former protocol path.
+pub use crate::z21 as z21_proto;
 
 // esp-radio 0.17.0 defines these stubs only for Xtensa chips (#[cfg(xtensa)]).
 // On RISC-V (ESP32-C6) the precompiled WiFi library still references them via
@@ -34,63 +45,5 @@ mod esp_radio_stubs {
     #[unsafe(no_mangle)]
     unsafe extern "C" fn __esp_radio_misc_nvs_init() -> i32 {
         0
-    }
-}
-
-use crate::dcc::{DccAddress, Direction, SpeedFormat};
-
-/// Mirror of the commanded loco state kept by the net task.
-///
-/// `speed` is the logical protocol speed for the current format:
-/// - Speed28  → 0-28  (0=stop, 1-28=speed steps)
-/// - Speed128 → 0-126 (0=stop, 1-126=speed steps; wire value 1 is reserved for e-stop)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocoState {
-    pub address: DccAddress,
-    pub speed: u8,
-    pub direction: Direction,
-    pub format: SpeedFormat,
-    /// F0-F28 bitmask, bit N = F(N), F0=bit0
-    pub functions: u32,
-}
-
-/// Fixed-size loco slot array - no heap alloc.
-pub type LocoSlots = [Option<LocoState>; 12];
-
-/// Returns whether a logical loco speed represents motion for its DCC format.
-#[must_use]
-pub const fn loco_is_moving(speed: u8, format: SpeedFormat) -> bool {
-    match format {
-        SpeedFormat::Speed28 => speed > 0,
-        SpeedFormat::Speed128 => speed > 0,
-    }
-}
-
-/// Returns whether loco motion/function commands may mutate runtime state.
-#[must_use]
-pub const fn loco_commands_allowed(track_power_on: bool) -> bool {
-    track_power_on
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_speed28_motion_threshold_includes_step_one() {
-        assert!(!loco_is_moving(0, SpeedFormat::Speed28));
-        assert!(loco_is_moving(1, SpeedFormat::Speed28));
-    }
-
-    #[test]
-    fn test_speed128_motion_threshold_includes_step_one() {
-        assert!(!loco_is_moving(0, SpeedFormat::Speed128));
-        assert!(loco_is_moving(1, SpeedFormat::Speed128));
-    }
-
-    #[test]
-    fn test_loco_commands_blocked_when_track_power_off() {
-        assert!(!loco_commands_allowed(false));
-        assert!(loco_commands_allowed(true));
     }
 }
