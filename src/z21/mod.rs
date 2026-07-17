@@ -23,11 +23,10 @@
 //! - **RailcomGetData** — Poll cached RailCom data
 //! - **GetTurnoutInfo** — Query accessory decoder state (returns unknown)
 
-use crate::dcc::{DccAddress, Direction, SpeedFormat};
+use crate::dcc::{DccAddress, Direction, LogicalSpeed, SpeedFormat};
 
 mod encoding;
 mod parsing;
-mod slots;
 #[cfg(test)]
 mod tests;
 mod wire;
@@ -38,59 +37,45 @@ pub use encoding::{
     encode_railcom_data, encode_serial_number, encode_status, encode_system_state,
     encode_turnout_info, encode_unknown_command, encode_xbus_version,
 };
-pub use parsing::{FrameIter, iter_frames, parse_frame};
-pub use slots::{find_or_insert, find_slot};
+pub use parsing::{FrameIter, frame_kind, iter_frames, parse_frame};
 #[cfg(target_arch = "riscv32")]
 pub(crate) use wire::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
+
+/// Locomotive state required to encode a `LAN_X_LOCO_INFO` frame.
+///
+/// This wire-facing view keeps the protocol contract independent from the
+/// application's projection types. Network adapters are responsible for
+/// mapping their state into this representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct LocoInfo {
+    pub address: DccAddress,
+    pub speed: LogicalSpeed,
+    pub direction: Direction,
+    pub functions: u32,
+}
 
 /// `LAN_SET_BROADCASTFLAGS` payload — an OR-combination of Z21 broadcast
 /// subscription bits (Z21 LAN Protocol Specification v1.13, §2.16).
 ///
-/// We currently push all relevant broadcasts unconditionally rather than
-/// gating on the subscribed set, so `SetBroadcastFlags` only needs to parse
-/// and store the value (see `dispatch_command`'s handling of this variant).
-/// The named accessors document the handful of bits apps are known to rely
-/// on, without committing to modeling the full 32-bit set.
+/// The parser preserves the raw payload in the command. Broadcast delivery is
+/// currently unconditional, so no bit-level policy is exposed here yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct BroadcastFlags(u32);
 
 impl BroadcastFlags {
-    /// §2.16 `0x00000001` — driving/switching broadcasts (track power,
-    /// programming mode, short circuit, stopped, loco info, turnout info).
-    const BASIC_DRIVING_AND_SWITCHING: u32 = 0x0000_0001;
-    /// §2.16 `0x00000100` — `LAN_SYSTEMSTATE_DATACHANGED` broadcasts.
-    const SYSTEM_STATUS: u32 = 0x0000_0100;
-    /// §2.16 `0x00000004` — `LAN_RAILCOM_DATACHANGED` for subscribed locos.
-    const RAILCOM_DATA: u32 = 0x0000_0004;
-
     #[must_use]
     pub const fn new(raw: u32) -> Self {
         Self(raw)
     }
+}
 
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        self.0
-    }
-
-    /// `0x00000001` — driving/switching broadcasts requested.
-    #[must_use]
-    pub const fn basic_driving_and_switching(self) -> bool {
-        (self.0 & Self::BASIC_DRIVING_AND_SWITCHING) != 0
-    }
-
-    /// `0x00000100` — system status broadcasts requested.
-    #[must_use]
-    pub const fn system_status(self) -> bool {
-        (self.0 & Self::SYSTEM_STATUS) != 0
-    }
-
-    /// `0x00000004` — RailCom data broadcasts requested.
-    #[must_use]
-    pub const fn railcom_data(self) -> bool {
-        (self.0 & Self::RAILCOM_DATA) != 0
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct FrameKind {
+    pub header: u16,
+    pub xheader: u8,
 }
 
 /// Parsed Z21 command from an incoming UDP frame.
@@ -147,11 +132,11 @@ pub enum Z21Command {
     /// LAN_X_GET_TURNOUT_INFO — accessory decoder state request.
     /// We have no accessory decoder support; respond with state=0 (unknown).
     GetTurnoutInfo {
-        address: u16,
+        address: DccAddress,
     },
     RailcomGetData {
         request_type: u8,
-        address: u16,
+        address: Option<DccAddress>,
     },
     /// `LAN_LOCONET_DETECTOR` — LocoNet track occupancy detector query.
     /// We have no LocoNet detector support; the parser only validates frame
@@ -176,5 +161,6 @@ pub enum ParseError {
     BadXBusChecksum,
     InvalidAddress,
     InvalidFunction,
+    InvalidFunctionAction,
     InvalidCvAddress,
 }

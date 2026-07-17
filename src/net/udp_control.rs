@@ -9,6 +9,7 @@
 //! in `pom_client`, and RailCom sighting lookups in `railcom_lookup`.
 
 use core::cell::Cell;
+use core::sync::atomic::{AtomicU32, Ordering};
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
@@ -19,26 +20,40 @@ use embassy_time::{Instant, Timer};
 use esp_hal::rng::Rng;
 use static_cell::StaticCell;
 
+use crate::application::LocoSlots;
+use crate::application::StatusModel;
+use crate::application::client_safety::ClientSafetyPolicy;
+use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
 use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
-use crate::dcc::{LogicalSpeed, PomRequest, PomResponse, SchedulerCommand};
+use crate::dcc::{LocoRequestMessage, LocoResponse, PomRequest, PomResponse, SchedulerCommand};
 use crate::net::wifi_config::WifiCredentials;
-use crate::net::z21_dispatch::{encode_current_system_state, handle_packet, handle_status_event};
-use crate::net::z21_proto::{self, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
-use crate::net::{LocoSlots, loco_is_moving};
-use crate::system_status::{DisplayEvent, FaultEvent, StatusModel, SystemStatusEvent};
+use crate::net::z21_context::Z21Ctx;
+use crate::net::z21_dispatch::{encode_system_state, handle_packet};
+use crate::system_status::{DisplayEvent, FaultEvent, SystemStatusEvent};
+use crate::z21::{self as z21_proto, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 
 pub use super::wifi::NetInitError;
 use super::{radio, wifi};
 
 const Z21_PORT: u16 = 21105;
-const DECEL_STEP_MS: u64 = 500;
-
 // Static buffers — avoids heap allocation in the hot UDP path.
 static RX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static NET_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static STATUS_BROADCAST_SEND_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
+static UDP_RECEIVE_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[must_use]
+pub(crate) fn status_broadcast_send_failure_count() -> u32 {
+    STATUS_BROADCAST_SEND_FAILURE_COUNT.load(Ordering::Relaxed)
+}
+
+#[must_use]
+pub(crate) fn udp_receive_failure_count() -> u32 {
+    UDP_RECEIVE_FAILURE_COUNT.load(Ordering::Relaxed)
+}
 
 pub struct NetTaskChannels {
     pub net_status: Receiver<'static, CriticalSectionRawMutex, SystemStatusEvent, 8>,
@@ -48,24 +63,8 @@ pub struct NetTaskChannels {
         Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
     pub pom_request_sender: Sender<'static, CriticalSectionRawMutex, PomRequest, 1>,
     pub pom_response_receiver: Receiver<'static, CriticalSectionRawMutex, PomResponse, 1>,
-}
-
-/// Shared dependencies threaded through the Z21 command handlers.
-///
-/// Grouping the channels and shared state here avoids a 7-9 argument sprawl
-/// on every handler; per-call buffers (`out`, `loco_slots`) stay explicit
-/// because they are mutated per invocation. Visible to sibling `net`
-/// submodules (`z21_dispatch`, `pom_client`) that implement the handlers.
-pub(super) struct Z21Ctx<'a> {
-    pub(super) scheduler_sender: &'a Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    pub(super) fault_sender: &'a Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
-    pub(super) status_model: &'a StatusModel,
-    pub(super) pom_request_sender: &'a Sender<'static, CriticalSectionRawMutex, PomRequest, 1>,
-    pub(super) pom_response_receiver:
-        &'a Receiver<'static, CriticalSectionRawMutex, PomResponse, 1>,
-    /// Local (non-atomic) POM request id counter — this task is the sole
-    /// producer of POM requests, so a `Cell` is enough.
-    pub(super) next_pom_request_id: &'a Cell<u32>,
+    pub loco_request_sender: Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
+    pub loco_response_receiver: Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
 }
 
 /// Main net task — WiFi init, DHCP, Z21 UDP control loop.
@@ -87,6 +86,8 @@ pub async fn net_task(
         ready_sender,
         pom_request_sender,
         pom_response_receiver,
+        loco_request_sender,
+        loco_response_receiver,
     } = channels;
 
     let (wifi_ctrl, interfaces) = radio::start_wifi(wifi, &wifi::client_mode_config(&credentials))
@@ -138,12 +139,10 @@ pub async fn net_task(
         .await;
 
     let mut loco_slots: LocoSlots = [None; 12];
-    let mut client_endpoint: Option<embassy_net::IpEndpoint> = None;
-    let mut last_rx_ms: u64 = 0;
-    let mut last_decel_ms: u64 = 0;
-    let mut all_stopped = false;
+    let mut client_safety = ClientSafetyPolicy::new(Z21_KEEPALIVE_TIMEOUT_MS);
     let mut status_model = StatusModel::new();
     let next_pom_request_id = Cell::new(1u32);
+    let next_loco_request_id = Cell::new(1u32);
 
     let mut recv_buf = [0u8; 256];
     let mut send_buf = [0u8; 64];
@@ -151,14 +150,7 @@ pub async fn net_task(
     loop {
         let now_ms = Instant::now().as_millis();
 
-        let next_wake = if client_endpoint.is_some()
-            && now_ms.saturating_sub(last_rx_ms) >= Z21_KEEPALIVE_TIMEOUT_MS
-            && !all_stopped
-        {
-            Instant::from_millis(last_decel_ms + DECEL_STEP_MS)
-        } else {
-            Instant::from_millis(last_rx_ms + Z21_KEEPALIVE_TIMEOUT_MS + 1)
-        };
+        let next_wake = Instant::from_millis(client_safety.next_wake_ms(now_ms));
 
         use embassy_futures::select::{Either3, select3};
 
@@ -171,31 +163,21 @@ pub async fn net_task(
         {
             // ── Incoming UDP packet ──────────────────────────────────
             Either3::First(Ok((n, meta))) => {
-                let header = if n >= 4 {
-                    u16::from_le_bytes([recv_buf[2], recv_buf[3]])
-                } else {
-                    0
-                };
+                let kind = z21_proto::frame_kind(&recv_buf[..n]);
                 // Suppress per-second polling noise (SystemState, XBus status)
-                let is_polling = header == HEADER_SYSTEMSTATE_GETDATA || header == HEADER_XBUS;
+                let is_polling =
+                    kind.header == HEADER_SYSTEMSTATE_GETDATA || kind.header == HEADER_XBUS;
                 if !is_polling {
-                    let xheader = if header == HEADER_XBUS && n >= 5 {
-                        recv_buf[4]
-                    } else {
-                        0
-                    };
                     info!(
                         "UDP rx {} bytes from {} — header=0x{:04X} xheader=0x{:02X}",
                         n,
                         defmt::Display2Format(&meta.endpoint),
-                        header,
-                        xheader
+                        kind.header,
+                        kind.xheader
                     );
                 }
 
-                last_rx_ms = Instant::now().as_millis();
-                client_endpoint = Some(meta.endpoint);
-                all_stopped = false;
+                client_safety.observe_packet(meta.endpoint, Instant::now().as_millis());
 
                 // A Z21 UDP datagram may contain multiple concatenated frames.
                 // Process each frame and send its response individually.
@@ -206,6 +188,9 @@ pub async fn net_task(
                     pom_request_sender: &pom_request_sender,
                     pom_response_receiver: &pom_response_receiver,
                     next_pom_request_id: &next_pom_request_id,
+                    loco_request_sender: &loco_request_sender,
+                    loco_response_receiver: &loco_response_receiver,
+                    next_loco_request_id: &next_loco_request_id,
                 };
                 for frame in z21_proto::iter_frames(&recv_buf[..n]) {
                     let resp_len = handle_packet(frame, &mut loco_slots, &mut send_buf, &ctx).await;
@@ -219,87 +204,54 @@ pub async fn net_task(
                     }
                 }
             }
-            Either3::First(Err(_)) => {
-                // Receive error — continue.
+            Either3::First(Err(_err)) => {
+                UDP_RECEIVE_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
+                warn!("Z21 UDP receive failed");
             }
 
             // ── System status event ──────────────────────────────────
             Either3::Second(event) => {
                 status_model.apply(event);
-                if let Some(ep) = client_endpoint {
-                    if matches!(event, SystemStatusEvent::FaultLatched(_)) {
-                        let n = z21_proto::encode_bc_track_power(false, &mut send_buf);
-                        let _ = socket.send_to(&send_buf[..n], ep).await;
-                        let n = z21_proto::encode_bc_stopped(&mut send_buf);
-                        let _ = socket.send_to(&send_buf[..n], ep).await;
-                        let n = encode_current_system_state(&status_model, &mut send_buf);
-                        let _ = socket.send_to(&send_buf[..n], ep).await;
-                    } else if matches!(event, SystemStatusEvent::FaultCleared) {
-                        let n = z21_proto::encode_bc_track_power(true, &mut send_buf);
-                        let _ = socket.send_to(&send_buf[..n], ep).await;
-                        let n = encode_current_system_state(&status_model, &mut send_buf);
-                        let _ = socket.send_to(&send_buf[..n], ep).await;
-                    } else {
-                        let n = handle_status_event(event, &mut send_buf);
-                        if n > 0 {
-                            let _ = socket.send_to(&send_buf[..n], ep).await;
+                if let Some(ep) = client_safety.active_client() {
+                    let status = TrackStatus::from_model(status_model);
+                    let plan = plan_status_broadcast(event, status);
+                    for message in plan.messages.into_iter().flatten() {
+                        let n = match message {
+                            StatusBroadcast::TrackPower(enabled) => {
+                                z21_proto::encode_bc_track_power(enabled, &mut send_buf)
+                            }
+                            StatusBroadcast::Stopped => z21_proto::encode_bc_stopped(&mut send_buf),
+                            StatusBroadcast::SystemState(status) => {
+                                encode_system_state(status, &mut send_buf)
+                            }
+                        };
+                        if socket.send_to(&send_buf[..n], ep).await.is_err() {
+                            STATUS_BROADCAST_SEND_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
+                            warn!("Z21 status broadcast send failed");
                         }
                     }
                 }
             }
 
-            // ── Timer tick (keepalive deceleration) ──────────────────
+            // ── Timer tick (client safety timeout) ───────────────────
             Either3::Third(_) => {
-                if let Some(ep) = client_endpoint {
-                    let elapsed = Instant::now().as_millis().saturating_sub(last_rx_ms);
-                    if elapsed >= Z21_KEEPALIVE_TIMEOUT_MS {
-                        last_decel_ms = Instant::now().as_millis();
-                        let any_moving =
-                            handle_keepalive_timeout(&mut loco_slots, &scheduler_sender).await;
-                        if !any_moving && !all_stopped {
-                            all_stopped = true;
-                            scheduler_sender
-                                .send(SchedulerCommand::EmergencyStopAll)
-                                .await;
-                            let n = z21_proto::encode_bc_stopped(&mut send_buf);
-                            let _ = socket.send_to(&send_buf[..n], ep).await;
-                            client_endpoint = None;
-                            info!("Client keepalive timeout: all locos stopped");
-                        }
+                if let Some(timeout) = client_safety.on_timer(Instant::now().as_millis()) {
+                    // Cut the bridge immediately; the fault manager then
+                    // latches the stop and synchronises scheduler/status.
+                    crate::track_safety::disable_track_intentionally();
+                    fault_sender.send(FaultEvent::StopPressed).await;
+                    let n = z21_proto::encode_bc_stopped(&mut send_buf);
+                    if socket
+                        .send_to(&send_buf[..n], timeout.client)
+                        .await
+                        .is_err()
+                    {
+                        STATUS_BROADCAST_SEND_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
+                        warn!("Z21 stopped broadcast send failed after client timeout");
                     }
+                    info!("Client keepalive timeout: track output disabled");
                 }
             }
         }
     }
-}
-
-async fn handle_keepalive_timeout(
-    loco_slots: &mut LocoSlots,
-    scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-) -> bool {
-    let mut any_moving = false;
-    for slot in loco_slots.iter_mut().flatten() {
-        if loco_is_moving(slot.speed, slot.format) {
-            slot.speed -= 1;
-            any_moving = true;
-            let Some(speed) = LogicalSpeed::new(slot.speed, slot.format) else {
-                warn!(
-                    "keepalive decel addr={} speed={} invalid for format={:?}, skipping",
-                    slot.address.value(),
-                    slot.speed,
-                    slot.format
-                );
-                continue;
-            };
-            scheduler_sender
-                .send(SchedulerCommand::SetSpeed {
-                    address: slot.address,
-                    speed,
-                    direction: slot.direction,
-                    format: slot.format,
-                })
-                .await;
-        }
-    }
-    any_moving
 }

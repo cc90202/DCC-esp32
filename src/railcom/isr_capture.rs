@@ -6,7 +6,7 @@
 //!
 //! Honesty note: this path does not detect UART framing errors or line
 //! glitches. It only classifies a window as "oversized" when the captured
-//! FIFO snapshot exceeds `MAX_CAPTURE_BYTES`, which is an overflow condition,
+//! FIFO snapshot exceeds `MAX_RAILCOM_WINDOW_BYTES`, which is an overflow condition,
 //! not evidence of corrupted data. If framing-error detection is ever needed,
 //! it must be read from the UART1 hardware status/interrupt flags (e.g.
 //! `RXFIFO_OVF`, parity/frame error bits) at capture time — no such logic
@@ -21,24 +21,25 @@ use esp_hal::uart::UartRx;
 use heapless::Vec;
 
 use crate::railcom::pipeline::{
-    RailcomChannel, RailcomRxWindow, RailcomRxWindowError, process_rx_window,
-    record_oversized_window, record_rx_overflows,
+    MAX_RAILCOM_WINDOW_BYTES, RailcomChannel, RailcomRxWindow, RailcomRxWindowError,
+    process_rx_window, record_oversized_window, record_rx_overflows,
 };
 use crate::railcom::uart_reader::{RailcomRxOutput, RailcomUartWindowError};
 
 const CAPTURE_RING_CAPACITY: usize = 64;
-const MAX_CAPTURE_BYTES: usize = 6;
 
 static CAPTURE_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 static CAPTURE_READY: AtomicBool = AtomicBool::new(false);
+static CAPTURE_GENERATIONS: [AtomicU32; CAPTURE_RING_CAPACITY] =
+    [const { AtomicU32::new(0) }; CAPTURE_RING_CAPACITY];
 static CAPTURE_SEQUENCES: [AtomicU32; CAPTURE_RING_CAPACITY] =
     [const { AtomicU32::new(0) }; CAPTURE_RING_CAPACITY];
 static CAPTURE_CHANNELS: [AtomicU8; CAPTURE_RING_CAPACITY] =
     [const { AtomicU8::new(0) }; CAPTURE_RING_CAPACITY];
 static CAPTURE_LENS: [AtomicU8; CAPTURE_RING_CAPACITY] =
     [const { AtomicU8::new(0) }; CAPTURE_RING_CAPACITY];
-static CAPTURE_BYTES: [[AtomicU8; MAX_CAPTURE_BYTES]; CAPTURE_RING_CAPACITY] =
-    [const { [const { AtomicU8::new(0) }; MAX_CAPTURE_BYTES] }; CAPTURE_RING_CAPACITY];
+static CAPTURE_BYTES: [[AtomicU8; MAX_RAILCOM_WINDOW_BYTES]; CAPTURE_RING_CAPACITY] =
+    [const { [const { AtomicU8::new(0) }; MAX_RAILCOM_WINDOW_BYTES] }; CAPTURE_RING_CAPACITY];
 
 type CaptureNotifyChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, u8, 1>;
 static CAPTURE_NOTIFY: CaptureNotifyChannel = CaptureNotifyChannel::new();
@@ -48,7 +49,7 @@ struct CapturedWindow {
     packet_sequence: u32,
     channel: RailcomChannel,
     len: usize,
-    bytes: [u8; MAX_CAPTURE_BYTES],
+    bytes: [u8; MAX_RAILCOM_WINDOW_BYTES],
 }
 
 struct RailcomIsrCaptureUart {
@@ -112,17 +113,12 @@ pub fn open_window_from_isr() {
     uart1_reset_rx_fifo();
 }
 
-// Publication protocol note (contrast with the seqlock pattern documented on
-// `track_output::record_railcom_packet_metadata_from_isr`): this ring does
-// *not* need a zero-sentinel pre-store. All per-slot fields below are written
-// with `Relaxed` ordering, but the single `CAPTURE_WRITE_COUNT` store that
-// follows them uses `Release`, and `drain_captured_windows` only reads a slot
-// after an `Acquire` load of `CAPTURE_WRITE_COUNT` proves that slot's writes
-// already happened (single ISR-side writer, so program order plus one
-// Release/Acquire pair on the counter is enough to publish the whole slot
-// atomically as a unit). Do not "harmonize" this with the other ring by
-// adding a zero pre-store here, and do not drop the final `Release` store
-// order relative to the per-field stores above it.
+// Each slot has its own generation counter. An odd generation means that the
+// ISR is updating the slot; an even generation means that it is stable. The
+// task reads the generation both before and after the payload and accepts the
+// snapshot only when both reads return the same even value. The global write
+// counter publishes availability, while the per-slot generation prevents a
+// slow consumer from combining fields from two different ring revolutions.
 #[inline(always)]
 pub fn close_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
     let write_count = CAPTURE_WRITE_COUNT.load(Ordering::Relaxed);
@@ -130,23 +126,29 @@ pub fn close_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
     let Some(fifo_len) = uart1_rx_fifo_count().map(|len| len as usize) else {
         return;
     };
+    let updating_generation = CAPTURE_GENERATIONS[slot]
+        .load(Ordering::Relaxed)
+        .wrapping_add(1)
+        | 1;
+    CAPTURE_GENERATIONS[slot].store(updating_generation, Ordering::SeqCst);
     CAPTURE_SEQUENCES[slot].store(packet_sequence, Ordering::Relaxed);
     CAPTURE_CHANNELS[slot].store(u8::from(channel), Ordering::Relaxed);
     CAPTURE_LENS[slot].store(fifo_len.min(u8::MAX as usize) as u8, Ordering::Relaxed);
-    for cell in &CAPTURE_BYTES[slot][..fifo_len.min(MAX_CAPTURE_BYTES)] {
+    for cell in &CAPTURE_BYTES[slot][..fifo_len.min(MAX_RAILCOM_WINDOW_BYTES)] {
         let Some(byte) = uart1_read_byte() else {
             break;
         };
         cell.store(byte, Ordering::Relaxed);
     }
+    CAPTURE_GENERATIONS[slot].store(updating_generation.wrapping_add(1), Ordering::SeqCst);
 
     CAPTURE_WRITE_COUNT.store(write_count.wrapping_add(1), Ordering::Release);
     let _ = CAPTURE_NOTIFY.sender().try_send(0);
 }
 
-// See `track_output::drain_cutout_runtime_events` for the sibling ring-drain
-// implementation and why the two are kept separate instead of merged into one
-// generic helper (different overflow arithmetic and per-slot verification).
+// See `track_output::drain_cutout_runtime_events` for the sibling ring-drain.
+// Both use the same publication rule, but their payloads and overflow counters
+// remain deliberately local to their hardware paths.
 fn drain_captured_windows(
     next_read: &mut u32,
     out: &mut Vec<CapturedWindow, CAPTURE_RING_CAPACITY>,
@@ -164,6 +166,13 @@ fn drain_captured_windows(
         .min(CAPTURE_RING_CAPACITY as u32);
     while remaining > 0 && out.len() < CAPTURE_RING_CAPACITY {
         let slot = *next_read as usize % CAPTURE_RING_CAPACITY;
+        let generation_before = CAPTURE_GENERATIONS[slot].load(Ordering::SeqCst);
+        if generation_before & 1 != 0 {
+            record_rx_overflows(1);
+            *next_read = next_read.wrapping_add(1);
+            remaining -= 1;
+            continue;
+        }
         let Ok(channel) = RailcomChannel::try_from(CAPTURE_CHANNELS[slot].load(Ordering::Acquire))
         else {
             *next_read = next_read.wrapping_add(1);
@@ -171,17 +180,23 @@ fn drain_captured_windows(
             continue;
         };
         let len = CAPTURE_LENS[slot].load(Ordering::Acquire) as usize;
-        let mut bytes = [0u8; MAX_CAPTURE_BYTES];
-        for index in 0..len.min(MAX_CAPTURE_BYTES) {
+        let mut bytes = [0u8; MAX_RAILCOM_WINDOW_BYTES];
+        for index in 0..len.min(MAX_RAILCOM_WINDOW_BYTES) {
             bytes[index] = CAPTURE_BYTES[slot][index].load(Ordering::Acquire);
         }
+        let packet_sequence = CAPTURE_SEQUENCES[slot].load(Ordering::Acquire);
+        let generation_after = CAPTURE_GENERATIONS[slot].load(Ordering::SeqCst);
 
-        let _ = out.push(CapturedWindow {
-            packet_sequence: CAPTURE_SEQUENCES[slot].load(Ordering::Acquire),
-            channel,
-            len,
-            bytes,
-        });
+        if generation_before == generation_after && generation_after & 1 == 0 {
+            let _ = out.push(CapturedWindow {
+                packet_sequence,
+                channel,
+                len,
+                bytes,
+            });
+        } else {
+            record_rx_overflows(1);
+        }
         *next_read = next_read.wrapping_add(1);
         remaining -= 1;
     }
@@ -191,7 +206,7 @@ async fn send_captured_window(
     sender: &Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
     window: CapturedWindow,
 ) {
-    if window.len > MAX_CAPTURE_BYTES {
+    if window.len > MAX_RAILCOM_WINDOW_BYTES {
         record_rx_overflows(1);
         record_oversized_window();
         sender
@@ -200,7 +215,7 @@ async fn send_captured_window(
                     packet_sequence: window.packet_sequence,
                     channel: window.channel,
                     provided_len: window.len,
-                    max_len: MAX_CAPTURE_BYTES,
+                    max_len: MAX_RAILCOM_WINDOW_BYTES,
                 },
             ))
             .await;
@@ -210,7 +225,7 @@ async fn send_captured_window(
     match RailcomRxWindow::try_new(
         window.packet_sequence,
         window.channel,
-        &window.bytes[..window.len.min(MAX_CAPTURE_BYTES)],
+        &window.bytes[..window.len.min(MAX_RAILCOM_WINDOW_BYTES)],
     ) {
         Ok(rx_window) => {
             sender
@@ -237,7 +252,7 @@ async fn send_captured_window(
     }
 }
 
-pub fn capture_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1> {
+fn capture_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1> {
     CAPTURE_NOTIFY.receiver()
 }
 

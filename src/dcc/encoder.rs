@@ -44,7 +44,7 @@
 //! **Encode a byte:**
 //!
 //! ```
-//! use dcc_esp32::dcc::encoder::encode_byte;
+//! use dcc_esp32::dcc::encode_byte;
 //!
 //! let pulses = encode_byte(0x3F); // 8 pulses (one per bit, MSB first)
 //! assert_eq!(pulses.len(), 8);
@@ -60,8 +60,10 @@
 use crate::dcc::packet::DccPacket;
 use crate::dcc::timing::{
     DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
-    MAX_DATA_PULSES, PREAMBLE_BITS,
+    PREAMBLE_BITS,
 };
+#[cfg(any(test, target_arch = "riscv32"))]
+use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US};
 use heapless::Vec;
 
 /// Errors produced while encoding packets into pulse sequences.
@@ -94,6 +96,13 @@ pub struct PulseCode {
     pub level2: bool,
     /// Second duration in microseconds
     pub length2: u16,
+}
+
+/// Variable packet tail together with the duration of the full DCC packet.
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) struct EncodedDccData {
+    pub pulses: Vec<PulseCode, MAX_DATA_PULSES>,
+    pub dcc_duration_us: u32,
 }
 
 impl PulseCode {
@@ -179,28 +188,42 @@ pub fn encode_dcc_packet(
 /// Encode only the variable packet tail written by the ISR.
 ///
 /// Format: \[start_bit\]\[data_bytes\]\[end_bit\]
-pub fn encode_dcc_data_portion(
-    packet: &DccPacket,
-) -> Result<Vec<PulseCode, MAX_DATA_PULSES>, EncodeError> {
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) fn encode_dcc_data_portion(packet: &DccPacket) -> Result<EncodedDccData, EncodeError> {
     let mut pulses = Vec::new();
+    let mut dcc_duration_us = PREAMBLE_DURATION_US;
 
-    push_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
+    push_timed_pulse(&mut pulses, &mut dcc_duration_us, dcc_bit_to_pulse(false))?;
 
     let bytes = packet.to_bytes()?;
     for (i, &byte) in bytes.iter().enumerate() {
         let byte_pulses = encode_byte(byte);
         for pulse in byte_pulses {
-            push_pulse(&mut pulses, pulse)?;
+            push_timed_pulse(&mut pulses, &mut dcc_duration_us, pulse)?;
         }
 
         if i < bytes.len() - 1 {
-            push_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
+            push_timed_pulse(&mut pulses, &mut dcc_duration_us, dcc_bit_to_pulse(false))?;
         }
     }
 
-    push_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
+    push_timed_pulse(&mut pulses, &mut dcc_duration_us, dcc_bit_to_pulse(true))?;
 
-    Ok(pulses)
+    Ok(EncodedDccData {
+        pulses,
+        dcc_duration_us,
+    })
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+fn push_timed_pulse(
+    pulses: &mut Vec<PulseCode, MAX_DATA_PULSES>,
+    dcc_duration_us: &mut u32,
+    pulse: PulseCode,
+) -> Result<(), EncodeError> {
+    push_pulse(pulses, pulse)?;
+    *dcc_duration_us += u32::from(pulse.length1) + u32::from(pulse.length2);
+    Ok(())
 }
 
 /// Push a pulse into a fixed-capacity pulse buffer of any capacity `N`.
@@ -292,7 +315,13 @@ mod tests {
         let full = encode_dcc_packet(&packet).unwrap();
         let tail = encode_dcc_data_portion(&packet).unwrap();
 
-        assert_eq!(&full[PREAMBLE_BITS..], tail.as_slice());
+        assert_eq!(&full[PREAMBLE_BITS..], tail.pulses.as_slice());
+        assert_eq!(
+            tail.dcc_duration_us,
+            full.iter()
+                .map(|pulse| u32::from(pulse.length1) + u32::from(pulse.length2))
+                .sum::<u32>()
+        );
     }
 
     #[test]

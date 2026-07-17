@@ -5,7 +5,8 @@
 //! burning CPU in a software feed loop. To keep the DCC waveform continuous
 //! while leaving Embassy free to run networking and safety tasks, this backend:
 //!
-//! - starts RMT in continuous loop mode with a prebuilt idle packet,
+//! - starts RMT channel 0 in continuous loop mode with a prebuilt idle packet,
+//! - publishes task-built packet snapshots through two alternating static slots,
 //! - patches only the variable packet tail from the ISR on each loop boundary,
 //! - keeps the fixed preamble in place inside RMT RAM.
 //!
@@ -13,21 +14,26 @@
 //! register semantics from the TRM. Treat this module as hardware-coupled code:
 //! design changes elsewhere should not bypass its invariants.
 
-use core::cell::RefCell;
-use core::mem::ManuallyDrop;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::cell::UnsafeCell;
+use core::mem::{ManuallyDrop, size_of};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
-use critical_section::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use esp_hal::Blocking;
+use esp_hal::gpio::Level;
 use esp_hal::handler;
 use esp_hal::interrupt::{self, Priority};
 use esp_hal::peripherals::{Interrupt, RMT};
 use esp_hal::ram;
 use esp_hal::rmt::{Channel as RmtChannel, ContinuousTxTransaction, LoopMode, PulseCode, Tx};
+use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
-use crate::dcc::DccAddress;
-use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_RMT_OFFSET};
+use crate::cutout::CutoutMode;
+use crate::cutout::timing::CUTOUT_CONTROL_END_US;
+use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US, PREAMBLE_RMT_OFFSET};
+use crate::dcc::{DccAddress, PomRequestId};
 
 // ESP32-C6 RMT peripheral RAM base address (from TRM §29.5, APB address space).
 // This constant is only valid for ESP32-C6; the crate enables this backend only
@@ -39,14 +45,17 @@ use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_RMT_OFFSET};
 // target the first channel window starting at this peripheral base.
 //
 // Each channel memory block holds 48 PulseCode entries (48 × 4 bytes = 192 bytes).
-// The channel is configured with memsize = 3 blocks by the RMT setup used for
-// continuous transmission, so channel 0 has 144 writable entries available.
+// Channel 0 uses three contiguous blocks for DCC.
 const RMT_RAM_START: usize = 0x6000_6400;
 const RMT_CHANNEL_RAM_SIZE: usize = 48;
 const RMT_CHANNEL_INDEX: usize = 0;
 const RMT_CHANNEL_MEM_BLOCKS: usize = 3;
 const RMT_CHANNEL_TOTAL_RAM_SIZE: usize = RMT_CHANNEL_RAM_SIZE * RMT_CHANNEL_MEM_BLOCKS;
-
+const CUTOUT_PADDING_US: u32 = CUTOUT_CONTROL_END_US;
+const PACKET_SLOT_COUNT: usize = 2;
+const PACKET_SLOT_A: u8 = 0;
+const PACKET_SLOT_B: u8 = 1;
+const NO_PACKET_SLOT: u8 = PACKET_SLOT_COUNT as u8;
 const _: () = assert!(
     PREAMBLE_RMT_OFFSET < RMT_CHANNEL_TOTAL_RAM_SIZE,
     "preamble offset must fit inside channel RAM"
@@ -58,29 +67,40 @@ const _: () = assert!(
 
 #[derive(Clone, Copy)]
 struct PacketMeta {
-    cutout_allowed: bool,
-    pom_requested: bool,
-    pom_read_requested: bool,
+    cutout: CutoutMode,
     target_address: Option<DccAddress>,
+    pom_request_id: u32,
 }
 
 impl PacketMeta {
     const fn idle() -> Self {
         Self {
-            cutout_allowed: false,
-            pom_requested: false,
-            pom_read_requested: false,
+            cutout: CutoutMode::None,
             target_address: None,
+            pom_request_id: 0,
         }
     }
 }
 
-#[derive(Clone, Copy)]
 struct SharedPacket {
     data: [PulseCode; MAX_DATA_PULSES],
     len: u8,
     meta: PacketMeta,
+    dcc_duration_us: u32,
 }
+
+struct PacketSlot(UnsafeCell<SharedPacket>);
+
+impl PacketSlot {
+    const fn new() -> Self {
+        Self(UnsafeCell::new(SharedPacket::empty()))
+    }
+}
+
+// SAFETY: PacketSlot is accessed only by the single-core ESP32-C6 task/ISR
+// publication protocol below. The task mutates only the unpublished slot; a
+// Release store publishes it, and the ISR reads that slot after an Acquire load.
+unsafe impl Sync for PacketSlot {}
 
 impl SharedPacket {
     const fn empty() -> Self {
@@ -88,9 +108,15 @@ impl SharedPacket {
             data: [PulseCode::end_marker(); MAX_DATA_PULSES],
             len: 0,
             meta: PacketMeta::idle(),
+            dcc_duration_us: PREAMBLE_DURATION_US,
         }
     }
 }
+
+const _: () = assert!(
+    size_of::<SharedPacket>() <= 404,
+    "shared packet slots must remain within their static memory budget"
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -100,11 +126,23 @@ pub enum InitError {
     InterruptEnable,
 }
 
-static DATA_READY: AtomicBool = AtomicBool::new(false);
+/// Timing observed inside the RMT packet-boundary interrupt.
+///
+/// These are diagnostic maxima in microseconds. They describe software
+/// service time, not the hardware-generated DCC or GPIO4 waveform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub(crate) struct RmtTimingStats {
+    pub max_isr_duration_us: u32,
+    pub max_cutout_request_latency_us: u32,
+}
+
+static PACKET_SLOTS: [PacketSlot; PACKET_SLOT_COUNT] = [PacketSlot::new(), PacketSlot::new()];
+static PUBLISHED_PACKET_SLOT: AtomicU8 = AtomicU8::new(NO_PACKET_SLOT);
+static PACKET_CONSUMED_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static ISR_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
-static NEXT_PACKET: Mutex<RefCell<SharedPacket>> = Mutex::new(RefCell::new(SharedPacket::empty()));
-static CURRENT_PACKET_META: Mutex<RefCell<PacketMeta>> =
-    Mutex::new(RefCell::new(PacketMeta::idle()));
+static RMT_ISR_MAX_DURATION_US: AtomicU32 = AtomicU32::new(0);
+static RMT_CUTOUT_REQUEST_MAX_LATENCY_US: AtomicU32 = AtomicU32::new(0);
 // Read-only after init — no Mutex needed, ISR reads directly via raw pointer.
 static IDLE_DATA_CELL: StaticCell<SharedPacket> = StaticCell::new();
 static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_mut());
@@ -112,11 +150,18 @@ static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_m
 static RMT_TX_KEEPALIVE: StaticCell<ManuallyDrop<ContinuousTxTransaction<'static>>> =
     StaticCell::new();
 
-/// Start continuous DCC transmission via RMT hardware loop and ISR.
+#[must_use]
+pub(crate) fn timing_stats() -> RmtTimingStats {
+    RmtTimingStats {
+        max_isr_duration_us: RMT_ISR_MAX_DURATION_US.load(Ordering::Acquire),
+        max_cutout_request_latency_us: RMT_CUTOUT_REQUEST_MAX_LATENCY_US.load(Ordering::Acquire),
+    }
+}
+
+/// Start continuous DCC transmission via one RMT hardware loop.
 ///
-/// Writes the fixed preamble and initial idle waveform to RMT RAM,
-/// starts continuous TX, and registers the loop-boundary ISR at Priority2.
-/// The channel is consumed and kept alive for the lifetime of the program.
+/// Writes the fixed preamble and initial idle waveform to RMT RAM, starts the
+/// continuous TX channel, and registers the loop-boundary ISR at Priority3.
 ///
 /// # Errors
 ///
@@ -130,12 +175,16 @@ pub fn init(
     let idle_ref = IDLE_DATA_CELL.init(idle_data);
     IDLE_DATA_PTR.store(idle_ref as *const _ as *mut _, Ordering::Release);
 
-    DATA_READY.store(false, Ordering::Release);
+    // SAFETY: the RMT interrupt is not bound or enabled yet, so no reader can
+    // access either packet slot while initialization resets them.
+    for slot in &PACKET_SLOTS {
+        unsafe { slot.0.get().write(SharedPacket::empty()) };
+    }
+    PUBLISHED_PACKET_SLOT.store(NO_PACKET_SLOT, Ordering::Release);
+    PACKET_CONSUMED_SIGNAL.reset();
     ISR_HEARTBEAT.store(0, Ordering::Relaxed);
-    critical_section::with(|cs| {
-        *NEXT_PACKET.borrow_ref_mut(cs) = SharedPacket::empty();
-        *CURRENT_PACKET_META.borrow_ref_mut(cs) = PacketMeta::idle();
-    });
+    RMT_ISR_MAX_DURATION_US.store(0, Ordering::Relaxed);
+    RMT_CUTOUT_REQUEST_MAX_LATENCY_US.store(0, Ordering::Relaxed);
 
     let tx = channel
         .transmit_continuously(idle_rmt, LoopMode::InfiniteWithInterrupt(1))
@@ -148,7 +197,7 @@ pub fn init(
     // SAFETY: We own the RMT peripheral (channel consumed above) and no other
     // handler is registered for Interrupt::RMT in Blocking mode.
     unsafe { interrupt::bind_interrupt(Interrupt::RMT, rmt_interrupt.handler()) };
-    interrupt::enable(Interrupt::RMT, Priority::Priority2)
+    interrupt::enable(Interrupt::RMT, Priority::Priority3)
         .map_err(|_| InitError::InterruptEnable)?;
 
     Ok(())
@@ -159,37 +208,65 @@ pub fn init(
 /// Non-blocking. The ISR picks up the data within one packet cycle (~6ms).
 /// If called again before the ISR consumes the previous submission, the new
 /// data overwrites the old — use [`is_consumed`] to enforce ACK-based pacing.
+/// This internal entry point is owned by the normal-context DCC feeder task; it
+/// must not be called from an interrupt handler.
 pub fn submit_packet(
     data: &[PulseCode],
-    cutout_allowed: bool,
-    pom_requested: bool,
-    pom_read_requested: bool,
+    dcc_duration_us: u32,
+    cutout: CutoutMode,
     target_address: Option<DccAddress>,
+    pom_request_id: Option<PomRequestId>,
 ) {
     debug_assert!(
         data.len() <= MAX_DATA_PULSES,
         "packet tail exceeds MAX_DATA_PULSES"
     );
-    critical_section::with(|cs| {
-        let mut packet = NEXT_PACKET.borrow_ref_mut(cs);
-        let len = data.len().min(MAX_DATA_PULSES);
-        packet.len = len as u8;
-        packet.data[..len].copy_from_slice(&data[..len]);
-        packet.meta = PacketMeta {
-            cutout_allowed,
-            pom_requested,
-            pom_read_requested,
-            target_address,
-        };
-    });
+    debug_assert!(
+        dcc_duration_us >= PREAMBLE_DURATION_US,
+        "packet duration must include the fixed preamble"
+    );
+    let len = data.len().min(MAX_DATA_PULSES);
+    let data = &data[..len];
 
-    DATA_READY.store(true, Ordering::Release);
+    let published_slot = PUBLISHED_PACKET_SLOT.load(Ordering::Acquire);
+    let write_slot = if published_slot == PACKET_SLOT_A {
+        PACKET_SLOT_B
+    } else {
+        PACKET_SLOT_A
+    };
+
+    // SAFETY: submit_packet runs in normal task context on the single-core
+    // ESP32-C6. It writes only the slot that is not currently published. The
+    // ISR can preempt this code, but it will either read the previously
+    // published slot or idle data; it cannot observe this slot until the
+    // Release store below. Normal tasks cannot run while the ISR is reading.
+    unsafe {
+        let packet = &mut *PACKET_SLOTS[write_slot as usize].0.get();
+        packet.len = len as u8;
+        packet.data[..len].copy_from_slice(data);
+        packet.meta = PacketMeta {
+            cutout,
+            target_address,
+            pom_request_id: pom_request_id.map_or(0, PomRequestId::value),
+        };
+        packet.dcc_duration_us = dcc_duration_us;
+    }
+
+    PUBLISHED_PACKET_SLOT.store(write_slot, Ordering::Release);
 }
 
 /// Returns `true` when the ISR has consumed the last submitted packet.
 #[inline(always)]
 pub fn is_consumed() -> bool {
-    !DATA_READY.load(Ordering::Acquire)
+    PUBLISHED_PACKET_SLOT.load(Ordering::Acquire) == NO_PACKET_SLOT
+}
+
+/// Wait until the ISR reports that a published packet was consumed.
+///
+/// The atomic slot state remains authoritative; callers must re-check
+/// [`is_consumed`] after waking because signals are intentionally coalesced.
+pub async fn wait_for_packet_consumed() {
+    PACKET_CONSUMED_SIGNAL.wait().await;
 }
 
 /// Monotonic counter incremented by the ISR on each loop boundary.
@@ -215,10 +292,11 @@ fn build_idle_data(idle_rmt: &[PulseCode]) -> Result<SharedPacket, InitError> {
     let mut packet = SharedPacket::empty();
     packet.len = tail.len() as u8;
     packet.data[..tail.len()].copy_from_slice(tail);
+    packet.dcc_duration_us = packet_duration_us(tail);
     Ok(packet)
 }
 
-#[handler(priority = Priority::Priority2)]
+#[handler(priority = Priority::Priority3)]
 #[ram]
 fn rmt_interrupt() {
     let regs = RMT::regs();
@@ -228,6 +306,9 @@ fn rmt_interrupt() {
         return;
     }
 
+    // Capture the hardware packet boundary before counters, shared-state access
+    // or RMT RAM writes can add path-dependent latency to the RailCom timeline.
+    let packet_boundary_us = now_us();
     clear_tx_loop_interrupt();
     reset_tx_loop_counter();
     let packet_sequence = ISR_HEARTBEAT
@@ -238,26 +319,32 @@ fn rmt_interrupt() {
     // counted on every loop. Do not add hardware side effects here: real cutout
     // execution must remain gated by the current packet metadata below.
     crate::railcom::on_dcc_packet_boundary();
-    let current_meta = critical_section::with(|cs| *CURRENT_PACKET_META.borrow_ref(cs));
-    // Only the precomputed scheduler decision may trigger a physical cutout from
-    // this ISR. Keep all policy outside the RMT timing path.
-    if current_meta.cutout_allowed {
-        let _ = crate::track_output::request_cutout_from_isr(
-            packet_sequence,
-            current_meta.pom_requested,
-            current_meta.pom_read_requested,
-            current_meta.target_address,
-        );
-    }
+    let published_slot = PUBLISHED_PACKET_SLOT.load(Ordering::Acquire);
+    if published_slot < NO_PACKET_SLOT {
+        // SAFETY: the Acquire load above observes a fully initialized slot. On
+        // the single-core ESP32-C6 the publishing task cannot run while this ISR
+        // holds the reference, and future submissions write the other slot.
+        let pkt = unsafe { &*PACKET_SLOTS[published_slot as usize].0.get() };
+        debug_assert!(pkt.len as usize <= MAX_DATA_PULSES);
+        let data = &pkt.data[..pkt.len as usize];
+        let cutout_requested = !matches!(pkt.meta.cutout, CutoutMode::None);
+        let cutout_allowed = if cutout_requested {
+            RMT_CUTOUT_REQUEST_MAX_LATENCY_US
+                .fetch_max(now_us().wrapping_sub(packet_boundary_us), Ordering::Relaxed);
+            crate::track_output::request_cutout_from_isr(
+                packet_boundary_us,
+                packet_sequence,
+                pkt.dcc_duration_us,
+                pkt.meta.cutout,
+                pkt.meta.target_address,
+                matches!(pkt.meta.cutout, CutoutMode::PomWrite | CutoutMode::PomRead)
+                    .then(|| PomRequestId::new(pkt.meta.pom_request_id)),
+            )
+        } else {
+            false
+        };
 
-    if DATA_READY.load(Ordering::Acquire) {
-        critical_section::with(|cs| {
-            let pkt = NEXT_PACKET.borrow_ref(cs);
-            debug_assert!(pkt.len as usize <= MAX_DATA_PULSES);
-            write_data_to_rmt_ram(&pkt.data[..pkt.len as usize]);
-            *CURRENT_PACKET_META.borrow_ref_mut(cs) = pkt.meta;
-        });
-        DATA_READY.store(false, Ordering::Release);
+        write_data_to_rmt_ram(data, cutout_allowed);
     } else {
         // IDLE_DATA is read-only after init — no critical section needed.
         let idle_ptr = IDLE_DATA_PTR.load(Ordering::Relaxed);
@@ -266,12 +353,21 @@ fn rmt_interrupt() {
             // and never modified again. The pointee is read-only after init,
             // has static lifetime, and remains valid for the whole program.
             let idle = unsafe { &*idle_ptr };
-            write_data_to_rmt_ram(&idle.data[..idle.len as usize]);
+            write_data_to_rmt_ram(&idle.data[..idle.len as usize], false);
         }
-        critical_section::with(|cs| {
-            *CURRENT_PACKET_META.borrow_ref_mut(cs) = PacketMeta::idle();
-        });
     }
+
+    if published_slot < NO_PACKET_SLOT {
+        PUBLISHED_PACKET_SLOT.store(NO_PACKET_SLOT, Ordering::Release);
+        PACKET_CONSUMED_SIGNAL.signal(());
+    }
+
+    RMT_ISR_MAX_DURATION_US.fetch_max(now_us().wrapping_sub(packet_boundary_us), Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn now_us() -> u32 {
+    Instant::now().duration_since_epoch().as_micros() as u32
 }
 
 #[inline(always)]
@@ -296,8 +392,8 @@ fn reset_tx_loop_counter() {
 }
 
 /// Write only the data entries + end_marker to RMT RAM at the data offset.
-#[inline(always)]
-fn write_data_to_rmt_ram(data: &[PulseCode]) {
+#[ram]
+fn write_data_to_rmt_ram(data: &[PulseCode], cutout_allowed: bool) {
     debug_assert!(
         data.len() <= MAX_DATA_PULSES,
         "RMT tail write must fit inside reserved data area"
@@ -324,8 +420,34 @@ fn write_data_to_rmt_ram(data: &[PulseCode]) {
         }
     }
 
-    // SAFETY: same as above; data.len() <= MAX_DATA_PULSES, so offset is in bounds.
-    unsafe {
-        base.add(data.len()).write_volatile(PulseCode::end_marker());
+    let end_offset = data.len() + usize::from(cutout_allowed);
+    if cutout_allowed {
+        // Keep the DCC RMT output low until the GPIO4 control pulse rises at
+        // the RCN-217 channel-2 end. The next loop then starts a fresh
+        // preamble. The external RC logic keeps the DRV8874 disabled for a few
+        // more microseconds, so only the first preamble pulse can be partial on
+        // the physical track; the remaining 19 preamble bits stay intact.
+        unsafe {
+            base.add(data.len()).write_volatile(PulseCode::new(
+                Level::Low,
+                (CUTOUT_PADDING_US - 1) as u16,
+                Level::Low,
+                1,
+            ));
+        }
     }
+
+    // SAFETY: same as above; optional padding still fits in the channel RAM.
+    unsafe {
+        base.add(end_offset).write_volatile(PulseCode::end_marker());
+    }
+}
+
+#[inline(always)]
+fn packet_duration_us(data: &[PulseCode]) -> u32 {
+    PREAMBLE_DURATION_US
+        + data
+            .iter()
+            .map(|pulse| u32::from(pulse.length1()) + u32::from(pulse.length2()))
+            .sum::<u32>()
 }

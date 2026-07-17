@@ -3,8 +3,8 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use crate::dcc::DccAddress;
-use crate::railcom::parser::{RailcomDatagram, RailcomItem};
 use crate::railcom::pipeline::PacketSequence;
+use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
 // Number of most-recently-identified locos kept for display/diagnostics.
 //
@@ -28,7 +28,7 @@ const PENDING_ADR_HIGH_MAX_PACKET_GAP: u32 = 8;
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct RailcomLocoSighting {
     pub address: DccAddress,
-    pub packet_sequence: u32,
+    pub packet_sequence: PacketSequence,
     pub seen_count: u32,
 }
 
@@ -54,7 +54,7 @@ struct TrackerState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingAdrHigh {
     value: u8,
-    packet_sequence: u32,
+    packet_sequence: PacketSequence,
 }
 
 impl TrackerState {
@@ -80,7 +80,7 @@ impl TrackerState {
 
     fn record_identified(
         &mut self,
-        packet_sequence: u32,
+        packet_sequence: PacketSequence,
         address: DccAddress,
     ) -> RailcomLocoSighting {
         self.identification_window_count = self.identification_window_count.wrapping_add(1);
@@ -109,7 +109,7 @@ impl TrackerState {
         self.invalid_identification_count = self.invalid_identification_count.wrapping_add(1);
     }
 
-    fn record_pending_high(&mut self, packet_sequence: u32, value: u8) {
+    fn record_pending_high(&mut self, packet_sequence: PacketSequence, value: u8) {
         self.identification_window_count = self.identification_window_count.wrapping_add(1);
         self.pending_adr_high = Some(PendingAdrHigh {
             value,
@@ -117,15 +117,67 @@ impl TrackerState {
         });
     }
 
-    fn take_recent_pending_high(&mut self, packet_sequence: u32) -> Option<u8> {
+    fn take_recent_pending_high(&mut self, packet_sequence: PacketSequence) -> Option<u8> {
         let pending = self.pending_adr_high?;
         self.pending_adr_high = None;
-        PacketSequence::new(packet_sequence)
-            .is_within(
-                PacketSequence::new(pending.packet_sequence),
-                PENDING_ADR_HIGH_MAX_PACKET_GAP,
-            )
+        packet_sequence
+            .is_within(pending.packet_sequence, PENDING_ADR_HIGH_MAX_PACKET_GAP)
             .then_some(pending.value)
+    }
+
+    fn record_target_from_matching_address_fragment(
+        &mut self,
+        packet_sequence: PacketSequence,
+        target_address: DccAddress,
+        items: &[RailcomItem],
+    ) -> Option<RailcomLocoSighting> {
+        let (adr_high, adr_low, saw_address_datagram) = address_parts(items);
+        if !saw_address_datagram {
+            return None;
+        }
+
+        match address_fragment_matches_target(target_address, adr_high, adr_low) {
+            Some(true) => Some(self.record_identified(packet_sequence, target_address)),
+            Some(false) => {
+                self.record_invalid();
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn record_loco_identification(
+        &mut self,
+        packet_sequence: PacketSequence,
+        items: &[RailcomItem],
+    ) -> Option<RailcomLocoSighting> {
+        let (adr_high, adr_low, saw_address_datagram) = address_parts(items);
+        if !saw_address_datagram {
+            return None;
+        }
+
+        if let Some(low) = adr_low {
+            let high = adr_high.or_else(|| self.take_recent_pending_high(packet_sequence));
+            return match decode_railcom_address(high, Some(low)) {
+                Some(address) => Some(self.record_identified(packet_sequence, address)),
+                None => {
+                    self.record_invalid();
+                    None
+                }
+            };
+        }
+
+        match classify_address_candidate(items) {
+            AddressCandidate::PresentButInvalid => {
+                self.record_invalid();
+                None
+            }
+            AddressCandidate::PendingHigh(high) => {
+                self.record_pending_high(packet_sequence, high);
+                None
+            }
+            AddressCandidate::None | AddressCandidate::Identified(_) => None,
+        }
     }
 }
 
@@ -231,65 +283,35 @@ fn classify_address_candidate(items: &[RailcomItem]) -> AddressCandidate {
 }
 
 pub fn record_target_from_matching_address_fragment(
-    packet_sequence: u32,
+    packet_sequence: impl Into<PacketSequence>,
     target_address: DccAddress,
     items: &[RailcomItem],
 ) -> Option<RailcomLocoSighting> {
-    let (adr_high, adr_low, saw_address_datagram) = address_parts(items);
-    if !saw_address_datagram {
-        return None;
-    }
-
+    let packet_sequence = packet_sequence.into();
     critical_section::with(|cs| {
-        let mut state = TRACKER_STATE.borrow_ref_mut(cs);
-        match address_fragment_matches_target(target_address, adr_high, adr_low) {
-            Some(true) => Some(state.record_identified(packet_sequence, target_address)),
-            Some(false) => {
-                state.record_invalid();
-                None
-            }
-            None => None,
-        }
+        TRACKER_STATE
+            .borrow_ref_mut(cs)
+            .record_target_from_matching_address_fragment(packet_sequence, target_address, items)
     })
 }
 
 pub fn record_loco_identification(
-    packet_sequence: u32,
+    packet_sequence: impl Into<PacketSequence>,
     items: &[RailcomItem],
 ) -> Option<RailcomLocoSighting> {
+    let packet_sequence = packet_sequence.into();
     critical_section::with(|cs| {
-        let mut state = TRACKER_STATE.borrow_ref_mut(cs);
-        let (adr_high, adr_low, saw_address_datagram) = address_parts(items);
-        if !saw_address_datagram {
-            return None;
-        }
-
-        if let Some(low) = adr_low {
-            let high = adr_high.or_else(|| state.take_recent_pending_high(packet_sequence));
-            return match decode_railcom_address(high, Some(low)) {
-                Some(address) => Some(state.record_identified(packet_sequence, address)),
-                None => {
-                    state.record_invalid();
-                    None
-                }
-            };
-        }
-
-        match classify_address_candidate(items) {
-            AddressCandidate::PresentButInvalid => {
-                state.record_invalid();
-                None
-            }
-            AddressCandidate::PendingHigh(high) => {
-                state.record_pending_high(packet_sequence, high);
-                None
-            }
-            AddressCandidate::None | AddressCandidate::Identified(_) => None,
-        }
+        TRACKER_STATE
+            .borrow_ref_mut(cs)
+            .record_loco_identification(packet_sequence, items)
     })
 }
 
-pub fn record_identified_address(packet_sequence: u32, address: DccAddress) -> RailcomLocoSighting {
+pub fn record_identified_address(
+    packet_sequence: impl Into<PacketSequence>,
+    address: DccAddress,
+) -> RailcomLocoSighting {
+    let packet_sequence = packet_sequence.into();
     critical_section::with(|cs| {
         TRACKER_STATE
             .borrow_ref_mut(cs)
@@ -300,13 +322,6 @@ pub fn record_identified_address(packet_sequence: u32, address: DccAddress) -> R
 #[must_use]
 pub fn railcom_loco_tracker_stats() -> RailcomLocoTrackerStats {
     critical_section::with(|cs| TRACKER_STATE.borrow_ref(cs).snapshot())
-}
-
-#[cfg(test)]
-pub fn reset_railcom_loco_tracker() {
-    critical_section::with(|cs| {
-        *TRACKER_STATE.borrow_ref_mut(cs) = TrackerState::new();
-    });
 }
 
 #[cfg(test)]
@@ -346,12 +361,15 @@ mod tests {
 
     #[test]
     fn test_record_keeps_pending_adr_high_without_marking_invalid() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x01))];
 
-        assert_eq!(record_loco_identification(7, &items), None);
         assert_eq!(
-            railcom_loco_tracker_stats(),
+            state.record_loco_identification(PacketSequence::new(7), &items),
+            None
+        );
+        assert_eq!(
+            state.snapshot(),
             RailcomLocoTrackerStats {
                 identification_window_count: 1,
                 identified_loco_count: 0,
@@ -363,23 +381,28 @@ mod tests {
 
     #[test]
     fn test_record_identifies_long_address_from_pending_adr_high_and_next_low() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x03))];
         let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(0xe8))];
 
-        assert_eq!(record_loco_identification(10, &high_items), None);
-        let sighting = record_loco_identification(11, &low_items).expect("must identify");
+        assert_eq!(
+            state.record_loco_identification(PacketSequence::new(10), &high_items),
+            None
+        );
+        let sighting = state
+            .record_loco_identification(PacketSequence::new(11), &low_items)
+            .expect("must identify");
 
         assert_eq!(
             sighting,
             RailcomLocoSighting {
                 address: long_addr(1000),
-                packet_sequence: 11,
+                packet_sequence: PacketSequence::new(11),
                 seen_count: 1,
             }
         );
         assert_eq!(
-            railcom_loco_tracker_stats(),
+            state.snapshot(),
             RailcomLocoTrackerStats {
                 identification_window_count: 2,
                 identified_loco_count: 1,
@@ -387,7 +410,7 @@ mod tests {
                 recent_sightings: [
                     Some(RailcomLocoSighting {
                         address: long_addr(1000),
-                        packet_sequence: 11,
+                        packet_sequence: PacketSequence::new(11),
                         seen_count: 1,
                     }),
                     None,
@@ -400,39 +423,49 @@ mod tests {
 
     #[test]
     fn test_record_ignores_stale_pending_adr_high() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x03))];
         let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(42))];
 
-        assert_eq!(record_loco_identification(10, &high_items), None);
-        let sighting =
-            record_loco_identification(10 + PENDING_ADR_HIGH_MAX_PACKET_GAP + 1, &low_items)
-                .expect("stale high must fall back to short address");
+        assert_eq!(
+            state.record_loco_identification(PacketSequence::new(10), &high_items),
+            None
+        );
+        let sighting = state
+            .record_loco_identification(
+                PacketSequence::new(10 + PENDING_ADR_HIGH_MAX_PACKET_GAP + 1),
+                &low_items,
+            )
+            .expect("stale high must fall back to short address");
 
         assert_eq!(
             sighting,
             RailcomLocoSighting {
                 address: short_addr(42),
-                packet_sequence: 19,
+                packet_sequence: PacketSequence::new(19),
                 seen_count: 1,
             }
         );
-        assert_eq!(railcom_loco_tracker_stats().invalid_identification_count, 0);
+        assert_eq!(state.snapshot().invalid_identification_count, 0);
     }
 
     #[test]
     fn test_record_updates_existing_sighting_seen_count() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(7))];
 
-        let first = record_loco_identification(11, &items).expect("must identify");
-        let second = record_loco_identification(19, &items).expect("must identify");
+        let first = state
+            .record_loco_identification(PacketSequence::new(11), &items)
+            .expect("must identify");
+        let second = state
+            .record_loco_identification(PacketSequence::new(19), &items)
+            .expect("must identify");
 
         assert_eq!(
             first,
             RailcomLocoSighting {
                 address: short_addr(7),
-                packet_sequence: 11,
+                packet_sequence: PacketSequence::new(11),
                 seen_count: 1,
             }
         );
@@ -440,7 +473,7 @@ mod tests {
             second,
             RailcomLocoSighting {
                 address: short_addr(7),
-                packet_sequence: 19,
+                packet_sequence: PacketSequence::new(19),
                 seen_count: 2,
             }
         );
@@ -448,34 +481,39 @@ mod tests {
 
     #[test]
     fn test_record_identified_address_from_logon_response() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
 
-        let sighting = record_identified_address(20, short_addr(3));
+        let sighting = state.record_identified(PacketSequence::new(20), short_addr(3));
 
         assert_eq!(
             sighting,
             RailcomLocoSighting {
                 address: short_addr(3),
-                packet_sequence: 20,
+                packet_sequence: PacketSequence::new(20),
                 seen_count: 1,
             }
         );
-        assert_eq!(railcom_loco_tracker_stats().identified_loco_count, 1);
+        assert_eq!(state.snapshot().identified_loco_count, 1);
     }
 
     #[test]
     fn test_record_target_from_matching_short_address_low_fragment() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(3))];
 
-        let sighting = record_target_from_matching_address_fragment(42, short_addr(3), &items)
+        let sighting = state
+            .record_target_from_matching_address_fragment(
+                PacketSequence::new(42),
+                short_addr(3),
+                &items,
+            )
             .expect("matching low fragment should confirm short target address");
 
         assert_eq!(
             sighting,
             RailcomLocoSighting {
                 address: short_addr(3),
-                packet_sequence: 42,
+                packet_sequence: PacketSequence::new(42),
                 seen_count: 1,
             }
         );
@@ -483,35 +521,46 @@ mod tests {
 
     #[test]
     fn test_record_target_ignores_non_unique_high_fragment() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0))];
 
         assert_eq!(
-            record_target_from_matching_address_fragment(42, short_addr(3), &items),
+            state.record_target_from_matching_address_fragment(
+                PacketSequence::new(42),
+                short_addr(3),
+                &items,
+            ),
             None
         );
-        assert_eq!(railcom_loco_tracker_stats().identified_loco_count, 0);
-        assert_eq!(railcom_loco_tracker_stats().invalid_identification_count, 0);
+        assert_eq!(state.snapshot().identified_loco_count, 0);
+        assert_eq!(state.snapshot().invalid_identification_count, 0);
     }
 
     #[test]
     fn test_record_target_rejects_mismatched_address_fragment() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(4))];
 
         assert_eq!(
-            record_target_from_matching_address_fragment(42, short_addr(3), &items),
+            state.record_target_from_matching_address_fragment(
+                PacketSequence::new(42),
+                short_addr(3),
+                &items,
+            ),
             None
         );
-        assert_eq!(railcom_loco_tracker_stats().invalid_identification_count, 1);
+        assert_eq!(state.snapshot().invalid_identification_count, 1);
     }
 
     #[test]
     fn test_ack_only_feedback_does_not_identify_loco() {
-        reset_railcom_loco_tracker();
+        let mut state = TrackerState::new();
         let items = [RailcomItem::Ack];
 
-        assert_eq!(record_loco_identification(50, &items), None);
-        assert_eq!(railcom_loco_tracker_stats().identified_loco_count, 0);
+        assert_eq!(
+            state.record_loco_identification(PacketSequence::new(50), &items),
+            None
+        );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
     }
 }

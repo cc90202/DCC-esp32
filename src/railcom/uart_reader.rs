@@ -5,12 +5,7 @@ use esp_hal::uart::{Config, Parity, RxConfig, StopBits};
 
 use crate::railcom::pipeline::{RailcomChannel, RailcomRxResult};
 
-/// Preferred UART RX pin for RailCom reception.
-///
-/// The current board review leaves `GPIO5` free and it is the preferred input
-/// for the detector output. `GPIO4` is owned by `track_output` as the fast
-/// RailCom cutout/run control.
-pub const RAILCOM_UART_RX_GPIO_NUM: u8 = 5;
+/// RailCom UART baud rate mandated by the protocol.
 pub const RAILCOM_UART_BAUDRATE: u32 = 250_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

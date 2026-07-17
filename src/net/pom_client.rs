@@ -13,11 +13,16 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Instant, with_timeout};
 
+use crate::application::LocoSlots;
+use crate::application::pom::{
+    PomAdmissionError, PomOutcome, PomRefreshFailure, PomReply, apply_refresh_result, prepare_read,
+    prepare_write, resolve_reply,
+};
 use crate::dcc::cv::drain_channel;
-use crate::dcc::{PomCv, PomRequest, PomRequestId, PomResponse};
-use crate::net::LocoSlots;
-use crate::net::udp_control::Z21Ctx;
-use crate::net::z21_proto;
+use crate::dcc::{PomRequest, PomRequestId, PomResponse};
+use crate::net::loco_client::request_loco;
+use crate::net::z21_context::Z21Ctx;
+use crate::z21 as z21_proto;
 
 // Covers the single bounded POM actor attempt: TX-start waits + the
 // RailCom app:pom attribution window, with margin for task scheduling.
@@ -81,43 +86,33 @@ pub(super) async fn handle_cv_pom_write(
     cv: u16,
     value: u8,
 ) -> usize {
-    let Some(cv_addr) = PomCv::new(cv) else {
-        warn!("POM write addr={} invalid cv={}", address.value(), cv);
-        return z21_proto::encode_cv_nack(out);
+    let plan = match prepare_write(ctx.status_model.pom_allowed(), address, cv, value) {
+        Ok(plan) => plan,
+        Err(error) => return reject_admission(out, ctx, address, cv, "write", error),
     };
-
-    if !ctx.status_model.pom_allowed() {
-        warn!(
-            "POM write addr={} cv={} rejected (track_on={} estop={} fault={:?})",
-            address.value(),
-            cv,
-            ctx.status_model.track_power_on(),
-            ctx.status_model.estop_active(),
-            ctx.status_model.fault_cause()
-        );
-        return z21_proto::encode_cv_nack(out);
-    }
 
     ctx.scheduler_sender
         .send(crate::dcc::SchedulerCommand::SuspendRailcomDiscovery)
         .await;
 
-    match request_pom(
-        ctx.pom_request_sender,
-        ctx.pom_response_receiver,
-        ctx.next_pom_request_id,
-        |request_id| PomRequest::Write {
-            request_id,
-            address,
-            cv: cv_addr,
-            value,
-        },
-    )
-    .await
-    {
-        Some(PomResponse::Ack { .. }) => z21_proto::encode_cv_result(cv, value, out),
-        Some(PomResponse::Nack { .. }) => z21_proto::encode_cv_nack(out),
-        Some(PomResponse::Value { .. }) | None => {
+    let reply = classify_reply(
+        request_pom(
+            ctx.pom_request_sender,
+            ctx.pom_response_receiver,
+            ctx.next_pom_request_id,
+            |request_id| PomRequest::Write {
+                request_id,
+                address: plan.address,
+                cv: plan.cv,
+                value: plan.value,
+            },
+        )
+        .await,
+    );
+    match resolve_reply(reply) {
+        PomOutcome::Ack => z21_proto::encode_cv_result(cv, value, out),
+        PomOutcome::Nack => z21_proto::encode_cv_nack(out),
+        PomOutcome::Value(_) | PomOutcome::Unavailable => {
             warn!(
                 "POM write addr={} cv={} completed without ACK",
                 address.value(),
@@ -135,48 +130,67 @@ pub(super) async fn handle_cv_pom_read(
     address: crate::dcc::DccAddress,
     cv: u16,
 ) -> usize {
-    let Some(cv_addr) = PomCv::new(cv) else {
-        warn!("POM read addr={} invalid cv={}", address.value(), cv);
-        return z21_proto::encode_cv_nack(out);
+    let plan = match prepare_read(loco_slots, ctx.status_model.pom_allowed(), address, cv) {
+        Ok(plan) => plan,
+        Err(error) => return reject_admission(out, ctx, address, cv, "read", error),
     };
-
-    if !ctx.status_model.pom_allowed() {
-        warn!(
-            "POM read addr={} cv={} rejected (track_on={} estop={} fault={:?})",
-            address.value(),
-            cv,
-            ctx.status_model.track_power_on(),
-            ctx.status_model.estop_active(),
-            ctx.status_model.fault_cause()
-        );
-        return z21_proto::encode_cv_nack(out);
+    let refresh = request_loco(
+        ctx.loco_request_sender,
+        ctx.loco_response_receiver,
+        ctx.next_loco_request_id,
+        plan.refresh_request,
+    )
+    .await;
+    match apply_refresh_result(loco_slots, refresh.map(|response| response.result)) {
+        Ok(()) => {}
+        Err(PomRefreshFailure::SchedulerTimeout) => {
+            warn!(
+                "POM read addr={} cv={} rejected: scheduler response timed out",
+                address.value(),
+                cv
+            );
+            return z21_proto::encode_cv_nack(out);
+        }
+        Err(PomRefreshFailure::SchedulerRejected(result)) => {
+            warn!(
+                "POM read addr={} cv={} rejected by scheduler: {:?}",
+                address.value(),
+                cv,
+                result
+            );
+            return z21_proto::encode_cv_nack(out);
+        }
+        Err(PomRefreshFailure::Projection(error)) => {
+            warn!(
+                "POM read addr={} cv={} projection failed: {:?}",
+                address.value(),
+                cv,
+                error
+            );
+            return z21_proto::encode_cv_nack(out);
+        }
     }
 
     ctx.scheduler_sender
         .send(crate::dcc::SchedulerCommand::SuspendRailcomDiscovery)
         .await;
 
-    let format = z21_proto::find_or_insert(loco_slots, address)
-        .map(|slot| slot.format)
-        .unwrap_or(crate::dcc::SpeedFormat::Speed128);
-    ctx.scheduler_sender
-        .send(crate::dcc::SchedulerCommand::EnsureRailcomRefresh { address, format })
-        .await;
-
-    match request_pom(
-        ctx.pom_request_sender,
-        ctx.pom_response_receiver,
-        ctx.next_pom_request_id,
-        |request_id| PomRequest::Read {
-            request_id,
-            address,
-            cv: cv_addr,
-        },
-    )
-    .await
-    {
-        Some(PomResponse::Value { value, .. }) => z21_proto::encode_cv_result(cv, value, out),
-        Some(PomResponse::Ack { .. }) | Some(PomResponse::Nack { .. }) | None => {
+    let reply = classify_reply(
+        request_pom(
+            ctx.pom_request_sender,
+            ctx.pom_response_receiver,
+            ctx.next_pom_request_id,
+            |request_id| PomRequest::Read {
+                request_id,
+                address: plan.address,
+                cv: plan.cv,
+            },
+        )
+        .await,
+    );
+    match resolve_reply(reply) {
+        PomOutcome::Value(value) => z21_proto::encode_cv_result(cv, value, out),
+        PomOutcome::Ack | PomOutcome::Nack | PomOutcome::Unavailable => {
             warn!(
                 "POM read addr={} cv={} completed without value",
                 address.value(),
@@ -185,4 +199,43 @@ pub(super) async fn handle_cv_pom_read(
             z21_proto::encode_cv_nack(out)
         }
     }
+}
+
+fn classify_reply(response: Option<PomResponse>) -> PomReply {
+    match response {
+        Some(PomResponse::Value { value, .. }) => PomReply::Value(value),
+        Some(PomResponse::Ack { .. }) => PomReply::Ack,
+        Some(PomResponse::Nack { .. }) => PomReply::Nack,
+        None => PomReply::Unavailable,
+    }
+}
+
+fn reject_admission(
+    out: &mut [u8],
+    ctx: &Z21Ctx<'_>,
+    address: crate::dcc::DccAddress,
+    cv: u16,
+    operation: &str,
+    error: PomAdmissionError,
+) -> usize {
+    match error {
+        PomAdmissionError::InvalidCv(_) => {
+            warn!(
+                "POM {} addr={} invalid cv={}",
+                operation,
+                address.value(),
+                cv
+            );
+        }
+        PomAdmissionError::TrackPowerOff => warn!(
+            "POM {} addr={} cv={} rejected (track_on={} estop={} fault={:?})",
+            operation,
+            address.value(),
+            cv,
+            ctx.status_model.track_power_on(),
+            ctx.status_model.estop_active(),
+            ctx.status_model.fault_cause()
+        ),
+    }
+    z21_proto::encode_cv_nack(out)
 }

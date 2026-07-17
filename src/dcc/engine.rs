@@ -1,15 +1,14 @@
 //! DCC engine feeder for the ISR-driven RMT backend.
 
-use crate::dcc::encoder::{PulseCode as DccPulseCode, encode_dcc_data_portion};
-use crate::dcc::rmt_driver;
+use crate::dcc::encoder::{EncodeError, PulseCode as DccPulseCode, encode_dcc_data_portion};
 use crate::dcc::timing::{IDLE_RMT_SIZE, MAX_DATA_PULSES, RMT_CLOCK_HZ};
 use crate::dcc::{DccFrame, DccPacket, encode_dcc_packet};
+use crate::rmt_dcc as rmt_driver;
 use crate::system_status::{FaultCause, FaultEvent};
 
-use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::gpio::Level;
 use esp_hal::rmt::PulseCode;
 use heapless::Vec;
@@ -34,6 +33,19 @@ pub type IdleRmtBuffer = Vec<PulseCode, IDLE_RMT_SIZE>;
 pub enum IdleWaveformBuildError {
     PacketEncoding,
     BufferOverflow,
+}
+
+/// Errors while converting one DCC packet into the RMT data buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+enum EngineEncodeError {
+    Dcc(EncodeError),
+    RmtBufferOverflow,
+}
+
+struct EncodedRmtPacket {
+    data: Vec<PulseCode, MAX_DATA_PULSES>,
+    dcc_duration_us: u32,
 }
 
 /// Build the pre-encoded idle waveform used to bootstrap the continuous loop.
@@ -68,7 +80,28 @@ pub async fn dcc_engine_task(
             if heartbeat != last_heartbeat {
                 last_heartbeat = heartbeat;
                 last_progress = Instant::now();
-            } else if Instant::now().duration_since(last_progress) > ISR_WATCHDOG_TIMEOUT {
+            }
+
+            // Sleep until the ISR consumes the slot, but keep the original
+            // heartbeat-based watchdog deadline instead of waiting forever.
+            let elapsed = Instant::now().duration_since(last_progress);
+            let remaining = ISR_WATCHDOG_TIMEOUT
+                .checked_sub(elapsed)
+                .unwrap_or(Duration::MIN);
+            if with_timeout(remaining, rmt_driver::wait_for_packet_consumed())
+                .await
+                .is_ok()
+            {
+                continue;
+            }
+
+            // A timeout is fatal only when both the packet remains pending and
+            // the ISR heartbeat failed to advance during the watchdog window.
+            let heartbeat = rmt_driver::isr_heartbeat();
+            if heartbeat != last_heartbeat {
+                last_heartbeat = heartbeat;
+                last_progress = Instant::now();
+            } else if !rmt_driver::is_consumed() {
                 defmt::error!(
                     "RMT ISR heartbeat stalled: heartbeat={}, idle_timeout_ms={}",
                     heartbeat,
@@ -78,37 +111,39 @@ pub async fn dcc_engine_task(
                 Timer::after(ISR_RESET_GRACE_PERIOD).await;
                 esp_hal::system::software_reset();
             }
-            yield_now().await;
         }
 
         let frame = receiver.receive().await;
         let next_rmt = match encode_packet_to_rmt_data(&frame.packet) {
-            Some(buf) => buf,
-            None => {
-                defmt::warn!("packet encoding failed, skipping");
+            Ok(buf) => buf,
+            Err(error) => {
+                defmt::warn!("packet encoding failed, skipping: {:?}", error);
                 continue;
             }
         };
 
+        let cutout = frame.effective_cutout();
+        if cutout != frame.cutout {
+            defmt::warn!("POM frame missing request id; transmitting without RailCom cutout");
+        }
         rmt_driver::submit_packet(
-            next_rmt.as_slice(),
-            frame.cutout_allowed(),
-            frame.pom_requested(),
-            frame.pom_read_requested,
+            next_rmt.data.as_slice(),
+            next_rmt.dcc_duration_us,
+            cutout,
             frame.railcom_target_address,
+            frame.pom_request_id,
         );
     }
 }
 
-fn encode_packet_to_rmt_data(packet: &DccPacket) -> Option<Vec<PulseCode, MAX_DATA_PULSES>> {
-    let pulses = match encode_dcc_data_portion(packet) {
-        Ok(p) => p,
-        Err(e) => {
-            defmt::warn!("packet encoding failed: {:?}", e);
-            return None;
-        }
-    };
-    convert_to_rmt(&pulses).ok()
+fn encode_packet_to_rmt_data(packet: &DccPacket) -> Result<EncodedRmtPacket, EngineEncodeError> {
+    let encoded = encode_dcc_data_portion(packet).map_err(EngineEncodeError::Dcc)?;
+    let data =
+        convert_to_rmt(&encoded.pulses).map_err(|()| EngineEncodeError::RmtBufferOverflow)?;
+    Ok(EncodedRmtPacket {
+        data,
+        dcc_duration_us: encoded.dcc_duration_us,
+    })
 }
 
 fn convert_pulse_to_rmt(pulse: &DccPulseCode) -> PulseCode {

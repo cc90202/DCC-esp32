@@ -5,16 +5,15 @@
 //! `track_output`; this module only exposes a boundary counter so higher-level
 //! diagnostics can correlate ISR activity with scheduler/track events.
 
-#[cfg(target_arch = "riscv32")]
-pub mod isr_capture;
 pub mod loco_tracker;
 pub mod parser;
 pub mod pipeline;
 #[cfg(target_arch = "riscv32")]
-pub mod pom_dispatch;
+pub(crate) mod pom_dispatch;
 #[cfg(target_arch = "riscv32")]
-pub mod runtime_dispatch;
-pub mod uart_reader;
+pub(crate) mod runtime_dispatch;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod uart_reader;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 

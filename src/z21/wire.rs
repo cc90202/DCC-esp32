@@ -150,9 +150,8 @@ pub(super) fn write_loco_address_be(address: DccAddress, out: &mut [u8], pos: us
 /// Convert a logical runtime speed (0..=28) into the Z21 wire representation.
 #[must_use]
 pub(super) const fn logical_to_z21_wire(speed: u8) -> Option<u8> {
-    let n = match speed {
-        0..=28 => speed,
-        _ => return None,
+    let n @ 0..=28 = speed else {
+        return None;
     };
 
     if n == 0 {
