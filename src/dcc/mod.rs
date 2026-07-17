@@ -2,8 +2,6 @@
 //!
 //! Based on NMRA Standards S-9.1 (Electrical) and S-9.2 (Communications)
 //!
-//! # Overview
-//!
 //! This module provides:
 //! - DCC packet encoding (`packet` module)
 //! - RMT pulse code generation (`encoder` module)
@@ -19,7 +17,7 @@
 //! let packet = DccPacket::speed_28step(addr, 15, Direction::Forward).expect("valid speed");
 //! ```
 //!
-//! # Hardware Requirements
+//! # Hardware requirements
 //!
 //! - ESP32-C6 with RMT peripheral
 //! - GPIO2 connected to the track-driver DCC input or external DCC logic

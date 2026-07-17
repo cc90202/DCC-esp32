@@ -3,7 +3,7 @@
 //! Talks to the POM actor task (`dcc::cv::pom_actor_task`) over the
 //! single-slot request/response channels threaded through [`Z21Ctx`].
 //!
-//! ESP32-C6 only - gated behind `#[cfg(target_arch = "riscv32")]` at the
+//! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
 
 use core::cell::Cell;

@@ -4,13 +4,16 @@
 //! exposes a Z21 UDP network interface for control by JMRI, Z21 apps, and
 //! other LAN-based throttles.
 //!
-//! - [`application`] - framework-independent use cases and read projections.
-//! - [`dcc`] - packet encoding, RMT pulse generation, scheduler, CV programming.
-//! - [`z21`] - pure Z21 protocol contract, parsing, and encoding.
-//! - [`net`] - Z21 adapters, WiFi, and UDP transport.
-//! - [`system_status`], [`fault_manager`] - event-driven runtime state (boot, e-stop, faults).
-//! - [`display`] - `DisplayModel` reducer is host-testable; the I2C rendering task is ESP-only.
-//! - `status_led`, `control_buttons`, `short_detector` - peripheral tasks (ESP-only).
+//! [`application`] holds the framework-independent use cases and read
+//! projections. [`dcc`] covers packet encoding, RMT pulse generation, the
+//! scheduler and CV programming, while [`z21`] is the pure protocol contract
+//! and [`net`] the adapters around it: Z21 wiring, WiFi and UDP transport.
+//! Runtime state lives in [`system_status`] and [`fault_manager`], which react
+//! to boot, e-stop and fault events.
+//!
+//! [`display`] is split: the `DisplayModel` reducer is host-testable, the I2C
+//! rendering task is not. `status_led`, `control_buttons` and `short_detector`
+//! are peripheral tasks and only build for the ESP32 target.
 #![cfg_attr(not(test), no_std)]
 #![deny(clippy::mem_forget)]
 

@@ -1,22 +1,20 @@
 //! System runtime status model for LEDs and operator controls.
 //!
-//! # Overview
-//!
 //! Tracks system state (booting, running, e-stop, fault) via events emitted by various
 //! tasks. [`crate::application::StatusModel`] applies events to compute the current
 //! `LedState`, which the status LED task uses to drive GPIO14 (green) and GPIO15 (red).
 //!
-//! # LED States and Meanings
+//! # LED states
 //!
-//! - **Booting** (green blink 125ms) - System starting up
-//! - **WifiConnecting** (red blink 500ms) - WiFi connection in progress
-//! - **Running** (solid green) - Ready, no faults
-//! - **EstopActive** (solid red) - Operator pressed stop button
-//! - **FaultLatched** (solid red) - Hardware fault (track short, CV error, etc.)
+//! - `Booting`: green blinking at 125ms, the system is starting up
+//! - `WifiConnecting`: red blinking at 500ms, the WiFi connection is in progress
+//! - `Running`: solid green, ready and no faults
+//! - `EstopActive`: solid red, the operator pressed the stop button
+//! - `FaultLatched`: solid red, hardware fault such as a track short or CV error
 //!
 //! # Examples
 //!
-//! **Apply events to the model:**
+//! Apply events to the model:
 //!
 //! ```
 //! use dcc_esp32::application::StatusModel;
@@ -38,7 +36,7 @@
 //! assert_eq!(model.led_state(), LedState::Running);
 //! ```
 //!
-//! **Fault handling:**
+//! Fault handling:
 //!
 //! ```
 //! use dcc_esp32::application::StatusModel;
@@ -157,9 +155,9 @@ pub enum FaultEvent {
     TrackPowerArmed,
     /// Physical stop button pressed (GPIO22).
     StopPressed,
-    /// Resume button short-press (<2 s) - clears e-stop, ignored during fault.
+    /// Resume button short-press (<2 s): clears e-stop, ignored during fault.
     ResumeShortPressed,
-    /// Resume button long-press (≥2 s) - force-clears any latched state.
+    /// Resume button long-press (≥2 s): force-clears any latched state.
     ResumeLongPressed,
     /// Hardware or service fault detected (e.g. track short, CV error).
     FaultLatched(FaultCause),

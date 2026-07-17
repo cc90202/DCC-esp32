@@ -22,7 +22,7 @@ use embedded_graphics::{
 #[cfg(target_arch = "riscv32")]
 use ssd1306::{I2CDisplayInterface, Ssd1306Async, mode::BufferedGraphicsModeAsync, prelude::*};
 
-/// Braille dot spinner frames - each u8 is the Unicode offset from U+2800,
+/// Braille dot spinner frames; each u8 is the Unicode offset from U+2800,
 /// which directly encodes the dot bitmask (2 cols x 3 rows).
 #[cfg(target_arch = "riscv32")]
 const THROBBER_FRAMES: [u8; 10] = [
@@ -49,7 +49,7 @@ fn draw_throbber<D: DrawTarget<Color = BinaryColor>>(target: &mut D, origin: Poi
     let style = PrimitiveStyle::with_fill(BinaryColor::On);
 
     // Bit-to-position: column-major order matching braille encoding.
-    // (row, col) - col X offset: 0 or 3, row Y offset: 0, 3, 6.
+    // (row, col): col X offset: 0 or 3, row Y offset: 0, 3, 6.
     const MAP: [(i32, i32); 6] = [
         (0, 0), // bit 0: row 0, col 0
         (3, 0), // bit 1: row 1, col 0

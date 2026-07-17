@@ -48,7 +48,7 @@ fn xbus_frame(xheader: u8, extra: &[u8]) -> heapless::Vec<u8, 64> {
     frame
 }
 
-// -- Parse tests ----------------------------------------------------------
+// --- Parse tests ---
 
 #[test]
 fn test_parse_get_serial_number() {
@@ -74,7 +74,7 @@ fn test_parse_set_broadcast_flags() {
 
 #[test]
 fn test_parse_set_broadcast_flags_too_short() {
-    // Only 4 bytes - missing the flags payload
+    // Only 4 bytes, missing the flags payload
     let buf = [0x04, 0x00, 0x50, 0x00];
     assert_eq!(parse_frame(&buf), Err(ParseError::FrameTooShort));
 }
@@ -351,7 +351,7 @@ fn test_parse_cv_pom_read_byte() {
     assert_eq!(cv, 1);
 }
 
-// -- Encode tests ---------------------------------------------------------
+// --- Encode tests ---
 
 #[test]
 fn test_encode_loco_info_checksum() {
@@ -588,7 +588,7 @@ fn test_encode_status_flags() {
     assert_eq!(buf[6], 0x03);
 }
 
-// -- Error/fuzz tests -----------------------------------------------------
+// --- Error/fuzz tests ---
 
 #[test]
 fn test_invalid_frame_too_short() {
@@ -618,7 +618,7 @@ fn test_invalid_xbus_checksum() {
 
 #[test]
 fn test_fuzz_random_bytes() {
-    // Various random-ish byte sequences - must not panic, only return Err or Ok(Unknown)
+    // Various random-ish byte sequences; must not panic, only return Err or Ok(Unknown)
     let cases: &[&[u8]] = &[
         &[0xFF, 0xFF, 0xFF, 0xFF],
         &[0x04, 0x00, 0xFF, 0xFF],
@@ -683,7 +683,7 @@ fn test_encode_loco_info_speed128_avoids_wire_estop_value() {
     assert_eq!(buf[8], 0x82, "logical speed 1 must encode as wire speed 2");
 }
 
-// -- Turnout (0x43) tests --------------------------------------------------
+// --- Turnout (0x43) tests ---
 
 #[test]
 fn test_parse_get_turnout_info_address_5() {

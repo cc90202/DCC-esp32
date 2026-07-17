@@ -55,7 +55,7 @@ pub const MAX_DATA_PULSES: usize = 96;
 ///
 /// The engine uses this pre-encoded buffer to avoid re-encoding DccPacket::Idle
 /// on every loop iteration.  All packets (idle and real) are transmitted via
-/// `transmit_continuously(LoopMode::Infinite)` - the hardware loops the buffer
+/// `transmit_continuously(LoopMode::Infinite)`, so the hardware loops the buffer
 /// with zero inter-packet gap.  RMT channel memsize must be ≥ 2 blocks (96 slots)
 /// to fit idle (49 entries). Three blocks leave enough tail RAM for RCN-218
 /// LOGON_SELECT packets.

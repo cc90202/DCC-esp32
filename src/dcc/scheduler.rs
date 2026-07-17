@@ -3,21 +3,21 @@
 //! Manages active locomotive slots and retransmits commands cyclically to keep
 //! decoders updated.
 //!
-//! # Overview
-//!
 //! The scheduler runs as an async Embassy actor task. It accepts `SchedulerCommand` messages
 //! (SetSpeed, SetFunction, EmergencyStop, etc.) via a channel and generates a continuous
-//! stream of DCC packets to refresh decoder state. Scheduling policy prioritizes:
-//! - **Priority 1**: Dirty speed packets (just changed)
-//! - **Priority 2**: Dirty function packets (just changed)
-//! - **Priority 3**: Cyclic refresh (ensure all active locos get periodic updates)
+//! stream of DCC packets to refresh decoder state.
 //!
-//! The scheduler supports:
-//! - Up to 12 active locomotive slots
-//! - Consist (multi-unit train) management
-//! - Pause/Resume coordination with CV programming (main track stops during programming)
+//! Speed packets that have just changed go out first, then changed function
+//! packets, and whatever bandwidth is left goes to the cyclic refresh that keeps
+//! every active locomotive updated. Sending a stale refresh ahead of a fresh
+//! speed change is what makes a throttle feel laggy, so the ordering matters
+//! more than it looks.
 //!
-//! # Function Index
+//! The scheduler holds up to 12 active locomotive slots, manages consists for
+//! multi-unit trains, and coordinates pause and resume with CV programming,
+//! since the main track has to stop while programming runs.
+//!
+//! # Function index
 //!
 //! Functions are controlled via `FunctionIndex`, which validates the index 0-28:
 //! - 0 = FL (headlight)

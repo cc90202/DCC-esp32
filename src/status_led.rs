@@ -1,20 +1,17 @@
 //! Status LED task and GPIO output mapping.
 //!
-//! # Overview
-//!
 //! Runs as an Embassy async task that consumes `StatusModel` updates and drives
 //! GPIO14 (green LED) and GPIO15 (red LED) to indicate system state.
 //!
-//! LED patterns:
-//! - **Booting**: Green blinking (125ms period) - brief pulses during startup
-//! - **WiFi Connecting**: Red blinking (500ms period) - network connection in progress
-//! - **Running**: Solid green - ready to control trains
-//! - **E-Stop Active**: Solid red - operator pressed stop button
-//! - **Fault Latched**: Solid red - hardware fault (track short, CV error, etc.)
+//! Booting shows brief green pulses on a 125ms period, and WiFi connection
+//! shows red blinking on a 500ms period. Once the station is ready to control
+//! trains the green LED goes solid. Solid red means either the operator pressed
+//! the stop button or a hardware fault is latched, such as a track short or a
+//! CV error.
 //!
 //! # Examples
 //!
-//! **Spawning the LED task (in main.rs):**
+//! Spawning the LED task (in main.rs):
 //!
 //! ```no_run
 //! use dcc_esp32::status_led::status_led_task;
@@ -34,10 +31,8 @@
 //!
 //! # Hardware
 //!
-//! - **GPIO14** - Green LED (active high)
-//! - **GPIO15** - Red LED (active high)
-//!
-//! Both LEDs can be driven directly from ESP32 GPIO (push-pull output, ~20mA max per pin).
+//! The green LED is on GPIO14 and the red one on GPIO15, both active high.
+//! Both can be driven directly from ESP32 GPIO (push-pull output, ~20mA max per pin).
 //! Add 200Ω current-limiting resistors in series if using >5mA LEDs.
 
 use crate::application::StatusModel;

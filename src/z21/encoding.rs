@@ -31,14 +31,14 @@ pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> usize {
         out[6] = (addr_val & 0xFF) as u8;
     }
 
-    // DB2: 0000BKKK - B=0 (not busy), KKK=speed steps format
+    // DB2: 0000BKKK, B=0 (not busy), KKK=speed steps format
     let kkk: u8 = match state.speed.format() {
         SpeedFormat::Speed28 => 2,
         SpeedFormat::Speed128 => 4,
     };
     out[7] = kkk;
 
-    // DB3: RVVVVVVV - direction + speed, encoded in the native format
+    // DB3: RVVVVVVV, direction and speed, encoded in the native format
     let wire_speed: u8 = match state.speed.format() {
         SpeedFormat::Speed128 => {
             if state.speed.is_zero() {
@@ -56,7 +56,7 @@ pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> usize {
     };
     out[8] = dir_bit | (wire_speed & 0x7F);
 
-    // DB4: 0DSLFGHJ - D=double traction(0), S=smartsearch(0), L=F0, F=F4, G=F3, H=F2, J=F1
+    // DB4: 0DSLFGHJ, D=double traction(0), S=smartsearch(0), L=F0, F=F4, G=F3, H=F2, J=F1
     let f = state.functions;
     let f0 = (f & 1) as u8;
     let f1 = ((f >> 1) & 1) as u8;
@@ -158,7 +158,7 @@ pub fn encode_cv_nack(out: &mut [u8]) -> usize {
 /// Encode `LAN_X_TURNOUT_INFO` into `out`. Returns bytes written (9), or 0 if `out` is shorter than 9.
 ///
 /// XBus reply, header=0x0040, X-Header=0x43 (same byte as request).
-/// DB2=0x00 means state unknown - we have no accessory decoder support.
+/// DB2=0x00 means state unknown, since there is no accessory decoder support.
 /// Spec section: Z21 LAN Protocol v1.13, accessory decoder chapter.
 pub fn encode_turnout_info(address: DccAddress, out: &mut [u8]) -> usize {
     // [DataLen:2][Header=0x0040:2][0x43][AddrH][AddrL][DB2=0x00][XCS]
@@ -226,7 +226,7 @@ pub fn encode_firmware_version(out: &mut [u8]) -> usize {
 
 /// Encode `LAN_GET_CODE` response into `out`. Returns bytes written (5), or 0 if `out` is shorter than 5.
 ///
-/// Code=0x00 means no feature restrictions - all Z21 functionality available.
+/// Code=0x00 means no feature restrictions, so all Z21 functionality available.
 pub fn encode_code(out: &mut [u8]) -> usize {
     const LEN: usize = 5;
     if out.len() < LEN {
@@ -280,7 +280,7 @@ pub fn encode_status(track_on: bool, estop: bool, out: &mut [u8]) -> usize {
 /// Encode `LAN_SYSTEMSTATE_DATACHANGED` (0x0084) into `out`. Returns bytes written (20), or 0 if `out` is shorter than 20.
 ///
 /// Layout (Z21 spec §2.2):
-///   [4-5]  MainCurrent         i16 mA  (we report 0 - no live ADC path here)
+///   [4-5]  MainCurrent         i16 mA  (we report 0, no live ADC path here)
 ///   [6-7]  ProgCurrent         i16 mA
 ///   [8-9]  FilteredMainCurrent i16 mA
 ///   [10-11] Temperature        i16 °C  (nominal 25)
@@ -300,7 +300,7 @@ pub fn encode_system_state(
         return 0;
     }
     write_frame_header(out, LEN as u16, RESP_SYSTEMSTATE);
-    // MainCurrent, ProgCurrent, FilteredMainCurrent - all 0 (no ADC)
+    // MainCurrent, ProgCurrent, FilteredMainCurrent are all 0 (no ADC)
     out[4] = 0;
     out[5] = 0;
     out[6] = 0;

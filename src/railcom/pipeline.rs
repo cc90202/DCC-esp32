@@ -11,7 +11,7 @@ use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
 // Per-outcome counters. Every window lands in exactly one bucket:
 // empty, parsed, parse-error, or oversized (FIFO snapshot exceeded the max
-// captured byte count - this is an overflow condition, not detected UART
+// captured byte count; this is an overflow condition, not detected UART
 // framing/glitch corruption).
 static RX_EMPTY_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_PARSE_OK_COUNT: AtomicU32 = AtomicU32::new(0);

@@ -1,6 +1,6 @@
 //! RailCom sighting lookups for `LAN_RAILCOM_GETDATA` polling.
 //!
-//! ESP32-C6 only - gated behind `#[cfg(target_arch = "riscv32")]` at the
+//! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
 
 use crate::dcc::DccAddress;

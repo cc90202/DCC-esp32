@@ -2,21 +2,19 @@
 //!
 //! Validates DCC packets and pulse sequences against NMRA standards S-9.1 and S-9.2.
 //!
-//! # Overview
-//!
 //! The validator provides several module-level functions at different levels:
-//! - [`validate_timing`] - Check pulse timing against NMRA acceptable ranges
-//! - [`validate_packet_structure`] - Verify preamble, start/end bits, byte boundaries
-//! - [`validate_nmra_compliance`] - Check address and speed ranges
-//! - [`validate_checksum`] - Verify XOR checksum
-//! - [`validate_full`] - Run all validations given packet + pulses
-//! - [`validate_complete`] - Encode packet and run all validations (one call)
+//! - [`validate_timing`] checks pulse timing against NMRA acceptable ranges
+//! - [`validate_packet_structure`] verifies the preamble, start/end bits, byte boundaries
+//! - [`validate_nmra_compliance`] checks address and speed ranges
+//! - [`validate_checksum`] verifies the XOR checksum
+//! - [`validate_full`] runs all of them over a packet and its pulses
+//! - [`validate_complete`] encodes the packet first, then runs all of them
 //!
 //! All validations are based on NMRA S-9.1 (electrical) and S-9.2 (communications) standards.
 //!
 //! # Examples
 //!
-//! **Validate pulse timing (NMRA S-9.1):**
+//! Validate pulse timing (NMRA S-9.1):
 //!
 //! ```
 //! use dcc_esp32::dcc::{
@@ -34,7 +32,7 @@
 //! assert!(validate_timing(&pulses).is_ok());
 //! ```
 //!
-//! **Validate packet structure:**
+//! Validate packet structure:
 //!
 //! ```
 //! use dcc_esp32::dcc::{
@@ -49,7 +47,7 @@
 //! assert!(validate_packet_structure(&pulses).is_ok());
 //! ```
 //!
-//! **Validate complete packet (structure + timing + compliance + checksum):**
+//! Validate complete packet (structure + timing + compliance + checksum):
 //!
 //! ```
 //! use dcc_esp32::dcc::{
@@ -62,11 +60,11 @@
 //! // Must encode first, then validate
 //! let pulses = encode_dcc_packet(&packet).unwrap();
 //!
-//! // Comprehensive validation: timing + structure + address/speed ranges + checksum
+//! // Validates timing, structure, address/speed ranges and checksum
 //! assert!(validate_full(&packet, &pulses).is_ok());
 //! ```
 //!
-//! **Validate NMRA compliance (ranges only):**
+//! Validate NMRA compliance (ranges only):
 //!
 //! ```
 //! use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_nmra_compliance};
@@ -78,7 +76,7 @@
 //! assert!(validate_nmra_compliance(&packet).is_ok());
 //! ```
 //!
-//! **Validate everything in one call (recommended):**
+//! Validate everything in one call (recommended):
 //!
 //! ```
 //! use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_complete};
@@ -90,12 +88,14 @@
 //! assert!(validate_complete(&packet).is_ok());
 //! ```
 //!
-//! # NMRA Ranges
+//! # NMRA ranges
 //!
-//! - **DCC "1" bit**: 55-61μs high and low (nominal 58μs ±3μs)
-//! - **DCC "0" bit**: 95-9900μs (minimum 95μs; stretched "0" for decoders with limited resolution)
-//! - **Minimum preamble**: 14 bits (per NMRA S-9.2, typically 16 bits transmitted)
-//! - **Packet structure**: Preamble + Start Bit (0) + Address Byte + Data Byte(s) + Error Detection Byte + End Bit (1)
+//! A "1" bit is 55-61μs high and low, nominally 58μs with a 3μs tolerance. A
+//! "0" bit runs from 95μs to 9900μs: the long end is the stretched "0" used for
+//! decoders with limited timing resolution. The preamble is at least 14 bits per
+//! S-9.2, though 16 are typically transmitted. A packet is the preamble, a start
+//! bit (0), the address byte, one or more data bytes, the error detection byte,
+//! and a final end bit (1).
 
 use crate::dcc::timing::{DCC_ONE_HIGH_US, DCC_ZERO_HIGH_US};
 use crate::dcc::{DccPacket, encoder::PulseCode};
@@ -219,7 +219,7 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
     }
     pos += 1; // skip start bit
 
-    // V2: Validate byte structure - each byte is 8 pulses followed by separator/end
+    // V2: Validate byte structure: each byte is 8 pulses followed by separator/end
     loop {
         // Need at least 8 pulses for a data byte + 1 for separator/end
         if pos + 9 > pulses.len() {
@@ -230,13 +230,13 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
 
         // After 8 bits: expect "0" (inter-byte separator) or "1" (end bit)
         if is_one_bit(&pulses[pos]) {
-            // End bit - this should be the last pulse
+            // End bit: this should be the last pulse
             if pos != pulses.len() - 1 {
                 return Err(ValidationError::InvalidStructure);
             }
             break;
         } else if is_zero_bit(&pulses[pos]) {
-            // Inter-byte separator - continue to next byte
+            // Inter-byte separator, continue to next byte
             pos += 1;
         } else {
             return Err(ValidationError::InvalidStructure);
@@ -322,16 +322,13 @@ pub fn validate_checksum(packet: &DccPacket) -> Result<(), ValidationError> {
 ///
 /// # When to use this vs `validate_complete()`
 ///
-/// - **Use `validate_full()`** (this function) when:
-///   - You already have the encoded pulse sequence (from `encode_dcc_packet()`)
-///   - You want to validate intermediate transmission state
-///   - You need to inspect pulse timing separately
-///   - Example: DCC engine validates pulses before transmission
+/// Use this one when you already hold the encoded pulse sequence from
+/// `encode_dcc_packet()`, when you want to check intermediate transmission
+/// state, or when you need to inspect the pulse timing on its own. The DCC
+/// engine uses it to validate pulses just before transmitting them.
 ///
-/// - **Use `validate_complete()` instead** when:
-///   - You only have a packet and want automatic encoding
-///   - You want the simplest one-call API
-///   - Example: Z21 server validates received command
+/// Use `validate_complete()` instead when you only have the packet and want it
+/// encoded for you, as the Z21 server does when validating a received command.
 pub fn validate_full(packet: &DccPacket, pulses: &[PulseCode]) -> Result<(), ValidationError> {
     validate_timing(pulses)?;
     validate_packet_structure(pulses)?;
@@ -347,17 +344,14 @@ pub fn validate_full(packet: &DccPacket, pulses: &[PulseCode]) -> Result<(), Val
 ///
 /// # When to use this vs `validate_full()`
 ///
-/// - **Use `validate_complete()`** (this function) when:
-///   - You have a `DccPacket` and want to validate it end-to-end
-///   - You don't already have the encoded pulse sequence
-///   - You want the simplest API (one function call)
-///   - Example: Z21 server receives a command, creates a packet, validates it immediately
+/// Use this one when you have a `DccPacket`, do not already hold the encoded
+/// pulse sequence, and want it validated end to end in a single call. The Z21
+/// server takes this path: it receives a command, builds a packet, and
+/// validates it immediately.
 ///
-/// - **Use `validate_full(packet, pulses)`** when:
-///   - You already have both the packet AND the pulse sequence
-///   - You want to validate a pre-encoded transmission (diagnostic use)
-///   - You need to inspect intermediate pulse data
-///   - Example: DCC engine loop transmits pulses; validator checks they match spec
+/// Use `validate_full(packet, pulses)` when you already have both the packet and
+/// its pulses, for example to check a pre-encoded transmission during
+/// diagnostics or to inspect the intermediate pulse data.
 ///
 /// # Errors
 ///

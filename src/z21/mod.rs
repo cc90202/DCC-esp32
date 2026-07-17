@@ -1,27 +1,34 @@
-//! Z21 LAN Protocol v1.13 - pure no_std parsing and encoding.
+//! Z21 LAN Protocol v1.13: pure no_std parsing and encoding.
 //!
 //! This module parses incoming UDP payloads into typed [`Z21Command`] values and
 //! encodes the response and broadcast frames used by the network task. It has no
 //! Embassy or ESP dependencies, so protocol behavior is covered by host tests.
 //!
-//! # Command Coverage
+//! # Command coverage
 //!
-//! Implemented commands:
-//! - **GetSerialNumber** - Returns command station serial
-//! - **GetCode** - Returns firmware version/code
-//! - **GetHwInfo** - Returns hardware info (model, version)
-//! - **GetSystemState** - Returns track power, running state
-//! - **GetFirmwareVersion** - Returns XBus firmware version
-//! - **SetBroadcastFlags** - Configure which events to broadcast
-//! - **GetLocoMode/SetLocoMode** - Query/store per-address output format
-//! - **SetTrackPowerOn/Off** - Control main track output
-//! - **SetStop** - Broadcast e-stop
-//! - **SetLocoEstop** - Emergency stop specific loco
-//! - **SetLocoDrive** - Control loco speed/direction
-//! - **SetLocoFunction** - Control loco functions (lights, horn, etc.)
-//! - **GetLocoInfo** - Query loco speed/function state
-//! - **RailcomGetData** - Poll cached RailCom data
-//! - **GetTurnoutInfo** - Query accessory decoder state (returns unknown)
+//! Station identity and state:
+//!
+//! - `GetSerialNumber`: command station serial
+//! - `GetCode`: firmware version/code
+//! - `GetHwInfo`: hardware model and version
+//! - `GetFirmwareVersion`: XBus firmware version
+//! - `GetSystemState`: track power and running state
+//! - `SetBroadcastFlags`: which events the client wants broadcast
+//!
+//! Track and locomotive control:
+//!
+//! - `SetTrackPowerOn` / `SetTrackPowerOff`: main track output
+//! - `SetStop`: broadcast emergency stop
+//! - `SetLocoEstop`: emergency stop for one locomotive
+//! - `SetLocoDrive`: speed and direction
+//! - `SetLocoFunction`: functions such as lights and horn
+//! - `GetLocoInfo`: current speed and function state
+//! - `GetLocoMode` / `SetLocoMode`: per-address output format
+//!
+//! Feedback:
+//!
+//! - `RailcomGetData`: poll the cached RailCom data
+//! - `GetTurnoutInfo`: accessory decoder state, always answered as unknown
 
 use crate::dcc::{DccAddress, Direction, LogicalSpeed, SpeedFormat};
 
@@ -55,7 +62,7 @@ pub struct LocoInfo {
     pub functions: u32,
 }
 
-/// `LAN_SET_BROADCASTFLAGS` payload - an OR-combination of Z21 broadcast
+/// `LAN_SET_BROADCASTFLAGS` payload, an OR-combination of Z21 broadcast
 /// subscription bits (Z21 LAN Protocol Specification v1.13, §2.16).
 ///
 /// The parser preserves the raw payload in the command. Broadcast delivery is
@@ -129,7 +136,7 @@ pub enum Z21Command {
         address: DccAddress,
         cv: u16,
     },
-    /// LAN_X_GET_TURNOUT_INFO - accessory decoder state request.
+    /// LAN_X_GET_TURNOUT_INFO: accessory decoder state request.
     /// We have no accessory decoder support; respond with state=0 (unknown).
     GetTurnoutInfo {
         address: DccAddress,
@@ -138,7 +145,7 @@ pub enum Z21Command {
         request_type: u8,
         address: Option<DccAddress>,
     },
-    /// `LAN_LOCONET_DETECTOR` - LocoNet track occupancy detector query.
+    /// `LAN_LOCONET_DETECTOR`: LocoNet track occupancy detector query.
     /// We have no LocoNet detector support; the parser only validates frame
     /// length, so no fields are extracted (dispatch is a 0-byte no-op).
     LoconetDetector,

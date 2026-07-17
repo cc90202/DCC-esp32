@@ -523,7 +523,7 @@ fn test_set_speed_creates_or_updates() {
 
 #[test]
 fn test_set_speed_rejects_out_of_range() {
-    // Range validation now lives solely in `LogicalSpeed::new` - an
+    // Range validation now lives solely in `LogicalSpeed::new`: an
     // out-of-range value never becomes a `LogicalSpeed`, so it can no longer
     // reach `SlotManager` at all. This replaces the old
     // `SlotManager::set_speed_with_format` rejection path.

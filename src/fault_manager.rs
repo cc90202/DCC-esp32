@@ -3,42 +3,27 @@
 //! The pure `policy` module drives all transitions; the async firmware fault-manager task
 //! is an adapter that applies the requested effects to Embassy channels and GPIO.
 //!
-//! # Overview
+//! The fault manager is a state machine with three states. In `Normal` the
+//! track is powered, motion commands are accepted and the track driver is
+//! enabled. `EstopLatched` is reached when the operator presses the stop
+//! button, and a resume press leaves it. `FaultLatched` is reached on a
+//! hardware fault such as a track short or a CV error, and only a long resume
+//! press or a service action clears it. In both latched states the track driver
+//! is disabled.
 //!
-//! The fault manager is a state machine with three states:
-//! - **Normal** - Track powered, motion commands accepted, track driver enabled
-//! - **EstopLatched** - Operator pressed stop button; resume clears; track driver disabled
-//! - **FaultLatched** - Hardware fault (track short, CV error); long resume or service action clears; track driver disabled
+//! A fault can be latched from either of the other two states, and it replaces
+//! a pending e-stop rather than queueing behind it. A short resume press while
+//! a fault is latched is deliberately ignored, so an operator cannot clear a
+//! hardware fault by reflex.
 //!
 //! The runtime state is exposed as [`FaultManagerState`] for observers. State
 //! transitions and their required effects remain private to the pure policy so
 //! callers cannot bypass the fault manager's application rules.
 //!
-//! ```text
-//!                    StopPressed
-//!            +-----------------------+
-//!            |                       ▼
-//!        +--------+           +-------------+
-//!        | Normal |           | EstopLatched |
-//!        +--------+           +-------------+
-//!            ▲  |                  |  ▲  |
-//!  Resume*   |  | FaultLatched     |  |  | FaultLatched
-//!  FaultClr  |  | (cause)         |  |  | (cause)
-//!            |  ▼                  |  |  ▼
-//!        +--------------+ ◄-------+  |
-//!        | FaultLatched |    (estop   |
-//!        |   (cause)    |  replaced)  |
-//!        +--------------+             |
-//!              |  ResumeShort --- ignored (fault stays)
-//!              |  ResumeLong ---- clears fault --► Normal
-//!              |  FaultClearedByService ----------► Normal
-//!              +--------------------------------------+
-//! ```
-//!
-//! **Side-effects per transition** (emitted by the fault policy):
-//! - Scheduler commands: `EmergencyStopAll`, `Pause`, `Resume`
-//! - Status events: `EstopActive`, `EstopCleared`, `FaultLatched`, `FaultCleared`
-//! - Track-driver enable GPIO: HIGH in Normal, LOW otherwise
+//! Each transition can emit scheduler commands (`EmergencyStopAll`, `Pause`,
+//! `Resume`), status events (`EstopActive`, `EstopCleared`, `FaultLatched`,
+//! `FaultCleared`), and a level on the track-driver enable GPIO, which is HIGH
+//! in `Normal` and LOW otherwise.
 
 mod policy;
 

@@ -22,51 +22,44 @@
 
 # DCC-esp32
 
-`no_std` Rust firmware for an **ESP32-C6 based DCC command station** for model
-railroading, built with `esp-hal`, Embassy async tasks, and `esp-wifi`.
+`no_std` Rust firmware for a DCC command station built on the ESP32-C6, using
+`esp-hal`, Embassy async tasks and `esp-wifi`. Together with its companion
+hardware it drives up to 12 locomotives at once, controlled from the Roco Z21
+app over a Z21-compatible UDP layer.
 
-Together, this software and its companion hardware implement a complete DCC command station
-that can control **up to 12 active DCC locomotives/decoders at the same time**.
-The system is operated through the **Roco Z21 app**, using a Z21-compatible UDP control layer.
+## What this software does
 
-The firmware generates NMRA-compliant DCC packets, schedules continuous track commands,
-handles emergency-stop and fault logic, and exposes network control through a Z21-compatible
-interface. The project is designed as command-station firmware, not just a waveform demo:
-it includes packet encoding, scheduler logic, service-mode CV support, safety state handling,
-and runtime status/reporting.
+The track waveform comes out of the RMT peripheral, with packet swaps handled
+inside the interrupt while the preamble is still playing. That keeps the signal
+free of inter-packet gaps and costs under 0.4% of the CPU, which is what makes
+12 simultaneous decoders possible without the signal degrading.
 
-## What This Software Does
+Above that sit the NMRA packet encoder for both locomotive control and service
+mode, a scheduler that keeps every active decoder refreshed with its speed,
+direction and function state, emergency stop and fault handling, and the
+Z21-compatible network layer the app talks to.
 
-- Generates gap-free DCC waveforms via ISR-driven RMT (interrupt swaps packets during preamble playback, CPU overhead <0.4%)
-- Encodes NMRA DCC packets for locomotive control and service mode
-- Continuously refreshes active locomotive state on the track
-- Controls up to 12 active DCC locomotives/decoders simultaneously without signal degradation
-- Supports speed, direction, functions, emergency stop, and fault handling
-- Exposes control through the Roco Z21 app over a Z21-compatible UDP protocol layer
-- Provides runtime WiFi provisioning through a safe SoftAP setup mode
-- Targets real hardware with host-side tests for pure logic
+WiFi credentials are configured at runtime from a setup page the board serves
+itself, so nothing is baked in at build time. Protocol, encoder and scheduler
+logic is pure and covered by host-side tests; the rest runs on the target.
 
-## Hardware Documentation
+## Hardware documentation
 
-Read these first before wiring or powering anything:
+Read this before wiring or powering anything:
 
-- [Hardware Documentation Index](docs/hardware/README.md)
+- [Components inventory](docs/hardware/components-inventory.md)
 
-The project currently documents two track-driver options:
+Two track drivers have been used on the bench. The BTS7960 is the
+higher-current H-bridge, and the older breadboard and RailCom notes still refer
+to it. The Pololu DRV8874 carrier (#4035) is the compact option used for the
+current bring-up and short-recovery testing.
 
-- **BTS7960**: higher-current H-bridge option, with older breadboard and RailCom
-  notes still preserved.
-- **DRV8874 / Pololu #4035**: compact bench option now used for the current
-  DRV8874 bring-up and recovery testing.
+The firmware drives the DCC signal path and the control logic, but safe operation depends on the
+external hardware around it: the power stage, the protection circuitry, and how the signals are
+routed. Detailed wiring notes for the two drivers are kept outside this repository for now, so do
+not wire a track from this README alone.
 
-Important:
-
-- The firmware drives the DCC signal path and control logic, but safe operation depends on the
-  external hardware around it.
-- Wiring, power stage, protection, and signal routing are documented in the hardware files above.
-- Do not wire directly from the README alone. Use the hardware docs as the source of truth.
-
-## Getting Started
+## Getting started
 
 1. Build and flash the firmware:
 
@@ -102,18 +95,18 @@ Important:
 4. Once station mode is connected, the OLED display shows the station's IP
    address.
 
-5. In the **Roco Z21 app**, go to settings and enter that IP address as the command station.
+5. In the Roco Z21 app, go to settings and enter that IP address as the command station.
 
 6. Select the locomotive address and drive.
 
 Build-time `.env` credentials have been removed entirely: WiFi credentials are
 configured from the setup page and stored in flash.
 
-> **Note:** CV programming support is under active development.
-> RailCom/POM read and write paths are being integrated, but full programming-track
-> hardware support is not yet complete.
+CV programming is still being worked on. The RailCom and programming-on-main
+read and write paths are being integrated, but the programming-track hardware
+support is not finished.
 
-## Cargo Aliases
+## Cargo aliases
 
 Custom aliases are defined in `.cargo/config.toml` for common workflows:
 
@@ -142,7 +135,7 @@ cargo run                  # flash and monitor via espflash
 cargo run --release        # flash release build
 ```
 
-## Test and Validation
+## Test and validation
 
 ```bash
 cargo test-host            # host-side unit tests
@@ -151,7 +144,7 @@ cargo clippy-host          # lint (host)
 cargo clippy-esp           # lint (ESP32-C6)
 ```
 
-## Commit Conventions
+## Commit conventions
 
 Commit messages follow Conventional Commits and are validated with `cocogitto`.
 
@@ -160,16 +153,16 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 - Local check: `cog check origin/main..HEAD`
 - Local hook install: `cog install-hook`
 
-## Project Layout
+## Project layout
 
 - `src/bin/main.rs`: firmware entrypoint
 - `src/dcc/`: DCC packet, encoder, timing, scheduler, validator, CV logic, ISR-driven RMT backend
 - `src/net/`: Z21-compatible network protocol, UDP control, WiFi, and provisioning
 - `src/railcom/`: RailCom capture, parsing, runtime dispatch, and POM integration
 - `docs/specs/`: protocol and standards references
-- `docs/hardware/`: wiring and hardware usage notes
+- `docs/hardware/`: component inventory and hardware notes
 
-## Safety Notes
+## Safety notes
 
 - Current output/control behavior must match the external amplifier and protection hardware.
 - For protocol, power-stage, or GPIO wiring changes, re-check the hardware documentation before flashing.

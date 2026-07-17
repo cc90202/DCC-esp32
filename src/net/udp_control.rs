@@ -1,6 +1,6 @@
 //! Embassy WiFi + Z21 UDP control task.
 //!
-//! ESP32-C6 only - gated behind `#[cfg(target_arch = "riscv32")]` at the
+//! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
 //!
 //! This is the wiring module: it binds the UDP socket, drives the
@@ -36,7 +36,7 @@ pub use super::wifi::NetInitError;
 use super::{radio, wifi};
 
 const Z21_PORT: u16 = 21105;
-// Static buffers - avoids heap allocation in the hot UDP path.
+// Static buffers: avoids heap allocation in the hot UDP path.
 static RX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
@@ -67,7 +67,7 @@ pub struct NetTaskChannels {
     pub loco_response_receiver: Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
 }
 
-/// Main net task - WiFi init, DHCP, Z21 UDP control loop.
+/// Main net task: WiFi init, DHCP, Z21 UDP control loop.
 ///
 /// Spawns `wifi::wifi_runner_task` and `wifi::connection_task` internally,
 /// following the official esp-hal embassy WiFi example pattern.
@@ -101,7 +101,7 @@ pub async fn net_task(
     let resources = NET_RESOURCES.init(StackResources::new());
     let (stack, runner) = embassy_net::new(interfaces.sta, net_config, resources, seed);
 
-    // Spawn runner and connection tasks - same pattern as official examples.
+    // Spawn runner and connection tasks, same pattern as official examples.
     spawner
         .spawn(wifi::wifi_runner_task(runner))
         .map_err(|_| NetInitError::WifiRunnerSpawn)?;
@@ -113,7 +113,7 @@ pub async fn net_task(
     stack.wait_config_up().await;
     if let Some(config) = stack.config_v4() {
         info!(
-            "Network up - IP: {}",
+            "Network up, IP: {}",
             defmt::Display2Format(&config.address.address())
         );
         let addr = config.address.address();
@@ -122,7 +122,7 @@ pub async fn net_task(
             crate::system_status::BootStep::WifiConnected,
         ));
     } else {
-        info!("Network up - DHCP configured (no IPv4?)");
+        info!("Network up, DHCP configured (no IPv4?)");
     }
 
     // Set up UDP socket.
@@ -161,7 +161,7 @@ pub async fn net_task(
         )
         .await
         {
-            // -- Incoming UDP packet ----------------------------------
+            // --- Incoming UDP packet ---
             Either3::First(Ok((n, meta))) => {
                 let kind = z21_proto::frame_kind(&recv_buf[..n]);
                 // Suppress per-second polling noise (SystemState, XBus status)
@@ -169,7 +169,7 @@ pub async fn net_task(
                     kind.header == HEADER_SYSTEMSTATE_GETDATA || kind.header == HEADER_XBUS;
                 if !is_polling {
                     info!(
-                        "UDP rx {} bytes from {} - header=0x{:04X} xheader=0x{:02X}",
+                        "UDP rx {} bytes from {}: header=0x{:04X} xheader=0x{:02X}",
                         n,
                         defmt::Display2Format(&meta.endpoint),
                         kind.header,
@@ -209,7 +209,7 @@ pub async fn net_task(
                 warn!("Z21 UDP receive failed");
             }
 
-            // -- System status event ----------------------------------
+            // --- System status event ---
             Either3::Second(event) => {
                 status_model.apply(event);
                 if let Some(ep) = client_safety.active_client() {
@@ -233,7 +233,7 @@ pub async fn net_task(
                 }
             }
 
-            // -- Timer tick (client safety timeout) -------------------
+            // --- Timer tick (client safety timeout) ---
             Either3::Third(_) => {
                 if let Some(timeout) = client_safety.on_timer(Instant::now().as_millis()) {
                     // Cut the bridge immediately; the fault manager then

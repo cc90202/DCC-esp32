@@ -14,7 +14,7 @@
 //! assert!(!bytes.is_empty());
 //! ```
 //!
-//! # NMRA Compliance
+//! # NMRA compliance
 //!
 //! - Short addresses: 1-127 (0 is broadcast only)
 //! - Long addresses: 128-10239 (11-bit field)
@@ -196,7 +196,7 @@ impl DccAddress {
     ///
     /// This differs from the Z21 wire decoding in `wire.rs::parse_loco_address`,
     /// which reads a 2-byte on-wire field where the addressing mode is tagged by
-    /// the top two bits of the high byte rather than inferred from magnitude -
+    /// the top two bits of the high byte rather than inferred from magnitude:
     /// a wire long-address encoding could in principle carry a value that also
     /// fits the short range. `from_magnitude` is for callers that only have a
     /// plain numeric address (e.g. a RailCom-reported address) and want the
@@ -450,7 +450,7 @@ pub enum DccPacket {
         f11: bool,
         f12: bool,
     },
-    /// Function Group 3 (F13-F20) - Binary State Control Long Form
+    /// Function Group 3 (F13-F20), binary state control long form
     /// Encoding: 0xDE DDDDDDDD where D0=F13, D7=F20
     FunctionGroup3 {
         address: DccAddress,
@@ -463,7 +463,7 @@ pub enum DccPacket {
         f19: bool,
         f20: bool,
     },
-    /// Function Group 4 (F21-F28) - Binary State Control Long Form
+    /// Function Group 4 (F21-F28), binary state control long form
     /// Encoding: 0xDF DDDDDDDD where D0=F21, D7=F28
     FunctionGroup4 {
         address: DccAddress,
@@ -482,7 +482,7 @@ pub enum DccPacket {
         address: DccAddress,
         direction: Direction,
     },
-    /// Broadcast stop - stops all decoders' motors but preserves state
+    /// Broadcast stop: stops all decoders' motors but preserves state
     /// Different from Reset: BroadcastStop only stops motors, Reset resets all decoder state
     /// Encoding: 0x00 (broadcast) + 01100001 (fwd e-stop, C=0) + checksum
     BroadcastStop,

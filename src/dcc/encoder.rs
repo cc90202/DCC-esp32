@@ -3,8 +3,6 @@
 //! Converts logical DCC packets into RMT pulse sequences for transmission via ESP32 RMT peripheral.
 //! Each DCC bit becomes a pair of transitions (high→low) with NMRA-compliant timing.
 //!
-//! # Overview
-//!
 //! The encoder implements NMRA S-9.1 timing:
 //! - DCC "1" bit: 58μs ±3μs high, 58μs ±3μs low
 //! - DCC "0" bit: ≥100μs high, ≥100μs low
@@ -14,7 +12,7 @@
 //!
 //! # Examples
 //!
-//! **Encode a complete packet:**
+//! Encode a complete packet:
 //!
 //! ```
 //! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction, encode_dcc_packet};
@@ -28,7 +26,7 @@
 //! // Output: 14 (preamble) + 1 (start) + 16 (2 bytes × 8 bits) + 1 (end) = 32 pulses
 //! ```
 //!
-//! **Convert a single bit:**
+//! Convert a single bit:
 //!
 //! ```
 //! use dcc_esp32::dcc::dcc_bit_to_pulse;
@@ -41,7 +39,7 @@
 //! assert_eq!(zero_bit.length1, 100); // 100μs high (minimum)
 //! ```
 //!
-//! **Encode a byte:**
+//! Encode a byte:
 //!
 //! ```
 //! use dcc_esp32::dcc::encode_byte;
@@ -50,7 +48,7 @@
 //! assert_eq!(pulses.len(), 8);
 //! ```
 //!
-//! # Error Handling
+//! # Error handling
 //!
 //! [`encode_dcc_packet`] returns [`EncodeError::Packet`] if the packet cannot be encoded
 //! to bytes, or [`EncodeError::PulseBufferOverflow`] if the pulse sequence exceeds

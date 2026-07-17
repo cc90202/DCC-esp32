@@ -9,7 +9,7 @@
 //! FIFO snapshot exceeds `MAX_RAILCOM_WINDOW_BYTES`, which is an overflow condition,
 //! not evidence of corrupted data. If framing-error detection is ever needed,
 //! it must be read from the UART1 hardware status/interrupt flags (e.g.
-//! `RXFIFO_OVF`, parity/frame error bits) at capture time - no such logic
+//! `RXFIFO_OVF`, parity/frame error bits) at capture time; no such logic
 //! exists in this module today.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -82,7 +82,7 @@ fn uart1_rx_fifo_count() -> Option<u16> {
     // setting CAPTURE_READY. After that, this module is the only UART1 RX
     // data path. The ISR-side helpers touch the RX FIFO data/count registers
     // and (in `uart1_reset_rx_fifo`) the `conf0.rxfifo_rst` control bit that
-    // resets that same FIFO - no other UART1 register is written.
+    // resets that same FIFO; no other UART1 register is written.
     let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
     Some(regs.status().read().rxfifo_cnt().bits() as u16)
 }

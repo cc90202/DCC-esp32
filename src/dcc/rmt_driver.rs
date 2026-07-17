@@ -143,7 +143,7 @@ static PACKET_CONSUMED_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new
 static ISR_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
 static RMT_ISR_MAX_DURATION_US: AtomicU32 = AtomicU32::new(0);
 static RMT_CUTOUT_REQUEST_MAX_LATENCY_US: AtomicU32 = AtomicU32::new(0);
-// Read-only after init - no Mutex needed, ISR reads directly via raw pointer.
+// Read-only after init, so no Mutex is needed, ISR reads directly via raw pointer.
 static IDLE_DATA_CELL: StaticCell<SharedPacket> = StaticCell::new();
 static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_mut());
 /// Keeps the ContinuousTxTransaction alive, preventing esp-hal's Drop from stopping TX.
@@ -207,7 +207,7 @@ pub fn init(
 ///
 /// Non-blocking. The ISR picks up the data within one packet cycle (~6ms).
 /// If called again before the ISR consumes the previous submission, the new
-/// data overwrites the old - use [`is_consumed`] to enforce ACK-based pacing.
+/// data overwrites the old; use [`is_consumed`] to enforce ACK-based pacing.
 /// This internal entry point is owned by the normal-context DCC feeder task; it
 /// must not be called from an interrupt handler.
 pub fn submit_packet(
@@ -346,7 +346,7 @@ fn rmt_interrupt() {
 
         write_data_to_rmt_ram(data, cutout_allowed);
     } else {
-        // IDLE_DATA is read-only after init - no critical section needed.
+        // IDLE_DATA is read-only after init, so no critical section is needed.
         let idle_ptr = IDLE_DATA_PTR.load(Ordering::Relaxed);
         if !idle_ptr.is_null() {
             // SAFETY: IDLE_DATA_PTR is set once in init() from a StaticCell reference

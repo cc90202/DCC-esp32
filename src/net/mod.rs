@@ -1,4 +1,4 @@
-//! Network infrastructure - WiFi, provisioning, and UDP transport adapters.
+//! Network infrastructure: WiFi, provisioning, and UDP transport adapters.
 
 #[cfg(any(test, target_arch = "riscv32"))]
 mod loco_client;

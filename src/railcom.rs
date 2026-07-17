@@ -47,7 +47,7 @@ pub fn reset_scaffold_state() {
 
 /// Called at each DCC packet boundary by the RMT ISR.
 ///
-/// The function is intentionally tiny - a single relaxed atomic increment - so
+/// The function is intentionally tiny, a single relaxed atomic increment, so
 /// the ISR footprint remains effectively unchanged.
 ///
 /// # Safety (link_section)

@@ -1,32 +1,33 @@
 //! Physical control button tasks with interrupt-backed edge wait and software debounce.
 //!
-//! # Overview
+//! Two Embassy async tasks, one per physical button on the ESP32-C6. The stop
+//! button on GPIO22 triggers an emergency stop and latches the e-stop state.
+//! The resume button on GPIO21 does three different things depending on how
+//! long it is held: a short press clears the e-stop, a long press force-clears
+//! any latched fault, and a longer hold requests runtime WiFi setup.
 //!
-//! Provides two Embassy async tasks for the physical control buttons on the ESP32-C6:
-//! - **Stop Button (GPIO22)** - Triggers emergency stop (e-stop latch state)
-//! - **Resume Button (GPIO21)** - Short press clears e-stop; long press force-clears any
-//!   latched fault; provisioning hold requests runtime WiFi setup
-//!
-//! Both tasks implement:
-//! - Debounce on press and release (30ms hysteresis)
-//! - Resume press classification (<2s, 2s..10s, >=10s)
-//! - Direct integration with the fault manager via channel
+//! Both tasks debounce press and release with 30ms of hysteresis, classify the
+//! resume press into its three bands (under 2s, 2s to 10s, 10s or more), and
+//! talk to the fault manager over a channel.
 //!
 //! The runtime provisioning request itself is only *emitted* here; the
 //! coordinator that disables track output, persists the next-boot flag and
 //! reboots lives in `boot.rs`.
 //!
-//! # Button Behavior
+//! # Button behaviour
 //!
-//! **Stop Button:**
-//! - Press → cuts track power immediately, then sends `FaultEvent::StopPressed`
-//!   to latch EstopLatched state
-//! - Release → no action (state remains latched)
+//! Pressing stop cuts track power immediately, then sends
+//! `FaultEvent::StopPressed` to latch the `EstopLatched` state. Releasing it
+//! does nothing: the state stays latched.
 //!
-//! **Resume Button:**
-//! - Press + release (<2s) → sends `FaultEvent::ResumeShortPressed` → clears e-stop (if in EstopLatched)
-//! - Press + release (2s..10s) → sends `FaultEvent::ResumeLongPressed` → force-clears any latched fault
-//! - Press + hold (>=10s) → sends `ProvisioningRequest::Requested` → boot coordinator handles WiFi setup mode
+//! Resume is classified on release, or on the 10 second timeout:
+//!
+//! - under 2s: `FaultEvent::ResumeShortPressed`, which clears the e-stop if one
+//!   is latched
+//! - 2s to 10s: `FaultEvent::ResumeLongPressed`, which force-clears any latched
+//!   fault
+//! - 10s or more: `ProvisioningRequest::Requested`, which the boot coordinator
+//!   turns into WiFi setup mode
 //!
 //! # Hardware
 //!

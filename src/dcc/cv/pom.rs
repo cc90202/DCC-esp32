@@ -329,7 +329,7 @@ async fn run_pom_attempt(
     // after seeing the same instruction repeated back-to-back. Awaiting the
     // first cutout between sends would let the scheduler interleave cyclic
     // refresh packets (the RMT feeder queue holds ~16 frames), pushing the
-    // repetitions ~150 ms apart and breaking the consecutive-pair rule -
+    // repetitions ~150 ms apart and breaking the consecutive-pair rule,
     // observed in practice with ESU/Trix/Roco decoders that then never
     // emit `app:pom` on CH2.
     //

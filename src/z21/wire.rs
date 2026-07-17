@@ -71,7 +71,7 @@ pub(super) const DB0_POM_LOCO: u8 = 0x30;
 pub(super) const POM_OP_READ: u8 = 0xE4;
 pub(super) const POM_OP_WRITE: u8 = 0xEC;
 
-// CentralState bitmask (spec §2.2 - used in encode_status and encode_system_state)
+// CentralState bitmask (spec §2.2, used in encode_status and encode_system_state)
 pub(super) const CS_EMERGENCY_STOP: u8 = 0x01;
 pub(super) const CS_TRACK_VOLTAGE_OFF: u8 = 0x02;
 pub(super) const CS_SHORT_CIRCUIT: u8 = 0x04;

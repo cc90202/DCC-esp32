@@ -10,7 +10,7 @@ use crate::railcom_data::{RailcomDatagram, RailcomItem};
 //
 // TODO(tuning): no recorded derivation for `4`. Observable constraint: this
 // is a rolling "who is on the track right now" display list, not a full
-// roster - a handful of entries is enough to show recent activity on a
+// roster, and a handful of entries is enough to show recent activity on a
 // hobby-scale layout without growing the stack-resident stats struct.
 const RECENT_SIGHTING_CAPACITY: usize = 4;
 
