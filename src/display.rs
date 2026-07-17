@@ -70,7 +70,7 @@ fn draw_throbber<D: DrawTarget<Color = BinaryColor>>(target: &mut D, origin: Poi
 
 /// Aggregated OLED display state, updated one [`DisplayEvent`] at a time.
 ///
-/// Mirrors the reducer pattern used by [`crate::system_status::StatusModel`]:
+/// Mirrors the reducer pattern used by [`crate::application::StatusModel`]:
 /// a single struct owns all display fields so [`Self::apply`] and `render`
 /// don't need to thread six independent `&mut` parameters through the task.
 #[derive(Debug, Clone)]

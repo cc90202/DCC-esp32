@@ -1,6 +1,7 @@
 use heapless::Vec;
 
 use crate::dcc::DccAddress;
+pub use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
 const SYMBOL_NACK: u8 = 0xfc;
 const SYMBOL_ACK: u8 = 0xfd;
@@ -129,18 +130,6 @@ pub enum ParseError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RailcomDatagram {
-    CvData(u8),
-    AdrHigh(u8),
-    AdrLow(u8),
-    Ext(u16),
-    Dyn { value: u8, sub_index: u8 },
-    Xpom { sequence: u8, values: [u8; 4] },
-    Search(u8),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct RailcomLogonId {
     pub manufacturer_id: u16,
     pub decoder_id: u32,
@@ -157,14 +146,6 @@ pub struct RailcomLogonSelect {
 pub enum RailcomLogonResponse {
     DecoderId(RailcomLogonId),
     Select(RailcomLogonSelect),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RailcomItem {
-    Ack,
-    Nack,
-    Datagram(RailcomDatagram),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

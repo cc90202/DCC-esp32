@@ -19,9 +19,9 @@
 //! **Validate pulse timing (NMRA S-9.1):**
 //!
 //! ```
-//! use dcc_esp32::dcc::encoder::{PulseCode, encode_dcc_packet};
-//! use dcc_esp32::dcc::validator;
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! use dcc_esp32::dcc::{
+//!     DccAddress, DccPacket, Direction, encode_dcc_packet, validate_timing,
+//! };
 //!
 //! // Create and encode a valid packet
 //! let addr = DccAddress::new_short(5).unwrap();
@@ -31,30 +31,30 @@
 //!
 //! // Check that all pulses are within NMRA timing ranges
 //! // "1" bit: 55-61μs, "0" bit: 95-9900μs
-//! assert!(validator::validate_timing(&pulses).is_ok());
+//! assert!(validate_timing(&pulses).is_ok());
 //! ```
 //!
 //! **Validate packet structure:**
 //!
 //! ```
-//! use dcc_esp32::dcc::encoder::encode_dcc_packet;
-//! use dcc_esp32::dcc::validator;
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! use dcc_esp32::dcc::{
+//!     DccAddress, DccPacket, Direction, encode_dcc_packet, validate_packet_structure,
+//! };
 //!
 //! // Encoded pulses must have: preamble (14+ bits) + start (0) + bytes + separators/end (1)
 //! let addr = DccAddress::new_short(10).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 100, Direction::Reverse).unwrap();
 //!
 //! let pulses = encode_dcc_packet(&packet).unwrap();
-//! assert!(validator::validate_packet_structure(&pulses).is_ok());
+//! assert!(validate_packet_structure(&pulses).is_ok());
 //! ```
 //!
 //! **Validate complete packet (structure + timing + compliance + checksum):**
 //!
 //! ```
-//! use dcc_esp32::dcc::encoder::encode_dcc_packet;
-//! use dcc_esp32::dcc::validator;
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! use dcc_esp32::dcc::{
+//!     DccAddress, DccPacket, Direction, encode_dcc_packet, validate_full,
+//! };
 //!
 //! let addr = DccAddress::new_short(42).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
@@ -63,33 +63,31 @@
 //! let pulses = encode_dcc_packet(&packet).unwrap();
 //!
 //! // Comprehensive validation: timing + structure + address/speed ranges + checksum
-//! assert!(validator::validate_full(&packet, &pulses).is_ok());
+//! assert!(validate_full(&packet, &pulses).is_ok());
 //! ```
 //!
 //! **Validate NMRA compliance (ranges only):**
 //!
 //! ```
-//! use dcc_esp32::dcc::validator;
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_nmra_compliance};
 //!
 //! let addr = DccAddress::new_short(5).unwrap();
 //! let packet = DccPacket::speed_28step(addr, 15, Direction::Forward).unwrap();
 //!
 //! // Check that address and speed values are in valid NMRA ranges
-//! assert!(validator::validate_nmra_compliance(&packet).is_ok());
+//! assert!(validate_nmra_compliance(&packet).is_ok());
 //! ```
 //!
 //! **Validate everything in one call (recommended):**
 //!
 //! ```
-//! use dcc_esp32::dcc::validator;
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_complete};
 //!
 //! let addr = DccAddress::new_short(42).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
 //!
 //! // Single call: encode packet + validate timing + structure + ranges + checksum
-//! assert!(validator::validate_complete(&packet).is_ok());
+//! assert!(validate_complete(&packet).is_ok());
 //! ```
 //!
 //! # NMRA Ranges
@@ -106,6 +104,12 @@ const ONE_BIT_MIN_US: u16 = 55;
 const ONE_BIT_MAX_US: u16 = 61;
 const ZERO_BIT_MIN_US: u16 = 95;
 const ZERO_BIT_MAX_US: u16 = 9_900;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DccBitKind {
+    One,
+    Zero,
+}
 
 /// Validation errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,43 +149,46 @@ pub enum ValidationError {
 /// V1: Rejects pulses in the gap range (62-94μs) that are neither valid "1" nor "0".
 pub fn validate_timing(pulses: &[PulseCode]) -> Result<(), ValidationError> {
     for pulse in pulses {
-        if (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length1) {
-            // Valid "1" bit high half — check low half
-            if !(ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length2) {
-                return Err(ValidationError::TimingOutOfRange {
-                    expected_us: DCC_ONE_HIGH_US,
-                    actual_us: pulse.length2,
-                });
-            }
-        } else if (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length1) {
-            // Valid "0" bit high half — check low half
-            if !(ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length2) {
-                return Err(ValidationError::TimingOutOfRange {
-                    expected_us: DCC_ZERO_HIGH_US,
-                    actual_us: pulse.length2,
-                });
-            }
-        } else {
-            // V1: Reject anything not recognizable as "1" or "0"
-            return Err(ValidationError::TimingOutOfRange {
-                expected_us: 0,
-                actual_us: pulse.length1,
-            });
-        }
+        classify_pulse(pulse)?;
     }
     Ok(())
 }
 
+fn classify_pulse(pulse: &PulseCode) -> Result<DccBitKind, ValidationError> {
+    if (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length1) {
+        if (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length2) {
+            return Ok(DccBitKind::One);
+        }
+        return Err(ValidationError::TimingOutOfRange {
+            expected_us: DCC_ONE_HIGH_US,
+            actual_us: pulse.length2,
+        });
+    }
+
+    if (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length1) {
+        if (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length2) {
+            return Ok(DccBitKind::Zero);
+        }
+        return Err(ValidationError::TimingOutOfRange {
+            expected_us: DCC_ZERO_HIGH_US,
+            actual_us: pulse.length2,
+        });
+    }
+
+    Err(ValidationError::TimingOutOfRange {
+        expected_us: 0,
+        actual_us: pulse.length1,
+    })
+}
+
 /// Returns true if a pulse represents a "1" bit
 fn is_one_bit(pulse: &PulseCode) -> bool {
-    (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length1)
-        && (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length2)
+    matches!(classify_pulse(pulse), Ok(DccBitKind::One))
 }
 
 /// Returns true if a pulse represents a "0" bit
 fn is_zero_bit(pulse: &PulseCode) -> bool {
-    (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length1)
-        && (ZERO_BIT_MIN_US..=ZERO_BIT_MAX_US).contains(&pulse.length2)
+    matches!(classify_pulse(pulse), Ok(DccBitKind::Zero))
 }
 
 /// Validates packet structure (preamble, start/end bits, byte boundaries)
@@ -360,14 +367,13 @@ pub fn validate_full(packet: &DccPacket, pulses: &[PulseCode]) -> Result<(), Val
 /// # Examples
 ///
 /// ```
-/// use dcc_esp32::dcc::validator;
-/// use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+/// use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_complete};
 ///
 /// let addr = DccAddress::new_short(42).unwrap();
 /// let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
 ///
 /// // Single call validates everything: encode + timing + structure + compliance + checksum
-/// assert!(validator::validate_complete(&packet).is_ok());
+/// assert!(validate_complete(&packet).is_ok());
 /// ```
 pub fn validate_complete(packet: &DccPacket) -> Result<(), ValidationError> {
     // Encode packet to pulses; return EncodingError if packet cannot be encoded

@@ -1,7 +1,7 @@
-use crate::dcc::{Direction, SpeedFormat};
+use crate::dcc::{DccAddress, Direction, SpeedFormat};
 
 use super::wire::*;
-use super::{BroadcastFlags, FunctionAction, ParseError, Z21Command};
+use super::{BroadcastFlags, FrameKind, FunctionAction, ParseError, Z21Command};
 
 /// Parse a single Z21 frame from `buf`.
 ///
@@ -28,7 +28,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
     }
     // Slice to exactly this frame's bytes so XBus checksum covers only its data.
     let frame = &buf[..data_len];
-    let header = u16::from_le_bytes([frame[2], frame[3]]);
+    let header = frame_kind(frame).header;
 
     match header {
         HEADER_GET_SERIAL_NUMBER => Ok(Z21Command::GetSerialNumber),
@@ -59,7 +59,8 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
             if frame.len() < 7 {
                 return Err(ParseError::FrameTooShort);
             }
-            let address = u16::from_le_bytes([frame[5], frame[6]]);
+            let raw_address = u16::from_le_bytes([frame[5], frame[6]]);
+            let address = DccAddress::from_magnitude(raw_address);
             Ok(Z21Command::RailcomGetData {
                 request_type: frame[4],
                 address,
@@ -83,6 +84,21 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
         HEADER_XBUS => parse_xbus(frame),
         _ => Ok(Z21Command::Unknown),
     }
+}
+
+#[must_use]
+pub fn frame_kind(buf: &[u8]) -> FrameKind {
+    let header = if buf.len() >= 4 {
+        u16::from_le_bytes([buf[2], buf[3]])
+    } else {
+        0
+    };
+    let xheader = if header == HEADER_XBUS && buf.len() >= 5 {
+        buf[4]
+    } else {
+        0
+    };
+    FrameKind { header, xheader }
 }
 
 /// Return the byte length of the first frame in `buf`, or `None` if the
@@ -122,11 +138,6 @@ pub fn iter_frames(buf: &[u8]) -> FrameIter<'_> {
     FrameIter { buf }
 }
 
-/// XOR checksum over bytes from x_header onwards (excluding the checksum byte).
-fn xbus_checksum(data: &[u8]) -> u8 {
-    data.iter().fold(0u8, |acc, &b| acc ^ b)
-}
-
 fn parse_set_loco_drive_command(payload: &[u8], db0: u8) -> Result<Z21Command, ParseError> {
     let addr = parse_loco_address(payload[2], payload[3]).ok_or(ParseError::InvalidAddress)?;
     let speed_byte = payload[4];
@@ -162,14 +173,11 @@ fn parse_set_loco_function_command(payload: &[u8]) -> Result<Z21Command, ParseEr
     if function > 28 {
         return Err(ParseError::InvalidFunction);
     }
-    // `& 0x03` closes the domain to 0..=3; value 3 is reserved by the Z21 LAN
-    // protocol (only Off/On/Toggle are assigned), so it collapses to Off
-    // rather than being surfaced as a parse error.
     let action = match (func_byte >> 6) & 0x03 {
         0 => FunctionAction::Off,
         1 => FunctionAction::On,
         2 => FunctionAction::Toggle,
-        _ => FunctionAction::Off,
+        _ => return Err(ParseError::InvalidFunctionAction),
     };
     Ok(Z21Command::SetLocoFunction {
         address: addr,
@@ -255,7 +263,9 @@ fn parse_xbus(buf: &[u8]) -> Result<Z21Command, ParseError> {
             if payload.len() < 4 {
                 return Err(ParseError::FrameTooShort);
             }
-            let address = u16::from(payload[1]) << 8 | u16::from(payload[2]);
+            let raw_address = u16::from(payload[1]) << 8 | u16::from(payload[2]);
+            let address =
+                DccAddress::from_magnitude(raw_address).ok_or(ParseError::InvalidAddress)?;
             Ok(Z21Command::GetTurnoutInfo { address })
         }
         XHEADER_SET_STOP => Ok(Z21Command::SetStop),

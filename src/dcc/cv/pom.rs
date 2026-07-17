@@ -3,19 +3,55 @@
 //! This module owns the single-flight POM actor and RailCom response matching
 //! used by the Z21 network path.
 
+#[cfg(any(test, target_arch = "riscv32"))]
+use crate::cutout::PacketSequence;
 #[cfg(target_arch = "riscv32")]
 use crate::dcc::packet::DccPacket;
+#[cfg(any(test, target_arch = "riscv32"))]
 use crate::dcc::packet::{DccAddress, PomCv};
 #[cfg(target_arch = "riscv32")]
 use crate::dcc::scheduler::SchedulerCommand;
-use crate::railcom::parser::{RailcomDatagram, RailcomItem};
+#[cfg(any(test, target_arch = "riscv32"))]
+use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
+#[cfg(target_arch = "riscv32")]
+use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::channel::{Receiver, Sender};
 #[cfg(target_arch = "riscv32")]
 use embassy_time::{Duration, with_timeout};
+
+#[cfg(target_arch = "riscv32")]
+static POM_TX_START_TIMEOUT_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_arch = "riscv32")]
+static POM_RESPONSE_TIMEOUT_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_arch = "riscv32")]
+static POM_STALE_RESULT_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_arch = "riscv32")]
+static POM_WRONG_TARGET_RESULT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct PomRuntimeStats {
+    pub tx_start_timeout_count: u32,
+    pub response_timeout_count: u32,
+    pub stale_result_count: u32,
+    pub wrong_target_result_count: u32,
+}
+
+#[cfg(target_arch = "riscv32")]
+#[must_use]
+pub fn pom_runtime_stats() -> PomRuntimeStats {
+    PomRuntimeStats {
+        tx_start_timeout_count: POM_TX_START_TIMEOUT_COUNT.load(Ordering::Acquire),
+        response_timeout_count: POM_RESPONSE_TIMEOUT_COUNT.load(Ordering::Acquire),
+        stale_result_count: POM_STALE_RESULT_COUNT.load(Ordering::Acquire),
+        wrong_target_result_count: POM_WRONG_TARGET_RESULT_COUNT.load(Ordering::Acquire),
+    }
+}
 
 #[cfg(target_arch = "riscv32")]
 // The scheduler-to-engine path is naturally backpressured by a small frame
@@ -30,6 +66,8 @@ const POM_TX_START_TIMEOUT: Duration = Duration::from_millis(500);
 const POM_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
 #[cfg(target_arch = "riscv32")]
 const POM_READ_PACKET_REPETITIONS: u8 = 4;
+#[cfg(target_arch = "riscv32")]
+const POM_MINIMUM_TX_STARTS: u8 = 2;
 // All repetitions are enqueued in one burst (see `run_pom_attempt`) so they
 // reach the wire consecutively per NMRA S-9.2.1. The scheduler's
 // `pending_pom` queue must be large enough to hold the full burst, otherwise
@@ -39,28 +77,26 @@ const _: () = assert!(
     POM_READ_PACKET_REPETITIONS as usize <= crate::dcc::scheduler::PENDING_POM_CAPACITY,
     "POM_READ_PACKET_REPETITIONS must fit in scheduler::pending_pom"
 );
-/// Accept app:pom feedback that appears on packets shortly after the POM
-/// command. ZIMO's reference decoder may return app:pom on a following packet
-/// to the same address, not only on the exact CV-access packet cutout.
-#[cfg(any(test, target_arch = "riscv32"))]
-const POM_RESPONSE_SEQUENCE_WINDOW: u32 = 64;
-
 /// Identifies one POM request/response round-trip on the single-slot request
 /// and response channels between the Z21 network task and the POM actor.
 ///
 /// A newtype (rather than a bare `u32`) keeps request/response matching from
 /// being confused with unrelated `u32` values (CV numbers, packet sequence
 /// counters) flowing through the same call sites.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
 pub struct PomRequestId(u32);
 
-#[cfg(any(test, target_arch = "riscv32"))]
 impl PomRequestId {
     #[must_use]
     pub const fn new(value: u32) -> Self {
         Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
     }
 }
 
@@ -81,6 +117,23 @@ pub enum PomRequest {
     },
 }
 
+#[cfg(target_arch = "riscv32")]
+impl PomRequest {
+    #[must_use]
+    pub const fn request_id(self) -> PomRequestId {
+        match self {
+            Self::Read { request_id, .. } | Self::Write { request_id, .. } => request_id,
+        }
+    }
+
+    #[must_use]
+    pub const fn address(self) -> DccAddress {
+        match self {
+            Self::Read { address, .. } | Self::Write { address, .. } => address,
+        }
+    }
+}
+
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -95,7 +148,8 @@ pub enum PomResponse {
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum PomRailcomResult {
     Window {
-        packet_sequence: u32,
+        request_id: PomRequestId,
+        packet_sequence: PacketSequence,
         target_address: Option<DccAddress>,
         value: Option<u8>,
         ack: bool,
@@ -104,12 +158,44 @@ pub enum PomRailcomResult {
 }
 
 #[cfg(target_arch = "riscv32")]
+impl PomRailcomResult {
+    const fn request_id(self) -> PomRequestId {
+        match self {
+            Self::Window { request_id, .. } => request_id,
+        }
+    }
+
+    const fn target_address(self) -> Option<DccAddress> {
+        match self {
+            Self::Window { target_address, .. } => target_address,
+        }
+    }
+
+    const fn packet_sequence(self) -> PacketSequence {
+        match self {
+            Self::Window {
+                packet_sequence, ..
+            } => packet_sequence,
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct PomTxStarted {
+    pub request_id: PomRequestId,
+    pub packet_sequence: PacketSequence,
+}
+
+#[cfg(target_arch = "riscv32")]
 pub type PomRequestChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRequest, 1>;
 #[cfg(target_arch = "riscv32")]
 pub type PomResponseChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, PomResponse, 1>;
 #[cfg(target_arch = "riscv32")]
-pub type PomTxStartedChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, u32, 4>;
+pub type PomTxStartedChannel =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomTxStarted, 4>;
 #[cfg(target_arch = "riscv32")]
 pub type PomRailcomResultChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRailcomResult, 4>;
@@ -140,25 +226,33 @@ pub(crate) fn drain_channel<T: Copy, const N: usize>(
 #[cfg(any(test, target_arch = "riscv32"))]
 fn match_pom_result(
     request: PomRequest,
-    packet_sequence: u32,
+    earliest_sequence: PacketSequence,
     result: PomRailcomResult,
 ) -> Option<PomResponse> {
     let PomRailcomResult::Window {
-        packet_sequence: seq,
+        request_id: result_request_id,
+        packet_sequence,
         target_address,
         value,
         ack,
         nack,
         ..
     } = result;
-    let same_packet = seq == packet_sequence;
-    let same_target = match request {
-        PomRequest::Read { address, .. } | PomRequest::Write { address, .. } => {
-            target_address == Some(address)
+    let (request_id, address) = match request {
+        PomRequest::Read {
+            request_id,
+            address,
+            ..
         }
+        | PomRequest::Write {
+            request_id,
+            address,
+            ..
+        } => (request_id, address),
     };
-    if !same_packet
-        && (!same_target || seq.wrapping_sub(packet_sequence) > POM_RESPONSE_SEQUENCE_WINDOW)
+    if result_request_id != request_id
+        || target_address != Some(address)
+        || !packet_sequence.is_at_or_after(earliest_sequence)
     {
         return None;
     }
@@ -187,12 +281,22 @@ fn match_pom_result(
 #[cfg(target_arch = "riscv32")]
 async fn await_matching_pom_result(
     request: PomRequest,
-    packet_sequence: u32,
+    earliest_sequence: PacketSequence,
     railcom_results: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
 ) -> PomResponse {
     loop {
         let result = railcom_results.receive().await;
-        if let Some(response) = match_pom_result(request, packet_sequence, result) {
+        if result.request_id() != request.request_id()
+            || !result.packet_sequence().is_at_or_after(earliest_sequence)
+        {
+            POM_STALE_RESULT_COUNT.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        if result.target_address() != Some(request.address()) {
+            POM_WRONG_TARGET_RESULT_COUNT.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        if let Some(response) = match_pom_result(request, earliest_sequence, result) {
             return response;
         }
     }
@@ -209,7 +313,7 @@ enum PomAttemptOutcome {
 #[cfg(target_arch = "riscv32")]
 async fn run_pom_attempt(
     request: PomRequest,
-    tx_started_receiver: &Receiver<'static, CriticalSectionRawMutex, u32, 4>,
+    tx_started_receiver: &Receiver<'static, CriticalSectionRawMutex, PomTxStarted, 4>,
     railcom_result_receiver: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
     scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
 ) -> PomAttemptOutcome {
@@ -241,21 +345,38 @@ async fn run_pom_attempt(
     };
     for _ in 0..repetitions {
         scheduler_sender
-            .send(SchedulerCommand::ProgramOnMain { packet })
+            .send(SchedulerCommand::ProgramOnMain {
+                request_id: request.request_id(),
+                packet,
+            })
             .await;
     }
 
-    // Anchor on the first tx-start (the burst's first cutout). Subsequent
-    // tx-starts arrive in the channel and will be drained by the next attempt.
-    let packet_sequence =
-        match with_timeout(POM_TX_START_TIMEOUT, tx_started_receiver.receive()).await {
-            Ok(packet_sequence) => packet_sequence,
-            Err(_) => return PomAttemptOutcome::TxTimeout,
-        };
+    // Accept feedback only from the second matching cutout onward. The first
+    // window can still carry a delayed response to the previous request from
+    // the same decoder. Later tx-start notifications are harmless and are
+    // drained before the next attempt.
+    let earliest_response_sequence = match with_timeout(POM_TX_START_TIMEOUT, async {
+        let mut matching_starts = 0u8;
+        loop {
+            let started = tx_started_receiver.receive().await;
+            if started.request_id == request.request_id() {
+                matching_starts += 1;
+                if matching_starts == POM_MINIMUM_TX_STARTS {
+                    return started.packet_sequence;
+                }
+            }
+        }
+    })
+    .await
+    {
+        Ok(sequence) => sequence,
+        Err(_) => return PomAttemptOutcome::TxTimeout,
+    };
 
     match with_timeout(
         POM_RESPONSE_TIMEOUT,
-        await_matching_pom_result(request, packet_sequence, railcom_result_receiver),
+        await_matching_pom_result(request, earliest_response_sequence, railcom_result_receiver),
     )
     .await
     {
@@ -272,7 +393,7 @@ async fn run_pom_attempt(
 pub async fn pom_actor_task(
     request_receiver: Receiver<'static, CriticalSectionRawMutex, PomRequest, 1>,
     response_sender: Sender<'static, CriticalSectionRawMutex, PomResponse, 1>,
-    tx_started_receiver: Receiver<'static, CriticalSectionRawMutex, u32, 4>,
+    tx_started_receiver: Receiver<'static, CriticalSectionRawMutex, PomTxStarted, 4>,
     railcom_result_receiver: Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
     scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
 ) -> ! {
@@ -293,14 +414,20 @@ pub async fn pom_actor_task(
         {
             PomAttemptOutcome::Response(response) => response,
             PomAttemptOutcome::TxTimeout => {
+                POM_TX_START_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
                 defmt::warn!("POM request timed out before tx-start");
                 PomResponse::Nack { request_id }
             }
             PomAttemptOutcome::ResponseTimeout => {
+                POM_RESPONSE_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
                 defmt::warn!("POM request timed out waiting for RailCom CV data");
                 PomResponse::Nack { request_id }
             }
         };
+
+        scheduler_sender
+            .send(SchedulerCommand::CloseProgramOnMain { request_id })
+            .await;
 
         response_sender.send(final_response).await;
     }
@@ -308,7 +435,8 @@ pub async fn pom_actor_task(
 
 #[cfg(any(test, target_arch = "riscv32"))]
 pub fn pom_result_from_railcom_items(
-    packet_sequence: u32,
+    request_id: PomRequestId,
+    packet_sequence: PacketSequence,
     target_address: Option<DccAddress>,
     include_ack: bool,
     items: &[RailcomItem],
@@ -329,6 +457,7 @@ pub fn pom_result_from_railcom_items(
     }
 
     (value.is_some() || ack || nack).then_some(PomRailcomResult::Window {
+        request_id,
         packet_sequence,
         target_address,
         value,
@@ -349,6 +478,10 @@ mod tests {
         PomRequestId::new(value)
     }
 
+    fn seq(value: u32) -> PacketSequence {
+        PacketSequence::new(value)
+    }
+
     #[test]
     fn test_pom_result_prefers_value_when_ack_and_cv_data_are_both_present() {
         let items = [
@@ -357,9 +490,16 @@ mod tests {
         ];
 
         assert_eq!(
-            pom_result_from_railcom_items(17, DccAddress::new_short(3), true, &items),
+            pom_result_from_railcom_items(
+                pom_id(1),
+                seq(17),
+                DccAddress::new_short(3),
+                true,
+                &items,
+            ),
             Some(PomRailcomResult::Window {
-                packet_sequence: 17,
+                request_id: pom_id(1),
+                packet_sequence: seq(17),
                 target_address: DccAddress::new_short(3),
                 value: Some(0x42),
                 ack: true,
@@ -373,9 +513,16 @@ mod tests {
         let items = [RailcomItem::Datagram(RailcomDatagram::CvData(0x55))];
 
         assert_eq!(
-            pom_result_from_railcom_items(23, DccAddress::new_short(3), false, &items),
+            pom_result_from_railcom_items(
+                pom_id(2),
+                seq(23),
+                DccAddress::new_short(3),
+                false,
+                &items,
+            ),
             Some(PomRailcomResult::Window {
-                packet_sequence: 23,
+                request_id: pom_id(2),
+                packet_sequence: seq(23),
                 target_address: DccAddress::new_short(3),
                 value: Some(0x55),
                 ack: false,
@@ -392,7 +539,13 @@ mod tests {
         })];
 
         assert_eq!(
-            pom_result_from_railcom_items(99, DccAddress::new_short(3), true, &items),
+            pom_result_from_railcom_items(
+                pom_id(3),
+                seq(99),
+                DccAddress::new_short(3),
+                true,
+                &items,
+            ),
             None
         );
     }
@@ -402,7 +555,13 @@ mod tests {
         let items = [RailcomItem::Ack];
 
         assert_eq!(
-            pom_result_from_railcom_items(101, DccAddress::new_short(3), false, &items),
+            pom_result_from_railcom_items(
+                pom_id(4),
+                seq(101),
+                DccAddress::new_short(3),
+                false,
+                &items,
+            ),
             None
         );
     }
@@ -415,7 +574,8 @@ mod tests {
             cv: pom_cv(8),
         };
         let result = PomRailcomResult::Window {
-            packet_sequence: 42 + 3,
+            request_id: pom_id(7),
+            packet_sequence: seq(45),
             target_address: DccAddress::new_short(3),
             value: Some(151),
             ack: false,
@@ -423,7 +583,7 @@ mod tests {
         };
 
         assert_eq!(
-            match_pom_result(request, 42, result),
+            match_pom_result(request, seq(43), result),
             Some(PomResponse::Value {
                 request_id: pom_id(7),
                 value: 151,
@@ -440,7 +600,8 @@ mod tests {
             value: 6,
         };
         let result = PomRailcomResult::Window {
-            packet_sequence: 50,
+            request_id: pom_id(11),
+            packet_sequence: seq(50),
             target_address: DccAddress::new_short(3),
             value: None,
             ack: true,
@@ -448,7 +609,7 @@ mod tests {
         };
 
         assert_eq!(
-            match_pom_result(request, 50, result),
+            match_pom_result(request, seq(50), result),
             Some(PomResponse::Ack {
                 request_id: pom_id(11)
             })
@@ -456,21 +617,22 @@ mod tests {
     }
 
     #[test]
-    fn test_pom_read_rejects_stale_followup_packet_value() {
+    fn test_pom_read_rejects_result_from_previous_request() {
         let request = PomRequest::Read {
             request_id: pom_id(7),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
         };
         let result = PomRailcomResult::Window {
-            packet_sequence: 42 + POM_RESPONSE_SEQUENCE_WINDOW + 1,
+            request_id: pom_id(6),
+            packet_sequence: seq(45),
             target_address: DccAddress::new_short(3),
             value: Some(151),
             ack: false,
             nack: false,
         };
 
-        assert_eq!(match_pom_result(request, 42, result), None);
+        assert_eq!(match_pom_result(request, seq(42), result), None);
     }
 
     #[test]
@@ -481,13 +643,61 @@ mod tests {
             cv: pom_cv(8),
         };
         let result = PomRailcomResult::Window {
-            packet_sequence: 42 + 3,
+            request_id: pom_id(7),
+            packet_sequence: seq(45),
             target_address: DccAddress::new_short(4),
             value: Some(151),
             ack: false,
             nack: false,
         };
 
-        assert_eq!(match_pom_result(request, 42, result), None);
+        assert_eq!(match_pom_result(request, seq(43), result), None);
+    }
+
+    #[test]
+    fn test_pom_rejects_delayed_previous_value_in_first_new_request_window() {
+        let request = PomRequest::Read {
+            request_id: pom_id(8),
+            address: DccAddress::new_short(3).unwrap(),
+            cv: pom_cv(9),
+        };
+        let relabelled_previous_result = PomRailcomResult::Window {
+            request_id: pom_id(8),
+            packet_sequence: seq(100),
+            target_address: DccAddress::new_short(3),
+            value: Some(77),
+            ack: false,
+            nack: false,
+        };
+
+        assert_eq!(
+            match_pom_result(request, seq(101), relabelled_previous_result),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_pom_sequence_gate_accepts_response_after_u32_wrap() {
+        let request = PomRequest::Read {
+            request_id: pom_id(9),
+            address: DccAddress::new_short(3).unwrap(),
+            cv: pom_cv(10),
+        };
+        let result = PomRailcomResult::Window {
+            request_id: pom_id(9),
+            packet_sequence: seq(0),
+            target_address: DccAddress::new_short(3),
+            value: Some(88),
+            ack: false,
+            nack: false,
+        };
+
+        assert_eq!(
+            match_pom_result(request, seq(u32::MAX), result),
+            Some(PomResponse::Value {
+                request_id: pom_id(9),
+                value: 88,
+            }),
+        );
     }
 }

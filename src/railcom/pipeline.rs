@@ -2,10 +2,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use heapless::Vec;
 
+pub use crate::cutout::{PacketSequence, RailcomChannel};
+
 use crate::railcom::parser::{
-    ParseError, RailcomDatagram, RailcomItem, RailcomParseResult, RailcomParseStatus,
-    parse_channel1, parse_channel2,
+    ParseError, RailcomParseResult, RailcomParseStatus, parse_channel1, parse_channel2,
 };
+use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
 // Per-outcome counters. Every window lands in exactly one bucket:
 // empty, parsed, parse-error, or oversized (FIFO snapshot exceeded the max
@@ -22,72 +24,19 @@ static RX_ADR_HIGH_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_ADR_LOW_COUNT: AtomicU32 = AtomicU32::new(0);
 // Capture-level overflow counter (dropped ring entries or windows too long).
 static RX_OVERFLOW_COUNT: AtomicU32 = AtomicU32::new(0);
+// Delivery counters between the RailCom dispatcher and the single-flight POM
+// actor. A full channel must remain observable without logging every window.
+static RX_POM_RESULT_FORWARDED_COUNT: AtomicU32 = AtomicU32::new(0);
+static RX_POM_RESULT_DROPPED_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Free-running, wraparound-safe packet-boundary counter shared across the
-/// RailCom pipeline (POM dispatch attribution, loco identification, ring
-/// drains).
-///
-/// This counter is a `u32` that overflows during normal long-running
-/// operation, so "is this newer/older/within N packets" comparisons must use
-/// wrapping arithmetic rather than plain `<`/`>`/subtraction. Centralising
-/// that arithmetic here avoids re-deriving the same `wrapping_sub` +
-/// threshold comparison at each call site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PacketSequence(u32);
-
-impl PacketSequence {
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        self.0
-    }
-
-    /// Number of packet boundaries between `earlier` and `self`, correct
-    /// across `u32` wraparound (i.e. `self` is assumed to be at or after
-    /// `earlier` on the wrapping counter).
-    #[must_use]
-    pub const fn age_since(self, earlier: PacketSequence) -> u32 {
-        self.0.wrapping_sub(earlier.0)
-    }
-
-    /// True when `self` is within `window` packet boundaries of `earlier`
-    /// (inclusive), accounting for wraparound.
-    #[must_use]
-    pub const fn is_within(self, earlier: PacketSequence, window: u32) -> bool {
-        self.age_since(earlier) <= window
-    }
-}
-
-impl From<u32> for PacketSequence {
-    fn from(value: u32) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<PacketSequence> for u32 {
-    fn from(sequence: PacketSequence) -> Self {
-        sequence.value()
-    }
-}
-
+/// Number of RailCom receive channels tracked by per-channel diagnostics.
 const RAILCOM_CHANNEL_COUNT: usize = 2;
 static RX_CHANNEL_WINDOW_COUNTS: [AtomicU32; RAILCOM_CHANNEL_COUNT] =
     [const { AtomicU32::new(0) }; RAILCOM_CHANNEL_COUNT];
 static RX_CHANNEL_EMPTY_COUNTS: [AtomicU32; RAILCOM_CHANNEL_COUNT] =
     [const { AtomicU32::new(0) }; RAILCOM_CHANNEL_COUNT];
 
-const MAX_CHANNEL2_WINDOW_BYTES: usize = 6;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RailcomChannel {
-    Channel1,
-    Channel2,
-}
+pub(crate) const MAX_RAILCOM_WINDOW_BYTES: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -102,31 +51,31 @@ pub enum RailcomRxWindowError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct RailcomRxWindow {
-    pub packet_sequence: u32,
+    pub packet_sequence: PacketSequence,
     pub channel: RailcomChannel,
-    pub raw_len: u8,
-    pub raw_bytes: [u8; 6],
+    raw_len: u8,
+    raw_bytes: [u8; 6],
 }
 
 impl RailcomRxWindow {
     pub fn try_new(
-        packet_sequence: u32,
+        packet_sequence: impl Into<PacketSequence>,
         channel: RailcomChannel,
         raw_bytes: &[u8],
     ) -> Result<Self, RailcomRxWindowError> {
-        if raw_bytes.len() > MAX_CHANNEL2_WINDOW_BYTES {
+        if raw_bytes.len() > MAX_RAILCOM_WINDOW_BYTES {
             return Err(RailcomRxWindowError::WindowTooLong {
                 provided_len: raw_bytes.len(),
-                max_len: MAX_CHANNEL2_WINDOW_BYTES,
+                max_len: MAX_RAILCOM_WINDOW_BYTES,
             });
         }
 
-        let mut stored = [0u8; MAX_CHANNEL2_WINDOW_BYTES];
+        let mut stored = [0u8; MAX_RAILCOM_WINDOW_BYTES];
         let len = raw_bytes.len();
         stored[..len].copy_from_slice(raw_bytes);
 
         Ok(Self {
-            packet_sequence,
+            packet_sequence: packet_sequence.into(),
             channel,
             raw_len: len as u8,
             raw_bytes: stored,
@@ -136,6 +85,11 @@ impl RailcomRxWindow {
     #[must_use]
     pub fn raw_slice(&self) -> &[u8] {
         &self.raw_bytes[..self.raw_len as usize]
+    }
+
+    #[must_use]
+    pub const fn raw_len(&self) -> usize {
+        self.raw_len as usize
     }
 
     #[must_use]
@@ -161,6 +115,21 @@ pub struct RailcomRxResult {
     pub items: Vec<RailcomItem, 6>,
 }
 
+impl RailcomRxResult {
+    /// Returns items that are safe to use for state changes and POM results.
+    ///
+    /// A partial parse keeps its valid prefix for diagnostics, but that prefix
+    /// must not identify a locomotive or acknowledge a command.
+    #[must_use]
+    pub fn complete_items(&self) -> &[RailcomItem] {
+        if matches!(self.outcome, RailcomRxOutcome::Parsed) {
+            self.items.as_slice()
+        } else {
+            &[]
+        }
+    }
+}
+
 /// Snapshot of RX pipeline counters.
 ///
 /// The persisted atomics cover only orthogonal outcomes; `rx_window_count`
@@ -178,6 +147,8 @@ pub struct RailcomRxStats {
     pub rx_adr_high_count: u32,
     pub rx_adr_low_count: u32,
     pub rx_overflow_count: u32,
+    pub pom_result_forwarded_count: u32,
+    pub pom_result_dropped_count: u32,
     pub ch1_window_count: u32,
     pub ch1_empty_count: u32,
     pub ch2_window_count: u32,
@@ -208,6 +179,8 @@ pub fn railcom_rx_stats() -> RailcomRxStats {
         rx_adr_high_count: RX_ADR_HIGH_COUNT.load(Ordering::Acquire),
         rx_adr_low_count: RX_ADR_LOW_COUNT.load(Ordering::Acquire),
         rx_overflow_count: RX_OVERFLOW_COUNT.load(Ordering::Acquire),
+        pom_result_forwarded_count: RX_POM_RESULT_FORWARDED_COUNT.load(Ordering::Acquire),
+        pom_result_dropped_count: RX_POM_RESULT_DROPPED_COUNT.load(Ordering::Acquire),
         ch1_window_count: RX_CHANNEL_WINDOW_COUNTS[RailcomChannel::Channel1.index()]
             .load(Ordering::Acquire),
         ch1_empty_count: RX_CHANNEL_EMPTY_COUNTS[RailcomChannel::Channel1.index()]
@@ -230,6 +203,8 @@ pub fn reset_railcom_rx_stats() {
     RX_ADR_HIGH_COUNT.store(0, Ordering::Release);
     RX_ADR_LOW_COUNT.store(0, Ordering::Release);
     RX_OVERFLOW_COUNT.store(0, Ordering::Release);
+    RX_POM_RESULT_FORWARDED_COUNT.store(0, Ordering::Release);
+    RX_POM_RESULT_DROPPED_COUNT.store(0, Ordering::Release);
     for index in 0..RAILCOM_CHANNEL_COUNT {
         RX_CHANNEL_WINDOW_COUNTS[index].store(0, Ordering::Release);
         RX_CHANNEL_EMPTY_COUNTS[index].store(0, Ordering::Release);
@@ -244,42 +219,14 @@ pub fn record_rx_overflows(count: u32) {
     RX_OVERFLOW_COUNT.fetch_add(count, Ordering::Relaxed);
 }
 
-impl RailcomChannel {
-    const fn index(self) -> usize {
-        match self {
-            RailcomChannel::Channel1 => 0,
-            RailcomChannel::Channel2 => 1,
-        }
-    }
+#[cfg(any(target_arch = "riscv32", test))]
+pub(crate) fn record_pom_result_forwarded() {
+    RX_POM_RESULT_FORWARDED_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Wire/ISR-facing numeric id for a RailCom channel: 1 = CH1, 2 = CH2.
-///
-/// `0` is reserved as an "unset" sentinel by ISR-side code and is therefore
-/// never produced here; see `TryFrom<u8> for RailcomChannel`.
-impl From<RailcomChannel> for u8 {
-    /// Called from ISR-resident code (`track_output`, `isr_capture`); the
-    /// inline guarantee keeps the conversion out of flash on non-LTO builds.
-    #[inline(always)]
-    fn from(channel: RailcomChannel) -> Self {
-        match channel {
-            RailcomChannel::Channel1 => 1,
-            RailcomChannel::Channel2 => 2,
-        }
-    }
-}
-
-impl TryFrom<u8> for RailcomChannel {
-    type Error = ();
-
-    #[inline]
-    fn try_from(id: u8) -> Result<Self, Self::Error> {
-        match id {
-            1 => Ok(RailcomChannel::Channel1),
-            2 => Ok(RailcomChannel::Channel2),
-            _ => Err(()),
-        }
-    }
+#[cfg(any(target_arch = "riscv32", test))]
+pub(crate) fn record_pom_result_dropped() {
+    RX_POM_RESULT_DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 fn record_channel_window(channel: RailcomChannel) {
@@ -395,6 +342,7 @@ mod tests {
                 RailcomItem::Datagram(RailcomDatagram::CvData(0x42)),
             ]
         );
+        assert_eq!(result.complete_items(), result.items.as_slice());
         let stats = railcom_rx_stats();
         assert_eq!(stats.rx_window_count(), 1);
         assert_eq!(stats.rx_windows_with_bytes_count(), 1);
@@ -415,8 +363,23 @@ mod tests {
             RailcomRxOutcome::PartialUnsupportedDatagram(4)
         );
         assert_eq!(result.items.as_slice(), &[RailcomItem::Ack]);
+        assert!(result.complete_items().is_empty());
         assert_eq!(railcom_rx_stats().rx_parse_ok_count, 1);
         assert_eq!(railcom_rx_stats().rx_parse_err_count, 0);
+    }
+
+    #[test]
+    fn test_pom_delivery_counters_are_independent() {
+        reset_railcom_rx_stats();
+
+        record_pom_result_forwarded();
+        record_pom_result_forwarded();
+        record_pom_result_dropped();
+
+        let stats = railcom_rx_stats();
+        assert_eq!(stats.pom_result_forwarded_count, 2);
+        assert_eq!(stats.pom_result_dropped_count, 1);
+        assert_eq!(stats.rx_window_count(), 0);
     }
 
     #[test]
