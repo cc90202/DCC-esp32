@@ -9,15 +9,20 @@
 //! # Overview
 //!
 //! Monitors GPIO3 (digital input from 74HC14 Schmitt trigger) for track short-circuit detection.
-//! The signal is active-low: GPIO3=LOW means short detected. A falling-edge interrupt triggers
-//! short detection, which emits `FaultEvent::FaultLatched(TrackShort)` to the fault manager.
+//! The signal is active-low: GPIO3=LOW means short detected. A falling-edge interrupt opens a
+//! qualification window: the pin is sampled every millisecond and the fault latches only when
+//! the line stays LOW for most of the window (15 of 20 samples), mirroring commercial command
+//! stations that require an overcurrent to persist for tens of milliseconds. Motor inrush and
+//! wheel micro-shorts on turnouts produce sub-millisecond pulses and are ignored; the DRV8874's
+//! hardware current limit protects the output during qualification. A confirmed short emits
+//! `FaultEvent::FaultLatched(TrackShort)` to the fault manager.
 //!
 //! # Hardware Architecture
 //!
 //! - **GPIO3** - Active-low digital short signal from the detector
 //! - **External detector** - Conditions the track-driver current/fault signal
 //! - **Boot blanking** - 5 seconds after power-up (ignore spurious shorts)
-//! - **Fail-safe trip** - GPIO18 is disabled immediately on the first falling edge
+//! - **Fail-safe trip** - GPIO18 is disabled once the short is confirmed (worst case ~20 ms)
 //!
 //! # Boot Sequence
 //!
@@ -80,12 +85,79 @@ fn ms_before(now: u32, until: u32) -> bool {
     now != until && until.wrapping_sub(now) < (1 << 31)
 }
 
+/// Total pin samples taken after a falling edge before declaring the window
+/// inconclusive. With 1 ms sampling this gives a 20 ms qualification window,
+/// in line with commercial DCC command stations that require an overcurrent
+/// to persist for tens of milliseconds before cutting track power.
+#[cfg(any(test, target_arch = "riscv32"))]
+const SHORT_CONFIRM_SAMPLES: u16 = 20;
+
+/// Minimum LOW samples within the window required to latch a short (75%).
+/// Motor inrush and wheel micro-shorts on turnouts produce sub-millisecond
+/// fault pulses that never accumulate this many LOW samples; a dead short
+/// keeps the line LOW and confirms after 15 ms.
+#[cfg(any(test, target_arch = "riscv32"))]
+const SHORT_CONFIRM_MIN_LOW_SAMPLES: u16 = 15;
+
+/// Interval between pin samples during short qualification.
+#[cfg(target_arch = "riscv32")]
+const SHORT_CONFIRM_SAMPLE_INTERVAL_MS: u64 = 1;
+
+/// Integrating qualifier for the short signal: counts LOW samples after a
+/// falling edge and decides as early as possible.
+///
+/// `record` returns `Some(true)` once enough LOW samples accumulated to latch
+/// a short, `Some(false)` once so many HIGH samples were seen that the LOW
+/// threshold can no longer be reached, and `None` while still undecided.
+#[cfg(any(test, target_arch = "riscv32"))]
+struct ShortQualifier {
+    low: u16,
+    high: u16,
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+impl ShortQualifier {
+    const fn new() -> Self {
+        Self { low: 0, high: 0 }
+    }
+
+    fn record(&mut self, is_low: bool) -> Option<bool> {
+        if is_low {
+            self.low += 1;
+        } else {
+            self.high += 1;
+        }
+        if self.low >= SHORT_CONFIRM_MIN_LOW_SAMPLES {
+            Some(true)
+        } else if self.high > SHORT_CONFIRM_SAMPLES - SHORT_CONFIRM_MIN_LOW_SAMPLES {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 /// Build the GPIO3 input pin for short-circuit detection (active-low, pull-up).
 #[cfg(target_arch = "riscv32")]
 #[must_use]
 pub fn new_short_detect_input(gpio3: esp_hal::peripherals::GPIO3<'static>) -> Input<'static> {
     let config = InputConfig::default().with_pull(Pull::Up);
     Input::new(gpio3, config)
+}
+
+/// Sample GPIO3 every [`SHORT_CONFIRM_SAMPLE_INTERVAL_MS`] and return whether
+/// the short persists long enough to be treated as real. Returns as soon as
+/// the verdict is decided (worst case [`SHORT_CONFIRM_SAMPLES`] ms). During
+/// qualification the DRV8874's hardware current limit keeps the output safe.
+#[cfg(target_arch = "riscv32")]
+async fn confirm_short(pin: &Input<'static>) -> bool {
+    let mut qualifier = ShortQualifier::new();
+    loop {
+        if let Some(verdict) = qualifier.record(pin.is_low()) {
+            return verdict;
+        }
+        Timer::after(Duration::from_millis(SHORT_CONFIRM_SAMPLE_INTERVAL_MS)).await;
+    }
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -118,7 +190,7 @@ pub async fn short_detector_task(
     Timer::after(Duration::from_millis(TRACK_SHORT_BOOT_BLANKING_MS)).await;
 
     let initial_low = pin.is_low();
-    if initial_low {
+    if initial_low && confirm_short(&pin).await {
         // A persistent LOW after blanking means the track is already faulted.
         report_track_short(&fault_sender).await;
     }
@@ -148,9 +220,13 @@ pub async fn short_detector_task(
                 Timer::after(Duration::from_millis(10)).await;
                 continue;
             }
-            report_track_short(&fault_sender).await;
-            fault_state = fault_state_receiver.changed().await;
-            continue;
+            if confirm_short(&pin).await {
+                report_track_short(&fault_sender).await;
+                fault_state = fault_state_receiver.changed().await;
+                continue;
+            }
+            // Transient cleared during qualification: fall through and arm
+            // the falling-edge wait below.
         }
 
         // Wait for the 74HC14 to signal overcurrent, but stop arming GPIO3 as
@@ -162,9 +238,14 @@ pub async fn short_detector_task(
                     fault_state = fault_state_receiver.get().await;
                     continue;
                 }
-                report_track_short(&fault_sender).await;
-                fault_state = fault_state_receiver.changed().await;
-                defmt::info!("Short detector re-armed");
+                if confirm_short(&pin).await {
+                    report_track_short(&fault_sender).await;
+                    fault_state = fault_state_receiver.changed().await;
+                    defmt::info!("Short detector re-armed");
+                } else {
+                    defmt::info!("GPIO3 transient ignored (short did not persist)");
+                    fault_state = fault_state_receiver.get().await;
+                }
             }
             Either::Second(next_state) => {
                 fault_state = next_state;
@@ -175,7 +256,9 @@ pub async fn short_detector_task(
 
 #[cfg(test)]
 mod tests {
-    use super::ms_before;
+    use super::{
+        SHORT_CONFIRM_MIN_LOW_SAMPLES, SHORT_CONFIRM_SAMPLES, ShortQualifier, ms_before,
+    };
 
     #[test]
     fn suppression_window_is_active_before_deadline() {
@@ -188,5 +271,50 @@ mod tests {
     fn suppression_window_handles_u32_wrap() {
         assert!(ms_before(u32::MAX - 10, 20));
         assert!(!ms_before(20, u32::MAX - 10));
+    }
+
+    #[test]
+    fn solid_low_confirms_as_soon_as_threshold_reached() {
+        let mut q = ShortQualifier::new();
+        for _ in 0..SHORT_CONFIRM_MIN_LOW_SAMPLES - 1 {
+            assert_eq!(q.record(true), None);
+        }
+        assert_eq!(q.record(true), Some(true));
+    }
+
+    #[test]
+    fn brief_glitch_is_rejected_early() {
+        let mut q = ShortQualifier::new();
+        // A few LOW samples from the inrush pulse, then the line recovers HIGH.
+        assert_eq!(q.record(true), None);
+        assert_eq!(q.record(true), None);
+        let max_highs = SHORT_CONFIRM_SAMPLES - SHORT_CONFIRM_MIN_LOW_SAMPLES;
+        for _ in 0..max_highs {
+            assert_eq!(q.record(false), None);
+        }
+        // One more HIGH makes reaching the LOW threshold impossible.
+        assert_eq!(q.record(false), Some(false));
+    }
+
+    #[test]
+    fn intermittent_short_above_duty_threshold_confirms() {
+        // A bouncing dead short (3 LOW, 1 HIGH) must still confirm once
+        // enough LOW samples accumulate within the window.
+        let mut q = ShortQualifier::new();
+        let mut verdict = None;
+        let mut n = 0u16;
+        while verdict.is_none() && n < 2 * SHORT_CONFIRM_SAMPLES {
+            let is_low = n % 4 != 3;
+            verdict = q.record(is_low);
+            n += 1;
+        }
+        assert_eq!(verdict, Some(true));
+    }
+
+    #[test]
+    fn undecided_window_returns_none() {
+        let mut q = ShortQualifier::new();
+        assert_eq!(q.record(true), None);
+        assert_eq!(q.record(false), None);
     }
 }
