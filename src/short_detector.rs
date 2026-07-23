@@ -256,9 +256,7 @@ pub async fn short_detector_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SHORT_CONFIRM_MIN_LOW_SAMPLES, SHORT_CONFIRM_SAMPLES, ShortQualifier, ms_before,
-    };
+    use super::{SHORT_CONFIRM_MIN_LOW_SAMPLES, SHORT_CONFIRM_SAMPLES, ShortQualifier, ms_before};
 
     #[test]
     fn suppression_window_is_active_before_deadline() {
