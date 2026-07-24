@@ -6,8 +6,6 @@
 //! - Normal operation: GPIO3 = HIGH (3.3V)
 //! - Short circuit:    GPIO3 = LOW  (0V)  → falling edge triggers fault
 //!
-//! # Overview
-//!
 //! Monitors GPIO3 (digital input from 74HC14 Schmitt trigger) for track short-circuit detection.
 //! The signal is active-low: GPIO3=LOW means short detected. A falling-edge interrupt opens a
 //! qualification window: the pin is sampled every millisecond and the fault latches only when
@@ -17,25 +15,16 @@
 //! hardware current limit protects the output during qualification. A confirmed short emits
 //! `FaultEvent::FaultLatched(TrackShort)` to the fault manager.
 //!
-//! # Hardware Architecture
+//! For the first 5 seconds after power-up the task blanks the input entirely:
+//! the power-up transient trips the detector often enough that acting on it
+//! would be useless. After that, falling edges are qualified as described
+//! above, and a confirmed short disables the track output through GPIO18 before
+//! the fault event is even sent, which takes about 20ms in the worst case.
 //!
-//! - **GPIO3** - Active-low digital short signal from the detector
-//! - **External detector** - Conditions the track-driver current/fault signal
-//! - **Boot blanking** - 5 seconds after power-up (ignore spurious shorts)
-//! - **Fail-safe trip** - GPIO18 is disabled once the short is confirmed (worst case ~20 ms)
-//!
-//! # Boot Sequence
-//!
-//! 1. Task starts, begins boot blanking (5 seconds)
-//! 2. During boot blanking: GPIO3 changes are ignored
-//! 3. After 5 seconds: normal operation, falling edges trigger fault detection
-//! 4. On short detected: disables track output immediately, then emits FaultEvent
-//!
-//! # State Recovery
-//!
-//! When the short is resolved (GPIO3 goes HIGH again):
-//! - Fault remains latched (operator must press long-resume button or service clears)
-//! - Waiting for manual intervention prevents repeated on/off cycling
+//! When the short clears and GPIO3 goes HIGH again, the fault stays latched.
+//! Recovery is deliberately manual, through the long-resume button or a service
+//! action, because auto-recovery on a persistent short turns into an on/off
+//! cycle that stresses the driver.
 
 #[cfg(target_arch = "riscv32")]
 use crate::config::TRACK_SHORT_BOOT_BLANKING_MS;
@@ -201,7 +190,7 @@ pub async fn short_detector_task(
 
     let initial_state = if initial_low { "LOW" } else { "HIGH" };
     defmt::info!(
-        "Short detector active after {}ms blanking - GPIO3 = {}",
+        "Short detector active after {}ms blanking, GPIO3 = {}",
         TRACK_SHORT_BOOT_BLANKING_MS,
         initial_state
     );
