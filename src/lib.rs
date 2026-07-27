@@ -45,6 +45,8 @@ pub mod railcom_data;
 #[cfg(target_arch = "riscv32")]
 #[path = "dcc/rmt_driver.rs"]
 pub(crate) mod rmt_dcc;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod runtime_channels;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod seqlock;
 pub(crate) mod short_detector;

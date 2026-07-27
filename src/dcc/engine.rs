@@ -4,10 +4,9 @@ use crate::dcc::encoder::{EncodeError, PulseCode as DccPulseCode, encode_dcc_dat
 use crate::dcc::timing::{IDLE_RMT_SIZE, MAX_DATA_PULSES, RMT_CLOCK_HZ};
 use crate::dcc::{DccFrame, DccPacket, encode_dcc_packet};
 use crate::rmt_dcc as rmt_driver;
+use crate::runtime_channels::{DccFrameReceiver, FaultEventSender, RuntimeChannel};
 use crate::system_status::{FaultCause, FaultEvent};
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::gpio::Level;
 use esp_hal::rmt::PulseCode;
@@ -22,7 +21,7 @@ const ISR_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(50);
 const ISR_RESET_GRACE_PERIOD: Duration = Duration::from_millis(100);
 
 /// DCC packet channel type for sending packets to the engine.
-pub type DccPacketChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, DccFrame, 16>;
+pub type DccPacketChannel = RuntimeChannel<DccFrame, 16>;
 
 /// Pre-encoded idle waveform used to bootstrap continuous RMT loop mode.
 pub type IdleRmtBuffer = Vec<PulseCode, IDLE_RMT_SIZE>;
@@ -65,10 +64,7 @@ pub fn build_idle_rmt_buffer() -> Result<IdleRmtBuffer, IdleWaveformBuildError> 
 }
 
 /// Pure async feeder paced by the ISR ACK.
-pub async fn dcc_engine_task(
-    receiver: Receiver<'static, CriticalSectionRawMutex, DccFrame, 16>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
-) -> ! {
+pub async fn dcc_engine_task(receiver: DccFrameReceiver, fault_sender: FaultEventSender) -> ! {
     defmt::info!("DCC engine feeder started");
 
     let mut last_heartbeat = rmt_driver::isr_heartbeat();

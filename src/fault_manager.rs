@@ -34,7 +34,9 @@ pub(crate) use relay::{FaultEffectsSignal, FaultEffectsTaskContext, fault_effect
 use embassy_sync::watch;
 
 #[cfg(target_arch = "riscv32")]
-use crate::system_status::FaultEvent;
+use crate::runtime_channels::{BootReadySender, FaultEventReceiver, announce_ready};
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::BootReadyEvent;
 #[cfg(target_arch = "riscv32")]
 use crate::track_output::TrackOutput;
 #[cfg(target_arch = "riscv32")]
@@ -48,12 +50,7 @@ pub type FaultStateWatch =
 
 #[cfg(target_arch = "riscv32")]
 pub(crate) struct FaultManagerTaskContext {
-    pub(crate) receiver: embassy_sync::channel::Receiver<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        FaultEvent,
-        16,
-    >,
+    pub(crate) receiver: FaultEventReceiver,
     pub(crate) track_output: TrackOutput,
     pub(crate) state_sender: watch::Sender<
         'static,
@@ -62,12 +59,7 @@ pub(crate) struct FaultManagerTaskContext {
         1,
     >,
     pub(crate) effects_signal: &'static FaultEffectsSignal,
-    pub(crate) ready_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::system_status::BootReadyEvent,
-        9,
-    >,
+    pub(crate) ready_sender: BootReadySender,
 }
 
 /// Applies pure fault-policy decisions to GPIO and non-blocking state outputs.
@@ -87,9 +79,7 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     track_output.set_track_enabled(policy.track_enabled());
     state_sender.send(policy.state());
     effects_signal.signal(effects);
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::FaultManager)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::FaultManager).await;
 
     loop {
         let event = receiver.receive().await;

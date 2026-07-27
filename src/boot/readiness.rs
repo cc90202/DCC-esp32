@@ -2,26 +2,17 @@
 
 use defmt::info;
 use embassy_futures::select::{Either, select};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, with_timeout};
 
+use crate::runtime_channels::{BootReadyReceiver, RuntimeReceiver};
 use crate::system_status::BootReadyEvent;
 
 use super::error::log_degraded_boot_error;
 use super::{BootError, CriticalTaskInit};
 
-pub(super) async fn announce_ready(
-    sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
-    event: BootReadyEvent,
-) {
-    sender.send(event).await;
-    info!("boot: ready ack from {:?}", event);
-}
-
 pub(super) async fn wait_for_runtime_ready(
-    receiver: Receiver<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
-    failure_receiver: Receiver<'static, CriticalSectionRawMutex, CriticalTaskInit, 4>,
+    receiver: BootReadyReceiver,
+    failure_receiver: RuntimeReceiver<CriticalTaskInit, 4>,
 ) -> Result<(), BootError> {
     const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
     const READY_DCC_ENGINE: u16 = 1 << 0;

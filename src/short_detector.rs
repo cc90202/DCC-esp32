@@ -29,13 +29,15 @@
 #[cfg(target_arch = "riscv32")]
 use crate::config::TRACK_SHORT_BOOT_BLANKING_MS;
 #[cfg(target_arch = "riscv32")]
+use crate::runtime_channels::{BootReadySender, FaultEventSender, announce_ready};
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::BootReadyEvent;
+#[cfg(target_arch = "riscv32")]
 use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(target_arch = "riscv32")]
 use embassy_futures::select::{Either, select};
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::Sender;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::watch;
 #[cfg(target_arch = "riscv32")]
@@ -150,9 +152,7 @@ async fn confirm_short(pin: &Input<'static>) -> bool {
 }
 
 #[cfg(target_arch = "riscv32")]
-async fn report_track_short(
-    fault_sender: &Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
-) {
+async fn report_track_short(fault_sender: &FaultEventSender) {
     crate::track_output::emergency_disable();
     defmt::warn!("Short circuit detected on GPIO3!");
     fault_sender
@@ -166,14 +166,14 @@ async fn report_track_short(
 #[embassy_executor::task]
 pub async fn short_detector_task(
     mut pin: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    fault_sender: FaultEventSender,
     mut fault_state_receiver: watch::Receiver<
         'static,
         CriticalSectionRawMutex,
         crate::fault_manager::FaultManagerState,
         1,
     >,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
+    ready_sender: BootReadySender,
 ) -> ! {
     // Boot blanking: ignore transients from WiFi radio startup and DCC stabilization.
     Timer::after(Duration::from_millis(TRACK_SHORT_BOOT_BLANKING_MS)).await;
@@ -184,9 +184,7 @@ pub async fn short_detector_task(
         report_track_short(&fault_sender).await;
     }
 
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::ShortDetector)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::ShortDetector).await;
 
     let initial_state = if initial_low { "LOW" } else { "HIGH" };
     defmt::info!(

@@ -14,8 +14,6 @@ use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Config, StackResources};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Instant, Timer};
 use esp_hal::rng::Rng;
 use static_cell::StaticCell;
@@ -25,11 +23,15 @@ use crate::application::StatusModel;
 use crate::application::client_safety::ClientSafetyPolicy;
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
 use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
-use crate::dcc::{LocoRequestMessage, LocoResponse, PomRequest, PomResponse, SchedulerCommand};
 use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::Z21Ctx;
 use crate::net::z21_dispatch::{encode_system_state, handle_packet};
-use crate::system_status::{DisplayEvent, FaultEvent, SystemStatusEvent};
+use crate::runtime_channels::{
+    BootReadySender, DisplaySender, FaultEventSender, LocoRequestSender, LocoResponseReceiver,
+    NetStatusReceiver, PomRequestSender, PomResponseReceiver, SchedulerCommandSender,
+    SystemStatusSender, announce_ready,
+};
+use crate::system_status::{BootReadyEvent, DisplayEvent, FaultEvent};
 use crate::z21::{self as z21_proto, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 
 pub use super::wifi::NetInitError;
@@ -56,15 +58,14 @@ pub(crate) fn udp_receive_failure_count() -> u32 {
 }
 
 pub struct NetTaskChannels {
-    pub net_status: Receiver<'static, CriticalSectionRawMutex, SystemStatusEvent, 8>,
-    pub status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
-    pub display_sender: Sender<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
-    pub ready_sender:
-        Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
-    pub pom_request_sender: Sender<'static, CriticalSectionRawMutex, PomRequest, 1>,
-    pub pom_response_receiver: Receiver<'static, CriticalSectionRawMutex, PomResponse, 1>,
-    pub loco_request_sender: Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
-    pub loco_response_receiver: Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
+    pub net_status: NetStatusReceiver,
+    pub status_sender: SystemStatusSender,
+    pub display_sender: DisplaySender,
+    pub ready_sender: BootReadySender,
+    pub pom_request_sender: PomRequestSender,
+    pub pom_response_receiver: PomResponseReceiver,
+    pub loco_request_sender: LocoRequestSender,
+    pub loco_response_receiver: LocoResponseReceiver,
 }
 
 /// Main net task: WiFi init, DHCP, Z21 UDP control loop.
@@ -75,8 +76,8 @@ pub async fn net_task(
     spawner: Spawner,
     wifi: esp_hal::peripherals::WIFI<'static>,
     credentials: WifiCredentials,
-    scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
+    scheduler_sender: SchedulerCommandSender,
+    fault_sender: FaultEventSender,
     channels: NetTaskChannels,
 ) -> Result<(), NetInitError> {
     let NetTaskChannels {
@@ -134,9 +135,7 @@ pub async fn net_task(
     let mut socket = UdpSocket::new(stack, rx_meta, rx_buf, tx_meta, tx_buf);
     socket.bind(Z21_PORT).map_err(|_| NetInitError::UdpBind)?;
     info!("Z21 UDP listening on port {}", Z21_PORT);
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::Net)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::Net).await;
 
     let mut loco_slots: LocoSlots = [None; 12];
     let mut client_safety = ClientSafetyPolicy::new(Z21_KEEPALIVE_TIMEOUT_MS);
