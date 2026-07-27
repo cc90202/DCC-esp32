@@ -412,6 +412,14 @@ struct ActivePomRequest {
     cutout: CutoutMode,
 }
 
+enum DirtyFunctionSelection {
+    NoPendingGroup,
+    // `None` preserves fail-closed behavior for an invalid dirty group: the
+    // current scheduler tick emits nothing instead of falling through to
+    // lower-priority telemetry or refresh traffic.
+    Selected(Option<DccPacket>),
+}
+
 impl Default for SlotManager {
     fn default() -> Self {
         Self::new()
@@ -949,6 +957,92 @@ impl SlotManager {
             .map(|(packet, _)| packet)
     }
 
+    fn take_pending_safety_packet(&mut self) -> Option<DccPacket> {
+        if self.pending_broadcast_estop {
+            self.pending_broadcast_estop = false;
+            return Some(DccPacket::BroadcastStop);
+        }
+
+        if self.pending_estop_targets.is_empty() {
+            return None;
+        }
+
+        let address = self.pending_estop_targets.remove(0);
+        let direction = self
+            .slots
+            .iter()
+            .find(|slot| slot.address == address)
+            .map(|slot| slot.direction)
+            .unwrap_or(Direction::Reverse);
+        Some(DccPacket::EmergencyStop { address, direction })
+    }
+
+    fn take_pending_programming_packet(&mut self) -> Option<DccPacket> {
+        (!self.pending_pom.is_empty()).then(|| self.pending_pom.remove(0))
+    }
+
+    fn take_dirty_speed_packet(&mut self) -> Option<DccPacket> {
+        for slot in &mut self.slots {
+            if !slot.dirty_speed {
+                continue;
+            }
+
+            if slot.dirty_speed_retries == 0 {
+                slot.dirty_speed = false;
+            } else {
+                slot.dirty_speed_retries -= 1;
+            }
+            let packet = slot.speed_packet();
+            slot.last_sent = slot.last_sent.wrapping_add(1);
+            if packet.is_some() {
+                return packet;
+            }
+            #[cfg(target_arch = "riscv32")]
+            defmt::warn!(
+                "invalid speed/format state for addr={}, dropping dirty speed",
+                slot.address.value()
+            );
+        }
+        None
+    }
+
+    fn take_dirty_function_packet(&mut self) -> DirtyFunctionSelection {
+        let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.dirty_function_groups != 0)
+        else {
+            return DirtyFunctionSelection::NoPendingGroup;
+        };
+        let packet = slot.next_dirty_function_packet();
+        slot.last_sent = slot.last_sent.wrapping_add(1);
+        DirtyFunctionSelection::Selected(packet)
+    }
+
+    fn take_pending_telemetry_packet(&mut self) -> Option<DccPacket> {
+        self.pending_railcom_telemetry.take()
+    }
+
+    fn next_refresh_packet(&mut self, max_slot_visits_without_function: u8) -> Option<DccPacket> {
+        if self.next_index >= self.slots.len() {
+            self.next_index = 0;
+        }
+
+        let slot = &mut self.slots[self.next_index];
+        let packet = slot.next_refresh_packet_with_budget(max_slot_visits_without_function);
+        slot.last_sent = slot.last_sent.wrapping_add(1);
+        if packet.is_none() {
+            #[cfg(target_arch = "riscv32")]
+            defmt::warn!(
+                "invalid refresh packet for addr={}, skipping",
+                slot.address.value()
+            );
+        }
+
+        self.next_index = (self.next_index + 1) % self.slots.len();
+        packet
+    }
+
     pub(super) fn build_next_packet_classified_with_function_budget(
         &mut self,
         max_slot_visits_without_function: u8,
@@ -957,87 +1051,34 @@ impl SlotManager {
             return None;
         }
 
-        if self.pending_broadcast_estop {
-            self.pending_broadcast_estop = false;
-            return Some((DccPacket::BroadcastStop, PacketClass::Safety));
+        if let Some(packet) = self.take_pending_safety_packet() {
+            return Some((packet, PacketClass::Safety));
         }
-        if !self.pending_estop_targets.is_empty() {
-            let address = self.pending_estop_targets.remove(0);
-            let direction = self
-                .slots
-                .iter()
-                .find(|s| s.address == address)
-                .map(|s| s.direction)
-                .unwrap_or(Direction::Reverse);
-            return Some((
-                DccPacket::EmergencyStop { address, direction },
-                PacketClass::Safety,
-            ));
-        }
-        if !self.pending_pom.is_empty() {
-            let packet = self.pending_pom.remove(0);
+        if let Some(packet) = self.take_pending_programming_packet() {
             return Some((packet, PacketClass::Programming));
         }
 
         if self.slots.is_empty() {
-            if let Some(packet) = self.pending_railcom_telemetry.take() {
-                return Some((packet, PacketClass::Telemetry));
-            }
-            return None;
+            return self
+                .take_pending_telemetry_packet()
+                .map(|packet| (packet, PacketClass::Telemetry));
         }
 
-        for slot in self.slots.iter_mut() {
-            if slot.dirty_speed {
-                if slot.dirty_speed_retries == 0 {
-                    slot.dirty_speed = false;
-                } else {
-                    slot.dirty_speed_retries -= 1;
-                }
-                let packet = slot.speed_packet();
-                slot.last_sent = slot.last_sent.wrapping_add(1);
-                if let Some(packet) = packet {
-                    return Some((packet, PacketClass::Command));
-                }
-                #[cfg(target_arch = "riscv32")]
-                defmt::warn!(
-                    "invalid speed/format state for addr={}, dropping dirty speed",
-                    slot.address.value()
-                );
-            }
+        if let Some(packet) = self.take_dirty_speed_packet() {
+            return Some((packet, PacketClass::Command));
         }
-
-        for slot in self.slots.iter_mut() {
-            if slot.dirty_function_groups != 0 {
-                let packet = slot.next_dirty_function_packet();
-                slot.last_sent = slot.last_sent.wrapping_add(1);
+        match self.take_dirty_function_packet() {
+            DirtyFunctionSelection::Selected(packet) => {
                 return packet.map(|packet| (packet, PacketClass::Command));
             }
+            DirtyFunctionSelection::NoPendingGroup => {}
         }
-
-        if let Some(packet) = self.pending_railcom_telemetry.take() {
+        if let Some(packet) = self.take_pending_telemetry_packet() {
             return Some((packet, PacketClass::Telemetry));
         }
 
-        if self.next_index >= self.slots.len() {
-            self.next_index = 0;
-        }
-
-        let packet = {
-            let slot = &mut self.slots[self.next_index];
-            let p = slot.next_refresh_packet_with_budget(max_slot_visits_without_function);
-            slot.last_sent = slot.last_sent.wrapping_add(1);
-            if p.is_none() {
-                #[cfg(target_arch = "riscv32")]
-                defmt::warn!(
-                    "invalid refresh packet for addr={}, skipping",
-                    slot.address.value()
-                );
-            }
-            p
-        };
-
-        self.next_index = (self.next_index + 1) % self.slots.len();
-        packet.map(|packet| (packet, PacketClass::Refresh))
+        self.next_refresh_packet(max_slot_visits_without_function)
+            .map(|packet| (packet, PacketClass::Refresh))
     }
 
     /// Number of active slots.
