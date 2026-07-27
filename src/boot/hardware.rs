@@ -32,7 +32,8 @@ pub(super) fn initialize_display_bus(
         esp_hal::i2c::master::Config::default().with_frequency(esp_hal::time::Rate::from_khz(400)),
     )
     .map(|i2c| i2c.with_sda(sda).with_scl(scl).into_async())
-    .map_err(|_| {
+    .map_err(|error| {
+        defmt::error!("boot: display I2C init failed: {:?}", error);
         BootError::OptionalPeripheralInit(crate::system_status::OptionalPeripheralInit::DisplayI2c)
     })
 }
@@ -41,8 +42,10 @@ pub(super) fn initialize_dcc_rmt(
     rmt: esp_hal::peripherals::RMT<'static>,
     dcc_pin: esp_hal::peripherals::GPIO2<'static>,
 ) -> Result<(), BootError> {
-    let rmt = Rmt::new(rmt, Rate::from_mhz(80))
-        .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::Rmt))?;
+    let rmt = Rmt::new(rmt, Rate::from_mhz(80)).map_err(|error| {
+        defmt::error!("boot: RMT initialization failed: {:?}", error);
+        BootError::CriticalHardwareInit(CriticalHardwareInit::Rmt)
+    })?;
 
     // One 1 us RMT channel owns the DCC waveform. GPIO4 remains under the
     // timer-driven TrackOutput owner.
@@ -56,9 +59,14 @@ pub(super) fn initialize_dcc_rmt(
                 .with_idle_output(true)
                 .with_memsize(3),
         )
-        .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RmtChannel0))?;
-    let idle_rmt = build_idle_rmt_buffer()
-        .map_err(|_| BootError::DccSelfCheck(DccSelfCheckError::IdleWaveformBuild))?;
+        .map_err(|error| {
+            defmt::error!("boot: RMT channel configuration failed: {:?}", error);
+            BootError::CriticalHardwareInit(CriticalHardwareInit::RmtChannel0)
+        })?;
+    let idle_rmt = build_idle_rmt_buffer().map_err(|error| {
+        defmt::error!("boot: idle RMT waveform build failed: {:?}", error);
+        BootError::DccSelfCheck(DccSelfCheckError::IdleWaveformBuild)
+    })?;
 
     rmt_driver::init(dcc_channel, idle_rmt.as_slice())
         .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RmtDriver))
@@ -77,6 +85,9 @@ pub(super) fn initialize_railcom_receiver(
     rx_pin.apply_input_config(&InputConfig::default().with_pull(Pull::Down));
     let rx_pin = rx_pin.peripheral_input().with_input_inverter(true);
     UartRx::new(uart1, railcom_uart_rx_config())
-        .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RailcomUart))
+        .map_err(|error| {
+            defmt::error!("boot: RailCom UART configuration failed: {:?}", error);
+            BootError::CriticalHardwareInit(CriticalHardwareInit::RailcomUart)
+        })
         .map(|uart| uart.with_rx(rx_pin).into_async())
 }
