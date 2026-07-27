@@ -92,8 +92,8 @@ pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_
 pub(crate) use packet::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{
-    BinaryStateAddress, DccAddress, DccAddressKind, DccPacket, Direction, LogonGroup, NmraSpeed28,
-    NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
+    BinaryStateAddress, DCC_MAX_PACKET_BYTES, DccAddress, DccAddressKind, DccPacket, Direction,
+    LogonGroup, NmraSpeed28, NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
 };
 #[cfg(any(test, target_arch = "riscv32"))]
 #[doc(inline)]
