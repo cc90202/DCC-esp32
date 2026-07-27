@@ -159,6 +159,21 @@ impl PackedAddressFlags {
     pub(crate) const fn flag(self, index: u32) -> bool {
         (self.0 & (1 << (Self::FLAG_BASE_BIT + index))) != 0
     }
+
+    /// Replaces a compact field starting at flag `index`.
+    #[must_use]
+    #[inline(always)]
+    pub(crate) const fn with_field(self, index: u32, width: u32, value: u32) -> Self {
+        let field_mask = (1u32 << width) - 1;
+        let shifted_mask = field_mask << (Self::FLAG_BASE_BIT + index);
+        Self((self.0 & !shifted_mask) | ((value & field_mask) << (Self::FLAG_BASE_BIT + index)))
+    }
+
+    #[inline(always)]
+    pub(crate) const fn field(self, index: u32, width: u32) -> u32 {
+        let field_mask = (1u32 << width) - 1;
+        (self.0 >> (Self::FLAG_BASE_BIT + index)) & field_mask
+    }
 }
 
 impl DccAddress {
@@ -564,7 +579,7 @@ impl PacketBytes {
     /// Used by RCN-218 automatic-logon packets (`LogonSelect`), which carry a
     /// CRC8 byte ahead of the usual trailing XOR checksum.
     fn push_crc8(&mut self) {
-        let crc = DccPacket::crc8_dallas_maxim(&self.bytes);
+        let crc = crate::logon::crc8_dallas_maxim(&self.bytes);
         self.push(crc);
     }
 
@@ -605,21 +620,6 @@ impl DccPacket {
     #[inline]
     fn bool_mask(value: bool, mask: u8) -> u8 {
         if value { mask } else { 0 }
-    }
-
-    fn crc8_dallas_maxim(bytes: &[u8]) -> u8 {
-        let mut crc = 0u8;
-        for &byte in bytes {
-            crc ^= byte;
-            for _ in 0..8 {
-                crc = if crc & 0x01 != 0 {
-                    (crc >> 1) ^ 0x8C
-                } else {
-                    crc >> 1
-                };
-            }
-        }
-        crc
     }
 
     fn encode_speed28_instruction(
@@ -1149,6 +1149,17 @@ mod tests {
     }
 
     #[test]
+    fn test_packed_address_flags_field_replaces_previous_value() {
+        let packed = PackedAddressFlags::new(None)
+            .with_field(0, 2, 1)
+            .with_field(0, 2, 3);
+
+        assert_eq!(packed.field(0, 2), 3);
+        assert!(packed.flag(0));
+        assert!(packed.flag(1));
+    }
+
+    #[test]
     fn test_short_address_validation() {
         assert_eq!(DccAddress::new_short(0), None);
         assert_eq!(DccAddress::new_short(128), None);
@@ -1372,7 +1383,7 @@ mod tests {
             0x0B, 0x0A, 0x00, 0x00, 0x8E, 0x40, 0x00, 0x0D, 0x67, 0x00, 0x01, 0x00,
         ];
 
-        assert_eq!(DccPacket::crc8_dallas_maxim(&data), 0x4C);
+        assert_eq!(crate::logon::crc8_dallas_maxim(&data), 0x4C);
     }
 
     #[test]

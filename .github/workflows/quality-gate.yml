@@ -35,8 +35,8 @@ jobs:
       - name: ESP target compile check
         run: cargo check-esp
 
-      - name: Clippy host lib
-        run: cargo clippy --lib --target x86_64-unknown-linux-gnu -- -D warnings
+      - name: Clippy host targets
+        run: cargo clippy-host -- -D warnings
 
       - name: Clippy riscv32 lib
         run: cargo clippy --lib --target riscv32imac-unknown-none-elf -- -D warnings

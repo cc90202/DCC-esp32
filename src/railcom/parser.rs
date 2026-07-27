@@ -338,7 +338,7 @@ pub fn parse_logon_response_48(
         return Err(ParseError::UnsupportedDatagramId(id));
     }
 
-    let expected_crc = crc8_dallas_maxim(&bytes[..5]);
+    let expected_crc = crate::logon::crc8_dallas_maxim(&bytes[..5]);
     let actual_crc = bytes[5];
     if expected_crc != actual_crc {
         return Err(ParseError::InvalidLogonCrc {
@@ -356,21 +356,6 @@ pub fn parse_logon_response_48(
     .ok_or(ParseError::InvalidLogonAddress(raw_address))?;
 
     Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
-}
-
-fn crc8_dallas_maxim(bytes: &[u8]) -> u8 {
-    let mut crc = 0u8;
-    for &byte in bytes {
-        crc ^= byte;
-        for _ in 0..8 {
-            crc = if crc & 0x01 != 0 {
-                (crc >> 1) ^ 0x8C
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    crc
 }
 
 fn datagram_symbol_count(id: u8) -> Result<usize, ParseError> {

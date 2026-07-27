@@ -7,7 +7,7 @@
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo test-host`
 - [ ] `cargo check-esp`
-- [ ] `cargo clippy --lib --target x86_64-unknown-linux-gnu -- -D warnings`
+- [ ] `cargo clippy-host -- -D warnings`
 - [ ] `cargo clippy --lib --target riscv32imac-unknown-none-elf -- -D warnings`
 
 ## Safety / Runtime Notes

@@ -24,8 +24,8 @@ jobs:
       - name: Check ESP32-C6 firmware compilation
         run: cargo check-esp
 
-      - name: Run clippy (library only)
-        run: cargo clippy --lib -- -D warnings
+      - name: Run host clippy
+        run: cargo clippy-host -- -D warnings
 
       - name: Check formatting
         run: cargo fmt -- --check

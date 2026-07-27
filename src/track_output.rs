@@ -179,8 +179,8 @@ pub struct RailcomPacketMetadata {
 struct PackedRailcomPacketMetadata(PackedAddressFlags);
 
 impl PackedRailcomPacketMetadata {
-    const POM_WRITE_BIT: u32 = 0;
-    const POM_READ_BIT: u32 = 1;
+    const CUTOUT_MODE_FIELD: u32 = 0;
+    const CUTOUT_MODE_WIDTH: u32 = 2;
     const HAS_POM_REQUEST_ID_BIT: u32 = 2;
 
     const fn from_raw(raw: u32) -> Self {
@@ -198,8 +198,16 @@ impl PackedRailcomPacketMetadata {
     ) -> Self {
         Self(
             PackedAddressFlags::new(target_address)
-                .with_flag(Self::POM_WRITE_BIT, matches!(cutout, CutoutMode::PomWrite))
-                .with_flag(Self::POM_READ_BIT, matches!(cutout, CutoutMode::PomRead))
+                .with_field(
+                    Self::CUTOUT_MODE_FIELD,
+                    Self::CUTOUT_MODE_WIDTH,
+                    match cutout {
+                        CutoutMode::None => 0,
+                        CutoutMode::Telemetry => 1,
+                        CutoutMode::PomWrite => 2,
+                        CutoutMode::PomRead => 3,
+                    },
+                )
                 .with_flag(Self::HAS_POM_REQUEST_ID_BIT, pom_request_id.is_some()),
         )
     }
@@ -209,12 +217,15 @@ impl PackedRailcomPacketMetadata {
     }
 
     const fn cutout(self) -> CutoutMode {
-        if self.0.flag(Self::POM_READ_BIT) {
-            CutoutMode::PomRead
-        } else if self.0.flag(Self::POM_WRITE_BIT) {
-            CutoutMode::PomWrite
-        } else {
-            CutoutMode::Telemetry
+        match self
+            .0
+            .field(Self::CUTOUT_MODE_FIELD, Self::CUTOUT_MODE_WIDTH)
+        {
+            0 => CutoutMode::None,
+            1 => CutoutMode::Telemetry,
+            2 => CutoutMode::PomWrite,
+            3 => CutoutMode::PomRead,
+            _ => unreachable!(),
         }
     }
 
