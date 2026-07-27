@@ -471,10 +471,11 @@ fn close_stale_window_from_isr(state: CutoutState) {
 // when the same non-zero even generation surrounds the payload reads.
 #[inline(always)]
 fn record_railcom_packet_metadata_from_isr(
-    packet_sequence: u32,
+    packet_sequence: PacketSequence,
     metadata_raw: u32,
     pom_request_id_raw: u32,
 ) {
+    let packet_sequence = packet_sequence.value();
     let slot = packet_sequence as usize % RAILCOM_PACKET_META_CAPACITY;
     let updating_generation = RAILCOM_PACKET_META_GENERATIONS[slot]
         .load(Ordering::Relaxed)
@@ -536,7 +537,7 @@ fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".rwtext"))]
 pub fn request_cutout_from_isr(
     packet_boundary_us: u32,
-    packet_sequence: u32,
+    packet_sequence: PacketSequence,
     dcc_packet_duration_us: u32,
     cutout: CutoutMode,
     target_address: Option<DccAddress>,
@@ -591,7 +592,7 @@ pub fn request_cutout_from_isr(
     let metadata_raw =
         PackedRailcomPacketMetadata::new(target_address, cutout, pom_request_id).raw();
     let pom_request_id_raw = pom_request_id.map_or(0, PomRequestId::value);
-    PENDING_CUTOUT_PACKET_SEQUENCE.store(packet_sequence, Ordering::Release);
+    PENDING_CUTOUT_PACKET_SEQUENCE.store(packet_sequence.value(), Ordering::Release);
     PENDING_CUTOUT_METADATA.store(metadata_raw, Ordering::Release);
     PENDING_CUTOUT_POM_REQUEST_ID.store(pom_request_id_raw, Ordering::Release);
     record_railcom_packet_metadata_from_isr(packet_sequence, metadata_raw, pom_request_id_raw);
