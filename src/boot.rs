@@ -33,8 +33,10 @@ use startup_sequence::{send_decoder_reset_sequence, send_power_on_idle_burst};
 
 use defmt::{info, warn};
 use embassy_executor::{SpawnToken, Spawner};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Sender;
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
-use esp_hal::gpio::Output;
+use esp_hal::gpio::{Input, Output};
 use esp_hal::timer::timg::TimerGroup;
 use esp_storage::FlashStorage;
 use static_cell::StaticCell;
@@ -44,7 +46,7 @@ use crate::control_buttons::{
     wait_for_boot_provisioning_override,
 };
 use crate::dcc::{
-    LocoRequestChannel, LocoResponseChannel, PomRailcomResultChannel, PomRequestChannel,
+    DccFrame, LocoRequestChannel, LocoResponseChannel, PomRailcomResultChannel, PomRequestChannel,
     PomResponseChannel, PomTxStartedChannel, SchedulerCommandChannel, pom_actor_task,
 };
 use crate::dcc_runtime::DccPacketChannel;
@@ -55,7 +57,7 @@ use crate::fault_manager::{
 use crate::net::provisioning::run_provisioning_ap;
 use crate::net::udp_control::NetTaskChannels;
 use crate::net::wifi_config::{
-    ProvisioningDecision, StoreError, load_wifi_credentials_and_decision,
+    ProvisioningDecision, StoreError, WifiCredentials, load_wifi_credentials_and_decision,
 };
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
@@ -100,19 +102,40 @@ fn spawn_critical<S>(
         .map_err(|_| BootError::CriticalTaskSpawn(task))
 }
 
-pub async fn run(
-    spawner: Spawner,
-    peripherals: esp_hal::peripherals::Peripherals,
+type DccSender = Sender<'static, CriticalSectionRawMutex, DccFrame, 16>;
+
+struct WifiBootDecision {
+    decision: ProvisioningDecision,
+    credentials: Option<WifiCredentials>,
+    flash: FlashStorage<'static>,
+    partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
+    resume_button: Input<'static>,
+}
+
+struct DccCore {
+    sender: DccSender,
+    scheduler_commands: &'static SchedulerCommandChannel,
+    track_output: TrackOutput,
+}
+
+struct DccCoreHardware {
+    rmt: esp_hal::peripherals::RMT<'static>,
+    dcc_pin: esp_hal::peripherals::GPIO2<'static>,
+    timer: esp_hal::peripherals::TIMG1<'static>,
+    track_enable_pin: esp_hal::peripherals::GPIO18<'static>,
+    cutout_pin: esp_hal::peripherals::GPIO4<'static>,
+    green_led_pin: esp_hal::peripherals::GPIO14<'static>,
+    red_led_pin: esp_hal::peripherals::GPIO15<'static>,
+}
+
+fn spawn_display(
+    spawner: &Spawner,
+    i2c0: esp_hal::peripherals::I2C0<'static>,
+    sda: esp_hal::peripherals::GPIO19<'static>,
+    scl: esp_hal::peripherals::GPIO20<'static>,
 ) -> Result<(), BootError> {
-    info!("boot: starting runtime bootstrap");
-
-    start_async_runtime(peripherals.TIMG0, peripherals.SW_INTERRUPT);
-    info!("boot: Embassy runtime initialized");
-
-    // I2C for OLED display: GPIO19=SDA, GPIO20=SCL, 400 kHz.
     info!("boot: initializing I2C display bus");
-    let i2c = match initialize_display_bus(peripherals.I2C0, peripherals.GPIO19, peripherals.GPIO20)
-    {
+    let i2c = match initialize_display_bus(i2c0, sda, scl) {
         Ok(i2c) => Some(i2c),
         Err(error) => {
             debug_assert_eq!(error.action(), BootAction::DegradedMode);
@@ -122,25 +145,27 @@ pub async fn run(
     };
 
     spawn_critical(
-        &spawner,
+        spawner,
         display_task_wrapper(i2c, DISPLAY_CHANNEL.receiver(), BOOT_READY.sender()),
         CriticalTask::Display,
     )?;
     info!("boot: display task spawned");
+    Ok(())
+}
 
-    // Initialize system status signal first to track startup progression.
-    SYSTEM_STATUS.send(SystemStatusEvent::BootStarted).await;
-    NET_STATUS.send(SystemStatusEvent::BootStarted).await;
-
-    let mut resume_btn = new_button_input(peripherals.GPIO21);
-    let boot_button_override = wait_for_boot_provisioning_override(&mut resume_btn).await;
-    let mut flash = FlashStorage::new(peripherals.FLASH);
+async fn load_boot_wifi_decision(
+    flash_peripheral: esp_hal::peripherals::FLASH<'static>,
+    resume_pin: esp_hal::peripherals::GPIO21<'static>,
+) -> Result<WifiBootDecision, BootError> {
+    let mut resume_button = new_button_input(resume_pin);
+    let boot_button_override = wait_for_boot_provisioning_override(&mut resume_button).await;
+    let mut flash = FlashStorage::new(flash_peripheral);
     let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
 
     // Single decision path: button override, persistent flag and stored
     // credentials all flow through `decide_provisioning`, which also clears
     // the persistent flag once it has been observed.
-    let (wifi_decision, wifi_credentials) = {
+    let (decision, credentials) = {
         let mut store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
         load_wifi_credentials_and_decision(&mut store, boot_button_override).map_err(|error| {
             BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(WifiConfigInitError::Store(
@@ -149,9 +174,324 @@ pub async fn run(
         })?
     };
 
-    let wifi_credentials = match wifi_decision {
+    Ok(WifiBootDecision {
+        decision,
+        credentials,
+        flash,
+        partition_table_buffer,
+        resume_button,
+    })
+}
+
+async fn start_dcc_core(
+    spawner: &Spawner,
+    hardware: DccCoreHardware,
+) -> Result<DccCore, BootError> {
+    let DccCoreHardware {
+        rmt,
+        dcc_pin,
+        timer,
+        track_enable_pin,
+        cutout_pin,
+        green_led_pin,
+        red_led_pin,
+    } = hardware;
+
+    verify_boot_packet_encoding()?;
+
+    info!("boot: initializing RMT peripheral on GPIO2");
+    initialize_dcc_rmt(rmt, dcc_pin)?;
+    info!("boot: RMT initialized and DCC output mapped to GPIO2");
+    DISPLAY_CHANNEL
+        .send(DisplayEvent::BootProgress(BootStep::DccEngineReady))
+        .await;
+
+    let green_led: Output<'static> = new_led_output(green_led_pin);
+    let red_led: Output<'static> = new_led_output(red_led_pin);
+
+    let channel = DCC_CHANNEL.init(DccPacketChannel::new());
+    let sender = channel.sender();
+    let receiver = channel.receiver();
+    info!("boot: DCC packet channel initialized");
+
+    let scheduler_commands = SCHEDULER_COMMANDS.init(SchedulerCommandChannel::new());
+    let command_receiver = scheduler_commands.receiver();
+    info!("boot: scheduler command channel initialized");
+
+    // The track sees no signal until the DCC waveform is stable. GPIO4 is
+    // timer-driven for RailCom cutouts.
+    let timg1 = TimerGroup::new(timer);
+    let track_output = TrackOutput::new(track_enable_pin, cutout_pin, timg1.timer0);
+    info!("boot: track SLEEP GPIO18 held LOW; RailCom cutout/run GPIO4 held inactive HIGH");
+
+    spawn_critical(
+        spawner,
+        dcc_engine_task_wrapper(receiver, FAULT_CHANNEL.sender(), BOOT_READY.sender()),
+        CriticalTask::DccEngine,
+    )?;
+    info!("boot: DCC engine task spawned");
+
+    spawn_critical(
+        spawner,
+        status_led_task(
+            SYSTEM_STATUS.receiver(),
+            green_led,
+            red_led,
+            DISPLAY_CHANNEL.sender(),
+            BOOT_READY.sender(),
+        ),
+        CriticalTask::StatusLed,
+    )?;
+    info!("boot: status LED task spawned");
+
+    spawn_critical(
+        spawner,
+        scheduler_task_wrapper(
+            command_receiver,
+            LOCO_REQUESTS.receiver(),
+            LOCO_RESPONSES.sender(),
+            sender,
+            DISPLAY_CHANNEL.sender(),
+            BOOT_READY.sender(),
+        ),
+        CriticalTask::Scheduler,
+    )?;
+    info!("boot: scheduler task spawned");
+
+    spawn_critical(spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
+    info!("boot: RailCom diagnostics task spawned");
+
+    spawn_critical(
+        spawner,
+        pom_actor_task(
+            POM_REQUESTS.receiver(),
+            POM_RESPONSES.sender(),
+            POM_TX_STARTED.receiver(),
+            POM_RAILCOM_RESULTS.receiver(),
+            scheduler_commands.sender(),
+        ),
+        CriticalTask::PomActor,
+    )?;
+    spawn_critical(
+        spawner,
+        pom_cutout_monitor_task(POM_TX_STARTED.sender()),
+        CriticalTask::PomCutoutMonitor,
+    )?;
+    info!("boot: POM actor and cutout monitor tasks spawned");
+
+    Ok(DccCore {
+        sender,
+        scheduler_commands,
+        track_output,
+    })
+}
+
+fn spawn_railcom_runtime(
+    spawner: &Spawner,
+    uart: esp_hal::peripherals::UART1<'static>,
+    rx_pin: esp_hal::peripherals::GPIO5<'static>,
+    scheduler_commands: &'static SchedulerCommandChannel,
+) -> Result<(), BootError> {
+    let railcom_uart_rx = initialize_railcom_receiver(uart, rx_pin)?;
+    spawn_critical(
+        spawner,
+        railcom_isr_capture_task_wrapper(railcom_uart_rx, RAILCOM_RUNTIME_RESULTS.sender()),
+        CriticalTask::RailcomIsrCapture,
+    )?;
+    spawn_critical(
+        spawner,
+        railcom_uart_runtime_dispatch_task(
+            RAILCOM_RUNTIME_RESULTS.receiver(),
+            POM_RAILCOM_RESULTS.sender(),
+            scheduler_commands.sender(),
+        ),
+        CriticalTask::RailcomUartDispatch,
+    )?;
+    info!("boot: RailCom ISR capture spawned on GPIO5 (POM dispatcher active)");
+    Ok(())
+}
+
+async fn spawn_network_runtime(
+    spawner: Spawner,
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    credentials: WifiCredentials,
+    scheduler_commands: &'static SchedulerCommandChannel,
+) -> Result<(), BootError> {
+    spawn_critical(
+        &spawner,
+        net_task_wrapper(NetTaskWrapperContext {
+            spawner,
+            wifi,
+            credentials,
+            scheduler_sender: scheduler_commands.sender(),
+            fault_sender: FAULT_CHANNEL.sender(),
+            channels: NetTaskChannels {
+                net_status: NET_STATUS.receiver(),
+                status_sender: SYSTEM_STATUS.sender(),
+                display_sender: DISPLAY_CHANNEL.sender(),
+                ready_sender: BOOT_READY.sender(),
+                pom_request_sender: POM_REQUESTS.sender(),
+                pom_response_receiver: POM_RESPONSES.receiver(),
+                loco_request_sender: LOCO_REQUESTS.sender(),
+                loco_response_receiver: LOCO_RESPONSES.receiver(),
+            },
+            failure_sender: BOOT_FAILURE.sender(),
+        }),
+        CriticalTask::Net,
+    )?;
+    info!("boot: network task spawned");
+    DISPLAY_CHANNEL
+        .send(DisplayEvent::BootProgress(BootStep::WifiConnecting))
+        .await;
+    Ok(())
+}
+
+struct SafetyRuntimeResources {
+    flash: FlashStorage<'static>,
+    partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
+    resume_button: Input<'static>,
+    stop_pin: esp_hal::peripherals::GPIO22<'static>,
+    short_detect_pin: esp_hal::peripherals::GPIO3<'static>,
+}
+
+async fn activate_safe_runtime(
+    spawner: &Spawner,
+    core: DccCore,
+    resources: SafetyRuntimeResources,
+) -> Result<(), BootError> {
+    let DccCore {
+        sender,
+        scheduler_commands,
+        track_output,
+    } = core;
+    let SafetyRuntimeResources {
+        flash,
+        partition_table_buffer,
+        resume_button,
+        stop_pin,
+        short_detect_pin,
+    } = resources;
+
+    info!("boot: core runtime spawned, establishing DCC output");
+    send_power_on_idle_burst(&sender).await;
+    info!("boot: power-on idle burst complete (20 packets)");
+
+    spawn_critical(
+        spawner,
+        fault_effects_task(FaultEffectsTaskContext {
+            effects_signal: &FAULT_EFFECTS,
+            scheduler_sender: scheduler_commands.sender(),
+            status_sender: SYSTEM_STATUS.sender(),
+            net_status_sender: NET_STATUS.sender(),
+            display_sender: DISPLAY_CHANNEL.sender(),
+        }),
+        CriticalTask::FaultEffects,
+    )?;
+    spawn_critical(
+        spawner,
+        fault_manager_task(FaultManagerTaskContext {
+            receiver: FAULT_CHANNEL.receiver(),
+            track_output,
+            state_sender: FAULT_STATE.sender(),
+            effects_signal: &FAULT_EFFECTS,
+            ready_sender: BOOT_READY.sender(),
+        }),
+        CriticalTask::FaultManager,
+    )?;
+    info!("boot: fault manager task spawned");
+
+    spawn_critical(
+        spawner,
+        provisioning_request_task(
+            flash,
+            partition_table_buffer,
+            FAULT_CHANNEL.sender(),
+            PROVISIONING_REQUESTS.receiver(),
+        ),
+        CriticalTask::ProvisioningRequest,
+    )?;
+    info!("boot: provisioning request task spawned");
+
+    let stop_button = new_button_input(stop_pin);
+    spawn_critical(
+        spawner,
+        stop_button_task(stop_button, FAULT_CHANNEL.sender(), BOOT_READY.sender()),
+        CriticalTask::StopButton,
+    )?;
+    spawn_critical(
+        spawner,
+        resume_button_task(
+            resume_button,
+            FAULT_CHANNEL.sender(),
+            PROVISIONING_REQUESTS.sender(),
+            BOOT_READY.sender(),
+        ),
+        CriticalTask::ResumeButton,
+    )?;
+    info!("boot: control button tasks spawned (GPIO22=stop, GPIO21=resume)");
+
+    send_decoder_reset_sequence(&sender).await;
+    info!("boot: reset sequence complete (5 packets)");
+
+    let short_pin = new_short_detect_input(short_detect_pin);
+    let fault_state_receiver = FAULT_STATE.receiver().ok_or(BootError::CriticalTaskInit(
+        CriticalTaskInit::FaultStateReceiverUnavailable,
+    ))?;
+    spawn_critical(
+        spawner,
+        short_detector_task(
+            short_pin,
+            FAULT_CHANNEL.sender(),
+            fault_state_receiver,
+            BOOT_READY.sender(),
+        ),
+        CriticalTask::ShortDetector,
+    )?;
+    info!("boot: short detector task spawned (GPIO3 interrupt)");
+
+    info!("boot: waiting for critical task readiness");
+    wait_for_runtime_ready(BOOT_READY.receiver(), BOOT_FAILURE.receiver()).await?;
+    FAULT_CHANNEL.send(FaultEvent::TrackPowerArmed).await;
+    info!("boot: track power armed after critical runtime readiness");
+    DISPLAY_CHANNEL
+        .send(DisplayEvent::BootProgress(BootStep::SystemRunning))
+        .await;
+    SYSTEM_STATUS.send(SystemStatusEvent::BootCompleted).await;
+    NET_STATUS.send(SystemStatusEvent::BootCompleted).await;
+    info!("boot: critical runtime ready, boot completed");
+    Ok(())
+}
+
+pub async fn run(
+    spawner: Spawner,
+    peripherals: esp_hal::peripherals::Peripherals,
+) -> Result<(), BootError> {
+    info!("boot: starting runtime bootstrap");
+
+    start_async_runtime(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    info!("boot: Embassy runtime initialized");
+
+    spawn_display(
+        &spawner,
+        peripherals.I2C0,
+        peripherals.GPIO19,
+        peripherals.GPIO20,
+    )?;
+
+    SYSTEM_STATUS.send(SystemStatusEvent::BootStarted).await;
+    NET_STATUS.send(SystemStatusEvent::BootStarted).await;
+
+    let WifiBootDecision {
+        decision,
+        credentials,
+        mut flash,
+        partition_table_buffer,
+        resume_button,
+    } = load_boot_wifi_decision(peripherals.FLASH, peripherals.GPIO21).await?;
+
+    let credentials = match decision {
         ProvisioningDecision::StationMode => {
-            wifi_credentials.ok_or(BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+            credentials.ok_or(BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
                 WifiConfigInitError::Store(StoreError::MissingCredentials),
             )))?
         }
@@ -181,235 +521,45 @@ pub async fn run(
         }
     };
 
-    verify_boot_packet_encoding()?;
-
-    info!("boot: initializing RMT peripheral on GPIO2");
-    initialize_dcc_rmt(peripherals.RMT, peripherals.GPIO2)?;
-
-    info!("boot: RMT initialized and DCC output mapped to GPIO2");
-    DISPLAY_CHANNEL
-        .send(DisplayEvent::BootProgress(BootStep::DccEngineReady))
-        .await;
-
-    // Configure status LEDs (active-high): GPIO14=green, GPIO15=red.
-    let green_led: Output<'static> = new_led_output(peripherals.GPIO14);
-    let red_led: Output<'static> = new_led_output(peripherals.GPIO15);
-
-    let channel = DCC_CHANNEL.init(DccPacketChannel::new());
-    let sender = channel.sender();
-    let receiver = channel.receiver();
-    info!("boot: DCC packet channel initialized");
-
-    let scheduler_commands = SCHEDULER_COMMANDS.init(SchedulerCommandChannel::new());
-    let command_receiver = scheduler_commands.receiver();
-    info!("boot: scheduler command channel initialized");
-
-    // Track SLEEP master enable: GPIO18 push-pull, held LOW during init so
-    // the track sees no signal until the DCC waveform is already stable.
-    // GPIO4 is timer-driven: HIGH outside cutouts and LOW from 26 us through
-    // 454 us after the final DCC packet edge.
-    let timg1 = TimerGroup::new(peripherals.TIMG1);
-    let track_output = TrackOutput::new(peripherals.GPIO18, peripherals.GPIO4, timg1.timer0);
-    info!("boot: track SLEEP GPIO18 held LOW; RailCom cutout/run GPIO4 held inactive HIGH");
-
-    spawn_critical(
+    let core = start_dcc_core(
         &spawner,
-        dcc_engine_task_wrapper(receiver, FAULT_CHANNEL.sender(), BOOT_READY.sender()),
-        CriticalTask::DccEngine,
+        DccCoreHardware {
+            rmt: peripherals.RMT,
+            dcc_pin: peripherals.GPIO2,
+            timer: peripherals.TIMG1,
+            track_enable_pin: peripherals.GPIO18,
+            cutout_pin: peripherals.GPIO4,
+            green_led_pin: peripherals.GPIO14,
+            red_led_pin: peripherals.GPIO15,
+        },
+    )
+    .await?;
+    spawn_railcom_runtime(
+        &spawner,
+        peripherals.UART1,
+        peripherals.GPIO5,
+        core.scheduler_commands,
     )?;
-    info!("boot: DCC engine task spawned");
+    spawn_network_runtime(
+        spawner,
+        peripherals.WIFI,
+        credentials,
+        core.scheduler_commands,
+    )
+    .await?;
 
-    spawn_critical(
+    activate_safe_runtime(
         &spawner,
-        status_led_task(
-            SYSTEM_STATUS.receiver(),
-            green_led,
-            red_led,
-            DISPLAY_CHANNEL.sender(),
-            BOOT_READY.sender(),
-        ),
-        CriticalTask::StatusLed,
-    )?;
-    info!("boot: status LED task spawned");
-
-    spawn_critical(
-        &spawner,
-        scheduler_task_wrapper(
-            command_receiver,
-            LOCO_REQUESTS.receiver(),
-            LOCO_RESPONSES.sender(),
-            sender,
-            DISPLAY_CHANNEL.sender(),
-            BOOT_READY.sender(),
-        ),
-        CriticalTask::Scheduler,
-    )?;
-    info!("boot: scheduler task spawned");
-
-    spawn_critical(&spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
-    info!("boot: RailCom diagnostics task spawned");
-
-    spawn_critical(
-        &spawner,
-        pom_actor_task(
-            POM_REQUESTS.receiver(),
-            POM_RESPONSES.sender(),
-            POM_TX_STARTED.receiver(),
-            POM_RAILCOM_RESULTS.receiver(),
-            scheduler_commands.sender(),
-        ),
-        CriticalTask::PomActor,
-    )?;
-    spawn_critical(
-        &spawner,
-        pom_cutout_monitor_task(POM_TX_STARTED.sender()),
-        CriticalTask::PomCutoutMonitor,
-    )?;
-    info!("boot: POM actor and cutout monitor tasks spawned");
-
-    // RailCom RX wiring: UART RX on GPIO5. The cutout timer opens/closes
-    // ISR-side capture windows and the task below drains UART1 FIFO snapshots.
-    // Gate 6 of the 74HC14 has a weak pull-down; bypass by wiring GPIO5 directly
-    // to pin 10 (gate 5 output) and invert the UART RX polarity in firmware.
-    let railcom_uart_rx = initialize_railcom_receiver(peripherals.UART1, peripherals.GPIO5)?;
-
-    spawn_critical(
-        &spawner,
-        railcom_isr_capture_task_wrapper(railcom_uart_rx, RAILCOM_RUNTIME_RESULTS.sender()),
-        CriticalTask::RailcomIsrCapture,
-    )?;
-    spawn_critical(
-        &spawner,
-        railcom_uart_runtime_dispatch_task(
-            RAILCOM_RUNTIME_RESULTS.receiver(),
-            POM_RAILCOM_RESULTS.sender(),
-            scheduler_commands.sender(),
-        ),
-        CriticalTask::RailcomUartDispatch,
-    )?;
-    info!("boot: RailCom ISR capture spawned on GPIO5 (POM dispatcher active)");
-
-    spawn_critical(
-        &spawner,
-        net_task_wrapper(NetTaskWrapperContext {
-            spawner,
-            wifi: peripherals.WIFI,
-            credentials: wifi_credentials,
-            scheduler_sender: scheduler_commands.sender(),
-            fault_sender: FAULT_CHANNEL.sender(),
-            channels: NetTaskChannels {
-                net_status: NET_STATUS.receiver(),
-                status_sender: SYSTEM_STATUS.sender(),
-                display_sender: DISPLAY_CHANNEL.sender(),
-                ready_sender: BOOT_READY.sender(),
-                pom_request_sender: POM_REQUESTS.sender(),
-                pom_response_receiver: POM_RESPONSES.receiver(),
-                loco_request_sender: LOCO_REQUESTS.sender(),
-                loco_response_receiver: LOCO_RESPONSES.receiver(),
-            },
-            failure_sender: BOOT_FAILURE.sender(),
-        }),
-        CriticalTask::Net,
-    )?;
-    info!("boot: network task spawned");
-    DISPLAY_CHANNEL
-        .send(DisplayEvent::BootProgress(BootStep::WifiConnecting))
-        .await;
-
-    info!("boot: core runtime spawned, establishing DCC output");
-
-    send_power_on_idle_burst(&sender).await;
-    info!("boot: power-on idle burst complete (20 packets)");
-
-    spawn_critical(
-        &spawner,
-        fault_effects_task(FaultEffectsTaskContext {
-            effects_signal: &FAULT_EFFECTS,
-            scheduler_sender: scheduler_commands.sender(),
-            status_sender: SYSTEM_STATUS.sender(),
-            net_status_sender: NET_STATUS.sender(),
-            display_sender: DISPLAY_CHANNEL.sender(),
-        }),
-        CriticalTask::FaultEffects,
-    )?;
-    spawn_critical(
-        &spawner,
-        fault_manager_task(FaultManagerTaskContext {
-            receiver: FAULT_CHANNEL.receiver(),
-            track_output,
-            state_sender: FAULT_STATE.sender(),
-            effects_signal: &FAULT_EFFECTS,
-            ready_sender: BOOT_READY.sender(),
-        }),
-        CriticalTask::FaultManager,
-    )?;
-    info!("boot: fault manager task spawned");
-
-    spawn_critical(
-        &spawner,
-        provisioning_request_task(
+        core,
+        SafetyRuntimeResources {
             flash,
             partition_table_buffer,
-            FAULT_CHANNEL.sender(),
-            PROVISIONING_REQUESTS.receiver(),
-        ),
-        CriticalTask::ProvisioningRequest,
-    )?;
-    info!("boot: provisioning request task spawned");
-
-    // Control buttons: GPIO22=stop (active-low), GPIO21=resume (active-low).
-    // Spawned before the reset sequence so button events are never missed.
-    let stop_btn = new_button_input(peripherals.GPIO22);
-    spawn_critical(
-        &spawner,
-        stop_button_task(stop_btn, FAULT_CHANNEL.sender(), BOOT_READY.sender()),
-        CriticalTask::StopButton,
-    )?;
-    spawn_critical(
-        &spawner,
-        resume_button_task(
-            resume_btn,
-            FAULT_CHANNEL.sender(),
-            PROVISIONING_REQUESTS.sender(),
-            BOOT_READY.sender(),
-        ),
-        CriticalTask::ResumeButton,
-    )?;
-    info!("boot: control button tasks spawned (GPIO22=stop, GPIO21=resume)");
-
-    send_decoder_reset_sequence(&sender).await;
-    info!("boot: reset sequence complete (5 packets)");
-
-    // Track short detector: GPIO3 monitors the active-low conditioned
-    // overcurrent/fault output from the external detector.
-    // Spawned after reset + stabilization so the decoder is quiescent.
-    let short_pin = new_short_detect_input(peripherals.GPIO3);
-    let fault_state_receiver = FAULT_STATE.receiver().ok_or(BootError::CriticalTaskInit(
-        CriticalTaskInit::FaultStateReceiverUnavailable,
-    ))?;
-
-    spawn_critical(
-        &spawner,
-        short_detector_task(
-            short_pin,
-            FAULT_CHANNEL.sender(),
-            fault_state_receiver,
-            BOOT_READY.sender(),
-        ),
-        CriticalTask::ShortDetector,
-    )?;
-    info!("boot: short detector task spawned (GPIO3 interrupt)");
-
-    info!("boot: waiting for critical task readiness");
-    wait_for_runtime_ready(BOOT_READY.receiver(), BOOT_FAILURE.receiver()).await?;
-    FAULT_CHANNEL.send(FaultEvent::TrackPowerArmed).await;
-    info!("boot: track power armed after critical runtime readiness");
-    DISPLAY_CHANNEL
-        .send(DisplayEvent::BootProgress(BootStep::SystemRunning))
-        .await;
-    SYSTEM_STATUS.send(SystemStatusEvent::BootCompleted).await;
-    NET_STATUS.send(SystemStatusEvent::BootCompleted).await;
-    info!("boot: critical runtime ready, boot completed");
+            resume_button,
+            stop_pin: peripherals.GPIO22,
+            short_detect_pin: peripherals.GPIO3,
+        },
+    )
+    .await?;
 
     info!("boot: bootstrap complete");
     Ok(())
