@@ -68,18 +68,32 @@ pub(super) async fn start_wifi(
     wifi: esp_hal::peripherals::WIFI<'static>,
     mode_config: &ModeConfig,
 ) -> Result<(WifiController<'static>, Interfaces<'static>), WifiBringupError> {
-    let controller = init_controller().map_err(WifiBringupError::EspRadioInit)?;
+    let controller = init_controller().map_err(|error| {
+        defmt::error!("esp-radio initialization failed: {:?}", error);
+        WifiBringupError::EspRadioInit(error)
+    })?;
     let (mut wifi_ctrl, interfaces) =
-        esp_radio::wifi::new(controller, wifi, esp_radio::wifi::Config::default())
-            .map_err(|_| WifiBringupError::WifiInit)?;
+        esp_radio::wifi::new(controller, wifi, esp_radio::wifi::Config::default()).map_err(
+            |error| {
+                defmt::error!(
+                    "WiFi driver initialization failed: {:?}",
+                    defmt::Debug2Format(&error)
+                );
+                WifiBringupError::WifiInit
+            },
+        )?;
 
-    wifi_ctrl
-        .set_config(mode_config)
-        .map_err(|_| WifiBringupError::WifiSetConfig)?;
-    wifi_ctrl
-        .start_async()
-        .await
-        .map_err(|_| WifiBringupError::WifiStart)?;
+    wifi_ctrl.set_config(mode_config).map_err(|error| {
+        defmt::error!(
+            "WiFi configuration failed: {:?}",
+            defmt::Debug2Format(&error)
+        );
+        WifiBringupError::WifiSetConfig
+    })?;
+    wifi_ctrl.start_async().await.map_err(|error| {
+        defmt::error!("WiFi start failed: {:?}", defmt::Debug2Format(&error));
+        WifiBringupError::WifiStart
+    })?;
 
     Ok((wifi_ctrl, interfaces))
 }

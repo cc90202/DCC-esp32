@@ -188,7 +188,10 @@ pub fn init(
 
     let tx = channel
         .transmit_continuously(idle_rmt, LoopMode::InfiniteWithInterrupt(1))
-        .map_err(|_| InitError::StartContinuousTx)?;
+        .map_err(|error| {
+            defmt::error!("RMT continuous transmission start failed: {:?}", error);
+            InitError::StartContinuousTx
+        })?;
     let _ = RMT_TX_KEEPALIVE.init(ManuallyDrop::new(tx));
 
     clear_tx_loop_interrupt();
@@ -197,8 +200,10 @@ pub fn init(
     // SAFETY: We own the RMT peripheral (channel consumed above) and no other
     // handler is registered for Interrupt::RMT in Blocking mode.
     unsafe { interrupt::bind_interrupt(Interrupt::RMT, rmt_interrupt.handler()) };
-    interrupt::enable(Interrupt::RMT, Priority::Priority3)
-        .map_err(|_| InitError::InterruptEnable)?;
+    interrupt::enable(Interrupt::RMT, Priority::Priority3).map_err(|error| {
+        defmt::error!("RMT interrupt enable failed: {:?}", error);
+        InitError::InterruptEnable
+    })?;
 
     Ok(())
 }
