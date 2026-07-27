@@ -29,6 +29,7 @@ use crate::cutout::timing::{
 };
 use crate::cutout::{CutoutMode, PacketSequence, RailcomChannel};
 use crate::dcc::{DccAddress, PackedAddressFlags, PomRequestId};
+use crate::diagnostics::diagnostic_counters;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,14 +65,24 @@ fn store_cutout_state(state: CutoutState) {
     CUTOUT_STATE.store(state.as_u8(), Ordering::Release);
 }
 
-static CUTOUT_REQUEST_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_STARTED_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_SKIPPED_DISABLED_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_ENDED_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_SCHEDULE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_STALE_RECOVERY_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_INVALID_STATE_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_MAX_DEADLINE_LATENESS_US: AtomicU32 = AtomicU32::new(0);
+diagnostic_counters! {
+    static CUTOUT: TrackOutputCounters;
+
+    /// Snapshot of track-output cutout counters.
+    pub snapshot TrackOutputStats;
+
+    cutout_request_count,
+    cutout_started_count,
+    cutout_event_dropped_count,
+    cutout_event_notify_fail_count,
+    cutout_skipped_disabled_count,
+    cutout_ended_count,
+    cutout_schedule_fail_count,
+    cutout_stale_recovery_count,
+    cutout_invalid_state_count,
+    /// Worst observed lateness, published with `fetch_max` rather than added.
+    cutout_max_deadline_lateness_us,
+}
 
 pub(crate) const CUTOUT_EVENT_RING_CAPACITY: usize = 32;
 static CUTOUT_EVENT_SEQUENCES: [AtomicU32; CUTOUT_EVENT_RING_CAPACITY] =
@@ -83,8 +94,6 @@ static CUTOUT_EVENT_POM_REQUEST_IDS: [AtomicU32; CUTOUT_EVENT_RING_CAPACITY] =
 static CUTOUT_EVENT_GENERATIONS: [AtomicU32; CUTOUT_EVENT_RING_CAPACITY] =
     [const { AtomicU32::new(0) }; CUTOUT_EVENT_RING_CAPACITY];
 static CUTOUT_EVENT_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_EVENT_DROPPED_COUNT: AtomicU32 = AtomicU32::new(0);
-static CUTOUT_EVENT_NOTIFY_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Ring size for the packet_sequence -> RailCom metadata side channel.
 //
@@ -155,22 +164,6 @@ struct TrackOutputHw {
     enable: Output<'static>,
     cutout: Output<'static>,
     cutout_timer: OneShotTimer<'static, Blocking>,
-}
-
-/// Snapshot of track-output cutout counters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct TrackOutputStats {
-    pub cutout_request_count: u32,
-    pub cutout_started_count: u32,
-    pub cutout_event_dropped_count: u32,
-    pub cutout_event_notify_fail_count: u32,
-    pub cutout_skipped_disabled_count: u32,
-    pub cutout_ended_count: u32,
-    pub cutout_schedule_fail_count: u32,
-    pub cutout_stale_recovery_count: u32,
-    pub cutout_invalid_state_count: u32,
-    pub cutout_max_deadline_lateness_us: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,8 +280,12 @@ impl TrackOutput {
         TRACK_ENABLED.store(false, Ordering::Release);
         store_cutout_state(CutoutState::Idle);
         CUTOUT_EVENT_WRITE_COUNT.store(0, Ordering::Release);
-        CUTOUT_EVENT_DROPPED_COUNT.store(0, Ordering::Release);
-        CUTOUT_EVENT_NOTIFY_FAIL_COUNT.store(0, Ordering::Release);
+        CUTOUT
+            .cutout_event_dropped_count
+            .store(0, Ordering::Release);
+        CUTOUT
+            .cutout_event_notify_fail_count
+            .store(0, Ordering::Release);
 
         Self
     }
@@ -311,7 +308,9 @@ impl TrackOutput {
                 match CutoutState::from_u8(CUTOUT_STATE.load(Ordering::Acquire)) {
                     Some(CutoutState::Idle) => enable_high_fast(hw),
                     None => {
-                        CUTOUT_INVALID_STATE_COUNT.fetch_add(1, Ordering::Relaxed);
+                        CUTOUT
+                            .cutout_invalid_state_count
+                            .fetch_add(1, Ordering::Relaxed);
                         store_cutout_state(CutoutState::Idle);
                         enable_high_fast(hw);
                     }
@@ -415,7 +414,9 @@ fn wait_until_cutout_offset(expected_offset_us: u32) {
 fn record_deadline_lateness(expected_offset_us: u32) {
     let elapsed_us = now_us().wrapping_sub(CUTOUT_TIMER_ORIGIN_US.load(Ordering::Acquire));
     let lateness_us = elapsed_us.saturating_sub(expected_offset_us);
-    CUTOUT_MAX_DEADLINE_LATENESS_US.fetch_max(lateness_us, Ordering::Relaxed);
+    CUTOUT
+        .cutout_max_deadline_lateness_us
+        .fetch_max(lateness_us, Ordering::Relaxed);
 }
 
 #[inline(always)]
@@ -520,7 +521,9 @@ fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
     #[cfg(target_arch = "riscv32")]
     {
         if CUTOUT_EVENT_NOTIFY.sender().try_send(0).is_err() {
-            CUTOUT_EVENT_NOTIFY_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+            CUTOUT
+                .cutout_event_notify_fail_count
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -543,10 +546,12 @@ pub fn request_cutout_from_isr(
     // before counters and shared-state access. Work performed below therefore
     // cannot shift the receiver windows relative to the waveform in flight.
     CUTOUT_TIMER_ORIGIN_US.store(packet_boundary_us, Ordering::Release);
-    CUTOUT_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+    CUTOUT.cutout_request_count.fetch_add(1, Ordering::Relaxed);
 
     if !TRACK_ENABLED.load(Ordering::Acquire) {
-        CUTOUT_SKIPPED_DISABLED_COUNT.fetch_add(1, Ordering::Relaxed);
+        CUTOUT
+            .cutout_skipped_disabled_count
+            .fetch_add(1, Ordering::Relaxed);
         return false;
     }
 
@@ -556,18 +561,26 @@ pub fn request_cutout_from_isr(
     match previous_state {
         Some(CutoutState::Idle) => {}
         Some(state) => {
-            CUTOUT_STALE_RECOVERY_COUNT.fetch_add(1, Ordering::Relaxed);
+            CUTOUT
+                .cutout_stale_recovery_count
+                .fetch_add(1, Ordering::Relaxed);
             close_stale_window_from_isr(state);
         }
         None => {
-            CUTOUT_INVALID_STATE_COUNT.fetch_add(1, Ordering::Relaxed);
-            CUTOUT_STALE_RECOVERY_COUNT.fetch_add(1, Ordering::Relaxed);
+            CUTOUT
+                .cutout_invalid_state_count
+                .fetch_add(1, Ordering::Relaxed);
+            CUTOUT
+                .cutout_stale_recovery_count
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
     let Some(hw) = hw_mut() else {
         store_cutout_state(CutoutState::Idle);
-        CUTOUT_SKIPPED_DISABLED_COUNT.fetch_add(1, Ordering::Relaxed);
+        CUTOUT
+            .cutout_skipped_disabled_count
+            .fetch_add(1, Ordering::Relaxed);
         return false;
     };
     stop_cutout_timer_fast(hw);
@@ -591,7 +604,9 @@ pub fn request_cutout_from_isr(
         true
     } else {
         cutout_off_fast(hw);
-        CUTOUT_SCHEDULE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+        CUTOUT
+            .cutout_schedule_fail_count
+            .fetch_add(1, Ordering::Relaxed);
         store_cutout_state(CutoutState::Idle);
         false
     }
@@ -600,18 +615,7 @@ pub fn request_cutout_from_isr(
 /// Returns a copy of the current cutout statistics.
 #[must_use]
 pub fn stats() -> TrackOutputStats {
-    TrackOutputStats {
-        cutout_request_count: CUTOUT_REQUEST_COUNT.load(Ordering::Acquire),
-        cutout_started_count: CUTOUT_STARTED_COUNT.load(Ordering::Acquire),
-        cutout_event_dropped_count: CUTOUT_EVENT_DROPPED_COUNT.load(Ordering::Acquire),
-        cutout_event_notify_fail_count: CUTOUT_EVENT_NOTIFY_FAIL_COUNT.load(Ordering::Acquire),
-        cutout_skipped_disabled_count: CUTOUT_SKIPPED_DISABLED_COUNT.load(Ordering::Acquire),
-        cutout_ended_count: CUTOUT_ENDED_COUNT.load(Ordering::Acquire),
-        cutout_schedule_fail_count: CUTOUT_SCHEDULE_FAIL_COUNT.load(Ordering::Acquire),
-        cutout_stale_recovery_count: CUTOUT_STALE_RECOVERY_COUNT.load(Ordering::Acquire),
-        cutout_invalid_state_count: CUTOUT_INVALID_STATE_COUNT.load(Ordering::Acquire),
-        cutout_max_deadline_lateness_us: CUTOUT_MAX_DEADLINE_LATENESS_US.load(Ordering::Acquire),
-    }
+    CUTOUT.snapshot()
 }
 
 // Reader half of the odd/even generation publication documented on
@@ -654,7 +658,9 @@ pub fn drain_cutout_runtime_events(
     if available > CUTOUT_EVENT_RING_CAPACITY as u32 {
         let dropped = available - CUTOUT_EVENT_RING_CAPACITY as u32;
         *next_read = write.wrapping_sub(CUTOUT_EVENT_RING_CAPACITY as u32);
-        CUTOUT_EVENT_DROPPED_COUNT.fetch_add(dropped, Ordering::Relaxed);
+        CUTOUT
+            .cutout_event_dropped_count
+            .fetch_add(dropped, Ordering::Relaxed);
     }
 
     let mut remaining = write
@@ -664,7 +670,9 @@ pub fn drain_cutout_runtime_events(
         let slot = *next_read as usize % CUTOUT_EVENT_RING_CAPACITY;
         let generation_before = CUTOUT_EVENT_GENERATIONS[slot].load(Ordering::SeqCst);
         if generation_before & 1 != 0 {
-            CUTOUT_EVENT_DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
+            CUTOUT
+                .cutout_event_dropped_count
+                .fetch_add(1, Ordering::Relaxed);
             *next_read = next_read.wrapping_add(1);
             remaining -= 1;
             continue;
@@ -678,7 +686,9 @@ pub fn drain_cutout_runtime_events(
         if generation_before == generation_after && generation_after & 1 == 0 {
             let _ = out.push(metadata.runtime_event(PacketSequence::new(sequence), pom_request_id));
         } else {
-            CUTOUT_EVENT_DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
+            CUTOUT
+                .cutout_event_dropped_count
+                .fetch_add(1, Ordering::Relaxed);
         }
         *next_read = next_read.wrapping_add(1);
         remaining -= 1;
@@ -714,7 +724,9 @@ fn cutout_timer_interrupt() {
                 store_cutout_state(CutoutState::WaitingCh1Open);
             } else {
                 cutout_off_fast(hw);
-                CUTOUT_SCHEDULE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                CUTOUT
+                    .cutout_schedule_fail_count
+                    .fetch_add(1, Ordering::Relaxed);
                 store_cutout_state(CutoutState::Idle);
             }
         }
@@ -738,10 +750,12 @@ fn cutout_timer_interrupt() {
                     pom_request_id: pending_metadata
                         .pom_request_id(PENDING_CUTOUT_POM_REQUEST_ID.load(Ordering::Acquire)),
                 });
-                CUTOUT_STARTED_COUNT.fetch_add(1, Ordering::Relaxed);
+                CUTOUT.cutout_started_count.fetch_add(1, Ordering::Relaxed);
             } else {
                 cutout_off_fast(hw);
-                CUTOUT_SCHEDULE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                CUTOUT
+                    .cutout_schedule_fail_count
+                    .fetch_add(1, Ordering::Relaxed);
                 store_cutout_state(CutoutState::Idle);
             }
         }
@@ -760,7 +774,9 @@ fn cutout_timer_interrupt() {
             } else {
                 cutout_off_fast(hw);
                 close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
-                CUTOUT_SCHEDULE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                CUTOUT
+                    .cutout_schedule_fail_count
+                    .fetch_add(1, Ordering::Relaxed);
                 store_cutout_state(CutoutState::Idle);
             }
         }
@@ -772,12 +788,14 @@ fn cutout_timer_interrupt() {
             record_deadline_lateness(channel2_end_deadline);
             close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
             cutout_off_fast(hw);
-            CUTOUT_ENDED_COUNT.fetch_add(1, Ordering::Relaxed);
+            CUTOUT.cutout_ended_count.fetch_add(1, Ordering::Relaxed);
             store_cutout_state(CutoutState::Idle);
         }
         Some(CutoutState::Idle) | None => {
             if CutoutState::from_u8(raw_state).is_none() {
-                CUTOUT_INVALID_STATE_COUNT.fetch_add(1, Ordering::Relaxed);
+                CUTOUT
+                    .cutout_invalid_state_count
+                    .fetch_add(1, Ordering::Relaxed);
             }
             cutout_off_fast(hw);
             store_cutout_state(CutoutState::Idle);

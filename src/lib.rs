@@ -32,6 +32,7 @@ pub mod dcc;
 #[cfg(target_arch = "riscv32")]
 #[path = "dcc/engine.rs"]
 pub(crate) mod dcc_runtime;
+pub(crate) mod diagnostics;
 pub mod display;
 pub mod fault_manager;
 pub mod net;

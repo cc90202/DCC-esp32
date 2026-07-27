@@ -7,6 +7,7 @@ use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer};
 use esp_hal::uart::UartRx;
 
+use crate::cutout::RailcomChannel;
 use crate::dcc::{
     DccFrame, LocoRequestMessage, LocoResponse, SchedulerCommand, packet_scheduler_task,
 };
@@ -171,10 +172,10 @@ pub(super) async fn railcom_diag_task() -> ! {
             loco_command_rejected,
             status_broadcast_send_failure,
             udp_receive_failure,
-            diag.rx.ch1_window_count,
-            diag.rx.ch1_empty_count,
-            diag.rx.ch2_window_count,
-            diag.rx.ch2_empty_count,
+            diag.rx_channels[RailcomChannel::Channel1.index()].window_count,
+            diag.rx_channels[RailcomChannel::Channel1.index()].empty_count,
+            diag.rx_channels[RailcomChannel::Channel2.index()].window_count,
+            diag.rx_channels[RailcomChannel::Channel2.index()].empty_count,
             diag.rx.rx_ack_count,
             diag.rx.rx_nack_count,
             diag.rx.rx_adr_high_count,

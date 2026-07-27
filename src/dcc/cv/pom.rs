@@ -14,8 +14,10 @@ use crate::dcc::scheduler::SchedulerCommand;
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
+use crate::diagnostics::diagnostic_counters;
+
 #[cfg(target_arch = "riscv32")]
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
@@ -23,34 +25,23 @@ use embassy_sync::channel::{Receiver, Sender};
 #[cfg(target_arch = "riscv32")]
 use embassy_time::{Duration, with_timeout};
 
-#[cfg(target_arch = "riscv32")]
-static POM_TX_START_TIMEOUT_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_arch = "riscv32")]
-static POM_RESPONSE_TIMEOUT_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_arch = "riscv32")]
-static POM_STALE_RESULT_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_arch = "riscv32")]
-static POM_WRONG_TARGET_RESULT_COUNT: AtomicU32 = AtomicU32::new(0);
+diagnostic_counters! {
+    #[cfg(target_arch = "riscv32")]
+    static POM: PomRuntimeCounters;
 
-#[cfg(target_arch = "riscv32")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct PomRuntimeStats {
-    pub tx_start_timeout_count: u32,
-    pub response_timeout_count: u32,
-    pub stale_result_count: u32,
-    pub wrong_target_result_count: u32,
+    /// Snapshot of POM actor timeout and attribution counters.
+    pub snapshot PomRuntimeStats;
+
+    tx_start_timeout_count,
+    response_timeout_count,
+    stale_result_count,
+    wrong_target_result_count,
 }
 
 #[cfg(target_arch = "riscv32")]
 #[must_use]
 pub fn pom_runtime_stats() -> PomRuntimeStats {
-    PomRuntimeStats {
-        tx_start_timeout_count: POM_TX_START_TIMEOUT_COUNT.load(Ordering::Acquire),
-        response_timeout_count: POM_RESPONSE_TIMEOUT_COUNT.load(Ordering::Acquire),
-        stale_result_count: POM_STALE_RESULT_COUNT.load(Ordering::Acquire),
-        wrong_target_result_count: POM_WRONG_TARGET_RESULT_COUNT.load(Ordering::Acquire),
-    }
+    POM.snapshot()
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -289,11 +280,12 @@ async fn await_matching_pom_result(
         if result.request_id() != request.request_id()
             || !result.packet_sequence().is_at_or_after(earliest_sequence)
         {
-            POM_STALE_RESULT_COUNT.fetch_add(1, Ordering::Relaxed);
+            POM.stale_result_count.fetch_add(1, Ordering::Relaxed);
             continue;
         }
         if result.target_address() != Some(request.address()) {
-            POM_WRONG_TARGET_RESULT_COUNT.fetch_add(1, Ordering::Relaxed);
+            POM.wrong_target_result_count
+                .fetch_add(1, Ordering::Relaxed);
             continue;
         }
         if let Some(response) = match_pom_result(request, earliest_sequence, result) {
@@ -414,12 +406,12 @@ pub async fn pom_actor_task(
         {
             PomAttemptOutcome::Response(response) => response,
             PomAttemptOutcome::TxTimeout => {
-                POM_TX_START_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
+                POM.tx_start_timeout_count.fetch_add(1, Ordering::Relaxed);
                 defmt::warn!("POM request timed out before tx-start");
                 PomResponse::Nack { request_id }
             }
             PomAttemptOutcome::ResponseTimeout => {
-                POM_RESPONSE_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
+                POM.response_timeout_count.fetch_add(1, Ordering::Relaxed);
                 defmt::warn!("POM request timed out waiting for RailCom CV data");
                 PomResponse::Nack { request_id }
             }
