@@ -416,6 +416,24 @@ impl LogonGroup {
     }
 }
 
+/// RCN-218 logon session identifier emitted by one command station.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct LogonSessionId(u8);
+
+impl LogonSessionId {
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
 /// DCC packet types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DccPacket {
@@ -515,7 +533,7 @@ pub enum DccPacket {
     LogonEnable {
         group: LogonGroup,
         command_station_id: u16,
-        session_id: u8,
+        session_id: LogonSessionId,
     },
     /// RCN-218 automatic logon select packet addressed to 254.
     LogonSelect {
@@ -852,7 +870,7 @@ impl DccPacket {
                 packet.push(0xFC | group.value());
                 packet.push((command_station_id >> 8) as u8);
                 packet.push((command_station_id & 0xFF) as u8);
-                packet.push(session_id);
+                packet.push(session_id.value());
             }
             DccPacket::LogonSelect {
                 manufacturer_id,
@@ -1028,7 +1046,7 @@ mod tests {
             DccPacket::LogonEnable {
                 group: logon_group(3),
                 command_station_id: u16::MAX,
-                session_id: u8::MAX,
+                session_id: LogonSessionId::new(u8::MAX),
             },
             DccPacket::LogonSelect {
                 manufacturer_id: u16::MAX,
@@ -1338,7 +1356,7 @@ mod tests {
         let packet = DccPacket::LogonEnable {
             group: logon_group(3),
             command_station_id: 0x0DCC,
-            session_id: 0x42,
+            session_id: LogonSessionId::new(0x42),
         };
         let bytes = packet.to_bytes().unwrap();
 

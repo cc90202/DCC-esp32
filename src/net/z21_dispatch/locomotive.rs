@@ -9,7 +9,7 @@ use crate::application::locomotive::{
     prepare_drive_request, prepare_function_request, resolve_loco_command, resolve_loco_lookup,
 };
 use crate::application::{LocoSlots, LocoState};
-use crate::dcc::{DccAddress, Direction, FunctionChange, LocoRequest, SpeedFormat};
+use crate::dcc::{DccAddress, Direction, FunctionChange, FunctionIndex, LocoRequest, SpeedFormat};
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::LocoCtx;
 use crate::z21::{self as z21_proto, FunctionAction};
@@ -172,7 +172,7 @@ pub(super) async fn set_function(
             address.value(),
             function,
             action,
-            (state.functions & (1u32 << function)) != 0,
+            FunctionIndex::new(function).is_some_and(|index| state.functions.is_enabled(index)),
             state.speed.value(),
             state.speed.format()
         );
@@ -221,7 +221,7 @@ fn loco_info(state: LocoState) -> z21_proto::LocoInfo {
         address: state.address,
         speed: state.speed,
         direction: state.direction,
-        functions: state.functions,
+        functions: state.functions.bits(),
     }
 }
 

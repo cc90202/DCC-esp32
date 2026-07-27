@@ -79,7 +79,8 @@ mod tests {
     use crate::application::LocoState;
     use crate::application::loco_projection::apply_loco_result;
     use crate::dcc::{
-        DccAddress, Direction, LocoRequestResult, LocoSnapshot, LogicalSpeed, SpeedFormat,
+        DccAddress, Direction, FunctionState, LocoRequestResult, LocoSnapshot, LogicalSpeed,
+        SpeedFormat,
     };
 
     struct ThreadWake(thread::Thread);
@@ -186,7 +187,7 @@ mod tests {
                     address: address(),
                     speed: LogicalSpeed::new(20, SpeedFormat::Speed128).unwrap(),
                     direction: Direction::Reverse,
-                    functions: 1,
+                    functions: FunctionState::from_bits(1),
                 }),
             }));
         });
@@ -196,7 +197,7 @@ mod tests {
             address: address(),
             speed: LogicalSpeed::new(3, SpeedFormat::Speed28).unwrap(),
             direction: Direction::Forward,
-            functions: 0,
+            functions: FunctionState::empty(),
         });
         let before = projection;
 

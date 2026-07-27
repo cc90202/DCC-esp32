@@ -93,7 +93,7 @@ pub(crate) use packet::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{
     BinaryStateAddress, DCC_MAX_PACKET_BYTES, DccAddress, DccAddressKind, DccPacket, Direction,
-    LogonGroup, NmraSpeed28, NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
+    LogonGroup, LogonSessionId, NmraSpeed28, NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
 };
 #[cfg(any(test, target_arch = "riscv32"))]
 #[doc(inline)]
@@ -103,9 +103,9 @@ pub use scheduler::SlotManager;
 pub use scheduler::packet_scheduler_task;
 #[doc(inline)]
 pub use scheduler::{
-    FunctionChange, FunctionIndex, InvalidFunctionIndex, LocoRequest, LocoRequestDeadline,
-    LocoRequestId, LocoRequestMessage, LocoRequestResult, LocoResponse, LocoSnapshot, LogicalSpeed,
-    SchedulerCommand, SpeedFormat,
+    ConsistId, FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex, LocoRequest,
+    LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoRequestResult, LocoResponse,
+    LocoSnapshot, LogicalSpeed, SchedulerCommand, SpeedFormat,
 };
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]

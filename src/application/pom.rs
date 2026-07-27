@@ -98,7 +98,7 @@ fn projected_format(slots: &LocoSlots, address: DccAddress) -> SpeedFormat {
 mod tests {
     use super::*;
     use crate::application::LocoState;
-    use crate::dcc::{Direction, LocoSnapshot, LogicalSpeed};
+    use crate::dcc::{Direction, FunctionState, LocoSnapshot, LogicalSpeed};
 
     fn address() -> DccAddress {
         DccAddress::new_short(3).unwrap()
@@ -109,7 +109,7 @@ mod tests {
             address: address(),
             speed: LogicalSpeed::zero(format),
             direction: Direction::Forward,
-            functions: 0,
+            functions: FunctionState::empty(),
         }
     }
 
@@ -118,7 +118,7 @@ mod tests {
             address: address(),
             speed: LogicalSpeed::zero(SpeedFormat::Speed128),
             direction: Direction::Forward,
-            functions: 0,
+            functions: FunctionState::empty(),
         }
     }
 

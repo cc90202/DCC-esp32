@@ -57,10 +57,10 @@ const RECOVERY_SETTLE_MS: u64 = 100;
 static SHORT_EDGE_SUPPRESSED_UNTIL_MS: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_arch = "riscv32")]
-pub fn suppress_short_edges_for_ms(duration_ms: u64) {
+pub fn suppress_short_edges_for(duration: Duration) {
     let until = embassy_time::Instant::now()
         .as_millis()
-        .saturating_add(duration_ms) as u32;
+        .saturating_add(duration.as_millis()) as u32;
     SHORT_EDGE_SUPPRESSED_UNTIL_MS.store(until, Ordering::Release);
 }
 

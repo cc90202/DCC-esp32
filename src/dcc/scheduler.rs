@@ -159,6 +159,34 @@ impl ConsistId {
     }
 }
 
+/// State of locomotive functions F0 through F28.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct FunctionState(u32);
+
+impl FunctionState {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits & 0x1fff_ffff)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_enabled(self, function: FunctionIndex) -> bool {
+        self.0 & (1u32 << function.get()) != 0
+    }
+}
+
 /// Correlates one network locomotive request with its scheduler response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -203,7 +231,7 @@ pub struct LocoSnapshot {
     pub address: DccAddress,
     pub speed: LogicalSpeed,
     pub direction: Direction,
-    pub functions: u32,
+    pub functions: FunctionState,
 }
 
 /// Requested change to one locomotive function.

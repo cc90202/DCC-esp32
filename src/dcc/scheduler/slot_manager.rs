@@ -9,8 +9,8 @@ use crate::dcc::speed28::logical_to_nmra_packet_speed;
 
 use super::railcom_policy::PacketClass;
 use super::{
-    ConsistId, FunctionChange, FunctionIndex, LocoRequest, LocoRequestResult, LocoSnapshot,
-    LogicalSpeed, SchedulerCommand, SpeedFormat,
+    ConsistId, FunctionChange, FunctionIndex, FunctionState, LocoRequest, LocoRequestResult,
+    LocoSnapshot, LogicalSpeed, SchedulerCommand, SpeedFormat,
 };
 
 /// Maximum number of active locomotive slots.
@@ -114,7 +114,7 @@ impl Slot {
             address: self.address,
             speed: self.speed,
             direction: self.direction,
-            functions: self.functions,
+            functions: FunctionState::from_bits(self.functions),
         }
     }
 

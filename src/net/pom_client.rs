@@ -117,14 +117,14 @@ pub(super) async fn handle_cv_pom_write(
     );
     match reply {
         PomOutcome::Ack => encoded_len(z21_proto::encode_cv_result(cv, value, out)),
-        PomOutcome::Nack => encoded_len(z21_proto::encode_cv_nack(out)),
+        PomOutcome::Nack => encode_nack(out),
         PomOutcome::Value(_) | PomOutcome::Unavailable => {
             warn!(
                 "POM write addr={} cv={} completed without ACK",
                 address.value(),
                 cv
             );
-            encoded_len(z21_proto::encode_cv_nack(out))
+            encode_nack(out)
         }
     }
 }
@@ -155,7 +155,7 @@ pub(super) async fn handle_cv_pom_read(
                 address.value(),
                 cv
             );
-            return encoded_len(z21_proto::encode_cv_nack(out));
+            return encode_nack(out);
         }
         Err(PomRefreshFailure::SchedulerRejected(result)) => {
             warn!(
@@ -164,7 +164,7 @@ pub(super) async fn handle_cv_pom_read(
                 cv,
                 result
             );
-            return encoded_len(z21_proto::encode_cv_nack(out));
+            return encode_nack(out);
         }
         Err(PomRefreshFailure::Projection(error)) => {
             warn!(
@@ -173,7 +173,7 @@ pub(super) async fn handle_cv_pom_read(
                 cv,
                 error
             );
-            return encoded_len(z21_proto::encode_cv_nack(out));
+            return encode_nack(out);
         }
     }
 
@@ -202,7 +202,7 @@ pub(super) async fn handle_cv_pom_read(
                 address.value(),
                 cv
             );
-            encoded_len(z21_proto::encode_cv_nack(out))
+            encode_nack(out)
         }
     }
 }
@@ -214,6 +214,10 @@ fn classify_reply(response: Option<PomResponse>) -> PomOutcome {
         Some(PomResponse::Nack { .. }) => PomOutcome::Nack,
         None => PomOutcome::Unavailable,
     }
+}
+
+fn encode_nack(out: &mut [u8]) -> usize {
+    encoded_len(z21_proto::encode_cv_nack(out))
 }
 
 fn reject_admission(
@@ -243,5 +247,5 @@ fn reject_admission(
             ctx.status_model.fault_cause()
         ),
     }
-    encoded_len(z21_proto::encode_cv_nack(out))
+    encode_nack(out)
 }

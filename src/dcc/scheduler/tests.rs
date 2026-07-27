@@ -140,10 +140,11 @@ fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
             address: snapshot_address,
             speed,
             direction: Direction::Reverse,
-            functions: 0,
+            functions,
         }) if snapshot_address == address
             && speed.value() == 12
             && speed.format() == SpeedFormat::Speed28
+            && functions == FunctionState::empty()
     ));
 
     let function = FunctionIndex::new(4).unwrap();
@@ -155,14 +156,15 @@ fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
     assert!(matches!(
         updated,
         LocoRequestResult::Updated(LocoSnapshot { functions, .. })
-            if functions == 1 << function.get()
+            if functions == FunctionState::from_bits(1 << function.get())
     ));
 
     let found = manager.handle_loco_request(LocoRequest::GetState { address });
     assert!(matches!(
         found,
         LocoRequestResult::Found(LocoSnapshot { speed, functions, .. })
-            if speed.value() == 12 && functions == 1 << function.get()
+            if speed.value() == 12
+                && functions == FunctionState::from_bits(1 << function.get())
     ));
 }
 
@@ -182,7 +184,7 @@ fn function_toggle_is_resolved_against_scheduler_state() {
             result,
             LocoRequestResult::Inserted(LocoSnapshot { functions, .. })
                 | LocoRequestResult::Updated(LocoSnapshot { functions, .. })
-                if ((functions >> function.get()) & 1 != 0) == expected_enabled
+                if functions.is_enabled(function) == expected_enabled
         ));
     }
 }
@@ -290,7 +292,10 @@ fn simultaneous_global_stop_uses_lowest_logical_index_as_tie_breaker() {
                 functions,
                 ..
             },
-        } if removed == addr(1) && inserted == addr(13) && speed.is_zero() && functions == 1 << 1
+        } if removed == addr(1)
+            && inserted == addr(13)
+            && speed.is_zero()
+            && functions == FunctionState::from_bits(1 << 1)
     ));
 }
 
