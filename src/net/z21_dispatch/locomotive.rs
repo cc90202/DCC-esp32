@@ -14,6 +14,8 @@ use crate::net::loco_client::request_loco;
 use crate::net::z21_context::LocoCtx;
 use crate::z21::{self as z21_proto, FunctionAction};
 
+use super::encoded_len;
+
 static LOCO_COMMAND_REJECTED_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[must_use]
@@ -22,7 +24,7 @@ pub(crate) fn loco_command_rejected_count() -> u32 {
 }
 
 pub(super) fn encode_mode(address: DccAddress, out: &mut [u8]) -> usize {
-    z21_proto::encode_loco_mode(address, out)
+    encoded_len(z21_proto::encode_loco_mode(address, out))
 }
 
 pub(super) fn set_mode(address: DccAddress, mode: u8) -> usize {
@@ -72,7 +74,7 @@ pub(super) async fn get_info(
             ),
         }
     }
-    z21_proto::encode_loco_info(&loco_info(outcome.state), out)
+    encoded_len(z21_proto::encode_loco_info(&loco_info(outcome.state), out))
 }
 
 pub(super) async fn emergency_stop(
@@ -200,7 +202,7 @@ fn report_request_error(
 
 fn encode_confirmed_feedback(outcome: LocoCommandOutcome, out: &mut [u8]) -> usize {
     outcome.confirmed_state().map_or(0, |state: LocoState| {
-        z21_proto::encode_loco_info(&loco_info(state), out)
+        encoded_len(z21_proto::encode_loco_info(&loco_info(state), out))
     })
 }
 

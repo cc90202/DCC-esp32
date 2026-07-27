@@ -9,6 +9,8 @@ use crate::net::railcom_lookup::{latest_railcom_sighting, railcom_sighting_for_a
 use crate::railcom::loco_tracker::RailcomLocoSighting;
 use crate::z21 as z21_proto;
 
+use super::encoded_len;
+
 const RAILCOM_GETDATA_TYPE_LOCO: u8 = 0x01;
 static RAILCOM_GETDATA_NO_DATA_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -33,7 +35,12 @@ pub(super) fn encode_getdata_response(
     };
 
     if let Some(sighting) = sighting {
-        z21_proto::encode_railcom_data(sighting.address, sighting.seen_count, 0, out)
+        encoded_len(z21_proto::encode_railcom_data(
+            sighting.address,
+            sighting.seen_count,
+            0,
+            out,
+        ))
     } else {
         RAILCOM_GETDATA_NO_DATA_COUNT.fetch_add(1, Ordering::Relaxed);
         0

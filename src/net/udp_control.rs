@@ -25,7 +25,7 @@ use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_statu
 use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
 use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::{LocoCtx, PomCtx, TrackCtx, Z21Ctx};
-use crate::net::z21_dispatch::{encode_system_state, handle_packet};
+use crate::net::z21_dispatch::{encode_system_state, encoded_len, handle_packet};
 use crate::runtime_channels::{
     BootReadySender, DisplaySender, FaultEventSender, LocoRequestSender, LocoResponseReceiver,
     NetStatusReceiver, PomRequestSender, PomResponseReceiver, SchedulerCommandSender,
@@ -230,10 +230,12 @@ pub async fn net_task(
                     let plan = plan_status_broadcast(event, status);
                     for message in plan.messages.into_iter().flatten() {
                         let n = match message {
-                            StatusBroadcast::TrackPower(enabled) => {
-                                z21_proto::encode_bc_track_power(enabled, &mut send_buf)
+                            StatusBroadcast::TrackPower(enabled) => encoded_len(
+                                z21_proto::encode_bc_track_power(enabled, &mut send_buf),
+                            ),
+                            StatusBroadcast::Stopped => {
+                                encoded_len(z21_proto::encode_bc_stopped(&mut send_buf))
                             }
-                            StatusBroadcast::Stopped => z21_proto::encode_bc_stopped(&mut send_buf),
                             StatusBroadcast::SystemState(status) => {
                                 encode_system_state(status, &mut send_buf)
                             }
@@ -253,7 +255,7 @@ pub async fn net_task(
                     // latches the stop and synchronises scheduler/status.
                     crate::track_safety::disable_track_intentionally();
                     fault_sender.send(FaultEvent::StopPressed).await;
-                    let n = z21_proto::encode_bc_stopped(&mut send_buf);
+                    let n = encoded_len(z21_proto::encode_bc_stopped(&mut send_buf));
                     if socket
                         .send_to(&send_buf[..n], timeout.client)
                         .await

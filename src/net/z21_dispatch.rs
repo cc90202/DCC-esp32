@@ -21,6 +21,16 @@ pub(crate) use locomotive::loco_command_rejected_count;
 pub(crate) use railcom::railcom_getdata_no_data_count;
 pub(super) use track::encode_system_state;
 
+pub(in crate::net) fn encoded_len(result: Option<usize>) -> usize {
+    match result {
+        Some(len) => len,
+        None => {
+            warn!("Z21 response buffer too short or response input invalid");
+            0
+        }
+    }
+}
+
 /// Parse one incoming Z21 frame, route it, and build any immediate response.
 pub(super) async fn handle_packet(
     buf: &[u8],
@@ -32,7 +42,7 @@ pub(super) async fn handle_packet(
         Ok(command) => command,
         Err(error) => {
             warn!("Z21 parse error: {:?}", error);
-            return z21_proto::encode_unknown_command(out);
+            return encoded_len(z21_proto::encode_unknown_command(out));
         }
     };
 

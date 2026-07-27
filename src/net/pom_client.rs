@@ -20,6 +20,7 @@ use crate::dcc::cv::drain_channel;
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::PomCtx;
+use crate::net::z21_dispatch::encoded_len;
 use crate::runtime_channels::{PomRequestSender, PomResponseReceiver};
 use crate::z21 as z21_proto;
 
@@ -109,15 +110,15 @@ pub(super) async fn handle_cv_pom_write(
         .await,
     );
     match resolve_reply(reply) {
-        PomOutcome::Ack => z21_proto::encode_cv_result(cv, value, out),
-        PomOutcome::Nack => z21_proto::encode_cv_nack(out),
+        PomOutcome::Ack => encoded_len(z21_proto::encode_cv_result(cv, value, out)),
+        PomOutcome::Nack => encoded_len(z21_proto::encode_cv_nack(out)),
         PomOutcome::Value(_) | PomOutcome::Unavailable => {
             warn!(
                 "POM write addr={} cv={} completed without ACK",
                 address.value(),
                 cv
             );
-            z21_proto::encode_cv_nack(out)
+            encoded_len(z21_proto::encode_cv_nack(out))
         }
     }
 }
@@ -148,7 +149,7 @@ pub(super) async fn handle_cv_pom_read(
                 address.value(),
                 cv
             );
-            return z21_proto::encode_cv_nack(out);
+            return encoded_len(z21_proto::encode_cv_nack(out));
         }
         Err(PomRefreshFailure::SchedulerRejected(result)) => {
             warn!(
@@ -157,7 +158,7 @@ pub(super) async fn handle_cv_pom_read(
                 cv,
                 result
             );
-            return z21_proto::encode_cv_nack(out);
+            return encoded_len(z21_proto::encode_cv_nack(out));
         }
         Err(PomRefreshFailure::Projection(error)) => {
             warn!(
@@ -166,7 +167,7 @@ pub(super) async fn handle_cv_pom_read(
                 cv,
                 error
             );
-            return z21_proto::encode_cv_nack(out);
+            return encoded_len(z21_proto::encode_cv_nack(out));
         }
     }
 
@@ -188,14 +189,14 @@ pub(super) async fn handle_cv_pom_read(
         .await,
     );
     match resolve_reply(reply) {
-        PomOutcome::Value(value) => z21_proto::encode_cv_result(cv, value, out),
+        PomOutcome::Value(value) => encoded_len(z21_proto::encode_cv_result(cv, value, out)),
         PomOutcome::Ack | PomOutcome::Nack | PomOutcome::Unavailable => {
             warn!(
                 "POM read addr={} cv={} completed without value",
                 address.value(),
                 cv
             );
-            z21_proto::encode_cv_nack(out)
+            encoded_len(z21_proto::encode_cv_nack(out))
         }
     }
 }
@@ -236,5 +237,5 @@ fn reject_admission(
             ctx.status_model.fault_cause()
         ),
     }
-    z21_proto::encode_cv_nack(out)
+    encoded_len(z21_proto::encode_cv_nack(out))
 }
