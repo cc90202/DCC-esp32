@@ -166,14 +166,27 @@ impl ConsistId {
 pub struct FunctionState(u32);
 
 impl FunctionState {
+    const VALID_BITS: u32 = 0x1fff_ffff;
+
     #[must_use]
     pub const fn empty() -> Self {
         Self(0)
     }
 
+    /// Build a function state when no bits above F28 are set.
     #[must_use]
-    pub const fn from_bits(bits: u32) -> Self {
-        Self(bits & 0x1fff_ffff)
+    pub const fn from_bits(bits: u32) -> Option<Self> {
+        if bits & !Self::VALID_BITS == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Build a function state while explicitly discarding bits above F28.
+    #[must_use]
+    pub const fn from_bits_truncate(bits: u32) -> Self {
+        Self(bits & Self::VALID_BITS)
     }
 
     #[must_use]

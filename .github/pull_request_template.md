@@ -7,6 +7,8 @@
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo test-host`
 - [ ] `cargo check-esp`
+- [ ] `cargo build-esp-release`
+- [ ] `bash scripts/check-isr-ram.sh`
 - [ ] `cargo clippy-host -- -D warnings`
 - [ ] `cargo clippy --lib --target riscv32imac-unknown-none-elf -- -D warnings`
 

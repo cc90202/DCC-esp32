@@ -13,8 +13,7 @@ use embassy_time::{Instant, with_timeout};
 
 use crate::application::LocoSlots;
 use crate::application::pom::{
-    PomAdmissionError, PomOutcome, PomRefreshFailure, apply_refresh_result, prepare_read,
-    prepare_write,
+    PomAdmissionError, PomRefreshFailure, apply_refresh_result, prepare_read, prepare_write,
 };
 use crate::dcc::cv::drain_channel;
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
@@ -32,6 +31,14 @@ const POM_CLIENT_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_
 enum PomOperation {
     Read,
     Write,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PomOutcome {
+    Value(u8),
+    Ack,
+    Nack,
+    Unavailable,
 }
 
 /// Allocate the next [`PomRequestId`] from the net task's local counter.

@@ -35,6 +35,12 @@ jobs:
       - name: ESP target compile check
         run: cargo check-esp
 
+      - name: Build ESP release firmware
+        run: cargo build-esp-release
+
+      - name: Verify ISR placement in internal RAM
+        run: bash scripts/check-isr-ram.sh
+
       - name: Clippy host targets
         run: cargo clippy-host -- -D warnings
 

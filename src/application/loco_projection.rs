@@ -117,7 +117,7 @@ mod tests {
             address: address(value),
             speed: LogicalSpeed::new(speed, SpeedFormat::Speed128).unwrap(),
             direction: Direction::Forward,
-            functions: FunctionState::from_bits(u32::from(value)),
+            functions: FunctionState::from_bits(u32::from(value)).unwrap(),
         }
     }
 

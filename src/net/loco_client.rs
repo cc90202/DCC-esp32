@@ -187,7 +187,7 @@ mod tests {
                     address: address(),
                     speed: LogicalSpeed::new(20, SpeedFormat::Speed128).unwrap(),
                     direction: Direction::Reverse,
-                    functions: FunctionState::from_bits(1),
+                    functions: FunctionState::from_bits(1).unwrap(),
                 }),
             }));
         });

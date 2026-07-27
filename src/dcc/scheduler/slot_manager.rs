@@ -114,7 +114,10 @@ impl Slot {
             address: self.address,
             speed: self.speed,
             direction: self.direction,
-            functions: FunctionState::from_bits(self.functions),
+            // Slot mutations only accept FunctionIndex (F0-F28). Truncation is
+            // explicit here so a future internal representation change cannot
+            // leak reserved bits through the public snapshot.
+            functions: FunctionState::from_bits_truncate(self.functions),
         }
     }
 

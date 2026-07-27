@@ -156,7 +156,7 @@ fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
     assert!(matches!(
         updated,
         LocoRequestResult::Updated(LocoSnapshot { functions, .. })
-            if functions == FunctionState::from_bits(1 << function.get())
+            if functions == FunctionState::from_bits(1 << function.get()).unwrap()
     ));
 
     let found = manager.handle_loco_request(LocoRequest::GetState { address });
@@ -164,7 +164,7 @@ fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
         found,
         LocoRequestResult::Found(LocoSnapshot { speed, functions, .. })
             if speed.value() == 12
-                && functions == FunctionState::from_bits(1 << function.get())
+                && functions == FunctionState::from_bits(1 << function.get()).unwrap()
     ));
 }
 
@@ -295,7 +295,7 @@ fn simultaneous_global_stop_uses_lowest_logical_index_as_tie_breaker() {
         } if removed == addr(1)
             && inserted == addr(13)
             && speed.is_zero()
-            && functions == FunctionState::from_bits(1 << 1)
+            && functions == FunctionState::from_bits(1 << 1).unwrap()
     ));
 }
 
@@ -999,6 +999,21 @@ fn test_function_index_validation() {
     assert!(FunctionIndex::new(29).is_none());
     assert!(FunctionIndex::try_from(12).is_ok());
     assert!(FunctionIndex::try_from(40).is_err());
+}
+
+#[test]
+fn function_state_rejects_reserved_bits_unless_truncation_is_explicit() {
+    const VALID_BITS: u32 = 0x1fff_ffff;
+
+    assert_eq!(
+        FunctionState::from_bits(VALID_BITS),
+        Some(FunctionState::from_bits_truncate(VALID_BITS))
+    );
+    assert_eq!(FunctionState::from_bits(1 << 29), None);
+    assert_eq!(
+        FunctionState::from_bits_truncate(VALID_BITS | (1 << 31)).bits(),
+        VALID_BITS
+    );
 }
 
 #[test]
