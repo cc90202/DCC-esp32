@@ -19,13 +19,13 @@ pub enum CredentialError {
     PasswordTooLong,
 }
 
-impl CredentialError {
-    pub const fn as_str(self) -> &'static str {
+impl fmt::Display for CredentialError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptySsid => "SSID is empty",
-            Self::SsidTooLong => "SSID is too long",
-            Self::PasswordTooShort => "WiFi password is too short",
-            Self::PasswordTooLong => "WiFi password is too long",
+            Self::EmptySsid => formatter.write_str("SSID is empty"),
+            Self::SsidTooLong => formatter.write_str("SSID is too long"),
+            Self::PasswordTooShort => formatter.write_str("WiFi password is too short"),
+            Self::PasswordTooLong => formatter.write_str("WiFi password is too long"),
         }
     }
 }

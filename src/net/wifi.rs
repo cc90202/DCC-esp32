@@ -6,6 +6,7 @@
 extern crate alloc;
 
 use alloc::string::ToString;
+use core::fmt;
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Sender;
@@ -33,13 +34,13 @@ pub enum NetInitError {
     UdpBind,
 }
 
-impl NetInitError {
-    pub(crate) const fn as_str(self) -> &'static str {
+impl fmt::Display for NetInitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WifiBringup(error) => error.as_str(),
-            Self::WifiRunnerSpawn => "failed to spawn wifi_runner_task",
-            Self::ConnectionSpawn => "failed to spawn connection_task",
-            Self::UdpBind => "UDP bind on Z21 port failed",
+            Self::WifiBringup(error) => write!(formatter, "{error}"),
+            Self::WifiRunnerSpawn => formatter.write_str("failed to spawn wifi_runner_task"),
+            Self::ConnectionSpawn => formatter.write_str("failed to spawn connection_task"),
+            Self::UdpBind => formatter.write_str("UDP bind on Z21 port failed"),
         }
     }
 }

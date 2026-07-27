@@ -75,7 +75,10 @@ pub(super) async fn net_task_wrapper(context: NetTaskWrapperContext) {
             }
         }
         Err(error) => {
-            defmt::error!("boot: network init failed: {}", error.as_str());
+            defmt::error!(
+                "boot: network init failed: {}",
+                defmt::Display2Format(&error)
+            );
             failure_sender.send(CriticalTaskInit::Net(error)).await;
         }
     }

@@ -3,7 +3,7 @@
 extern crate alloc;
 
 use alloc::string::ToString;
-use core::fmt::Write;
+use core::fmt::{self, Write};
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -38,13 +38,17 @@ pub enum ProvisioningApError {
     SsidBuild,
 }
 
-impl ProvisioningApError {
-    pub(crate) const fn as_str(self) -> &'static str {
+impl fmt::Display for ProvisioningApError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WifiBringup(error) => error.as_str(),
-            Self::WifiRunnerSpawn => "failed to spawn provisioning wifi_runner_task",
-            Self::DhcpServerSpawn => "failed to spawn provisioning DHCP server",
-            Self::SsidBuild => "WiFi AP SSID build failed",
+            Self::WifiBringup(error) => write!(formatter, "{error}"),
+            Self::WifiRunnerSpawn => {
+                formatter.write_str("failed to spawn provisioning wifi_runner_task")
+            }
+            Self::DhcpServerSpawn => {
+                formatter.write_str("failed to spawn provisioning DHCP server")
+            }
+            Self::SsidBuild => formatter.write_str("WiFi AP SSID build failed"),
         }
     }
 }

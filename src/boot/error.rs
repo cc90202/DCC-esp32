@@ -84,15 +84,6 @@ pub enum WifiConfigInitError {
     Store(StoreError),
 }
 
-impl WifiConfigInitError {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Partition(_) => "WiFi config partition unavailable",
-            Self::Store(_) => "WiFi config store operation failed",
-        }
-    }
-}
-
 pub type BootFailureChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, CriticalTaskInit, 4>;
 
@@ -189,9 +180,13 @@ impl BootError {
             Self::CriticalTaskInit(CriticalTaskInit::FaultStateReceiverUnavailable) => {
                 "fault-state watch receiver already taken"
             }
-            Self::CriticalTaskInit(CriticalTaskInit::Net(error)) => error.as_str(),
-            Self::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)) => error.as_str(),
-            Self::CriticalTaskInit(CriticalTaskInit::WifiConfig(error)) => error.as_str(),
+            Self::CriticalTaskInit(CriticalTaskInit::Net(_)) => "network initialization failed",
+            Self::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(_)) => {
+                "provisioning access point initialization failed"
+            }
+            Self::CriticalTaskInit(CriticalTaskInit::WifiConfig(_)) => {
+                "WiFi configuration initialization failed"
+            }
             Self::CriticalTaskInit(CriticalTaskInit::ReadinessTimeout) => {
                 "critical task readiness timeout"
             }
