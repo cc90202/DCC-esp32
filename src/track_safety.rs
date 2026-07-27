@@ -14,5 +14,7 @@ const INTENTIONAL_TRACK_OFF_SHORT_SUPPRESSION_MS: u64 = 250;
 /// fault edge before cutting power.
 pub(crate) fn disable_track_intentionally() {
     crate::short_detector::suppress_short_edges_for_ms(INTENTIONAL_TRACK_OFF_SHORT_SUPPRESSION_MS);
-    crate::track_output::emergency_disable();
+    if !crate::track_output::emergency_disable() {
+        defmt::warn!("track disable requested before hardware initialization");
+    }
 }

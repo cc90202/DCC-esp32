@@ -18,6 +18,13 @@ use super::encoded_len;
 
 static LOCO_COMMAND_REJECTED_COUNT: AtomicU32 = AtomicU32::new(0);
 
+pub(super) struct DriveCommand {
+    pub address: DccAddress,
+    pub speed: u8,
+    pub direction: Direction,
+    pub format: SpeedFormat,
+}
+
 #[must_use]
 pub(crate) fn loco_command_rejected_count() -> u32 {
     LOCO_COMMAND_REJECTED_COUNT.load(Ordering::Acquire)
@@ -97,11 +104,14 @@ pub(super) async fn set_drive(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
     ctx: &LocoCtx<'_>,
-    address: DccAddress,
-    speed: u8,
-    direction: Direction,
-    format: SpeedFormat,
+    command: DriveCommand,
 ) -> usize {
+    let DriveCommand {
+        address,
+        speed,
+        direction,
+        format,
+    } = command;
     let request = match prepare_drive_request(
         ctx.status_model.track_power_on(),
         address,

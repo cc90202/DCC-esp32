@@ -326,17 +326,19 @@ impl TrackOutput {
 /// This is the fail-safe path for the short detector: policy and latching still
 /// belong to the fault manager, but GPIO18 is not left HIGH while a message is
 /// waiting in a queue.
-pub fn emergency_disable() {
+#[must_use]
+pub fn emergency_disable() -> bool {
     TRACK_ENABLED.store(false, Ordering::Release);
     critical_section_with(|_| {
         let Some(hw) = hw_mut() else {
-            return;
+            return false;
         };
         stop_cutout_timer_fast(hw);
         cutout_off_fast(hw);
         enable_low_fast(hw);
         store_cutout_state(CutoutState::Idle);
-    });
+        true
+    })
 }
 
 #[inline(always)]

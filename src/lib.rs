@@ -20,7 +20,6 @@
 pub mod application;
 #[cfg(target_arch = "riscv32")]
 pub mod boot;
-pub mod config;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod control_buttons;
 pub mod control_logic;

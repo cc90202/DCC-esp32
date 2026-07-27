@@ -27,8 +27,6 @@
 //! cycle that stresses the driver.
 
 #[cfg(target_arch = "riscv32")]
-use crate::config::TRACK_SHORT_BOOT_BLANKING_MS;
-#[cfg(target_arch = "riscv32")]
 use crate::runtime_channels::{BootReadySender, FaultEventSender, announce_ready};
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::BootReadyEvent;
@@ -44,6 +42,9 @@ use embassy_sync::watch;
 use embassy_time::{Duration, Timer};
 #[cfg(target_arch = "riscv32")]
 use esp_hal::gpio::{Input, InputConfig, Pull};
+
+#[cfg(target_arch = "riscv32")]
+const TRACK_SHORT_BOOT_BLANKING_MS: u64 = 5_000;
 
 /// Settling delay after the fault manager re-enters Normal, before re-arming
 /// short detection. Lets the track driver wake up and the decoder's bulk/keep-alive
@@ -153,7 +154,9 @@ async fn confirm_short(pin: &Input<'static>) -> bool {
 
 #[cfg(target_arch = "riscv32")]
 async fn report_track_short(fault_sender: &FaultEventSender) {
-    crate::track_output::emergency_disable();
+    if !crate::track_output::emergency_disable() {
+        defmt::error!("track short detected before output hardware initialization");
+    }
     defmt::warn!("Short circuit detected on GPIO3!");
     fault_sender
         .send(crate::system_status::FaultEvent::FaultLatched(

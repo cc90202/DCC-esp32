@@ -400,8 +400,8 @@ fn dirty_function_prevents_replacement_and_consist_does_not_keep_removed_address
     let mut manager = SlotManager::new();
     fill_with_moving_locomotives(&mut manager);
     drain_pending_slot_transmissions(&mut manager);
-    assert!(manager.create_consist(1));
-    assert!(manager.add_to_consist(1, addr(4), false));
+    assert!(manager.create_consist(ConsistId::new(1)));
+    assert!(manager.add_to_consist(ConsistId::new(1), addr(4), false));
     assert!(manager.request_emergency_stop(addr(4)));
     drain_pending_slot_transmissions(&mut manager);
     assert!(set_function(&mut manager, addr(4), 2, true));
@@ -421,7 +421,11 @@ fn dirty_function_prevents_replacement_and_consist_does_not_keep_removed_address
         LocoRequestResult::Replaced { removed, .. } if removed == addr(4)
     ));
     assert_eq!(
-        manager.set_consist_speed(1, ls(5, SpeedFormat::Speed28), Direction::Forward),
+        manager.set_consist_speed(
+            ConsistId::new(1),
+            ls(5, SpeedFormat::Speed28),
+            Direction::Forward
+        ),
         0
     );
 }
@@ -840,11 +844,15 @@ fn test_function_refresh_fairness_speed_then_function() {
 #[test]
 fn test_consist_base_direction_mapping() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.create_consist(1));
-    assert!(mgr.add_to_consist(1, addr(3), false));
-    assert!(mgr.add_to_consist(1, addr(4), true));
+    assert!(mgr.create_consist(ConsistId::new(1)));
+    assert!(mgr.add_to_consist(ConsistId::new(1), addr(3), false));
+    assert!(mgr.add_to_consist(ConsistId::new(1), addr(4), true));
 
-    let updated = mgr.set_consist_speed(1, ls(18, SpeedFormat::Speed28), Direction::Forward);
+    let updated = mgr.set_consist_speed(
+        ConsistId::new(1),
+        ls(18, SpeedFormat::Speed28),
+        Direction::Forward,
+    );
     assert_eq!(updated, 2);
 
     let mut seen_fwd = false;

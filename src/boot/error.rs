@@ -5,6 +5,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use crate::net::provisioning::ProvisioningApError;
 use crate::net::udp_control::NetInitError;
 use crate::net::wifi_config::{EspFlashStoreError, StoreError};
+use crate::rmt_dcc::InitError as RmtInitError;
 use crate::system_status::OptionalPeripheralInit;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +42,7 @@ pub enum DccSelfCheckError {
 pub enum CriticalHardwareInit {
     Rmt,
     RmtChannel0,
-    RmtDriver,
+    RmtDriver(RmtInitError),
     RailcomUart,
 }
 
@@ -134,7 +135,7 @@ impl BootError {
             Self::CriticalHardwareInit(CriticalHardwareInit::RmtChannel0) => {
                 "RMT channel0 configure failed"
             }
-            Self::CriticalHardwareInit(CriticalHardwareInit::RmtDriver) => {
+            Self::CriticalHardwareInit(CriticalHardwareInit::RmtDriver(_)) => {
                 "RMT ISR driver init failed"
             }
             Self::CriticalHardwareInit(CriticalHardwareInit::RailcomUart) => {

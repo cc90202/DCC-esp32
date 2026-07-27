@@ -69,7 +69,7 @@ pub(super) fn initialize_dcc_rmt(
     })?;
 
     rmt_driver::init(dcc_channel, idle_rmt.as_slice())
-        .map_err(|_| BootError::CriticalHardwareInit(CriticalHardwareInit::RmtDriver))
+        .map_err(|error| BootError::CriticalHardwareInit(CriticalHardwareInit::RmtDriver(error)))
 }
 
 pub(super) fn initialize_railcom_receiver(

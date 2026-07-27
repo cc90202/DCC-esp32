@@ -104,7 +104,15 @@ async fn route_command(
             format,
         } => {
             locomotive::set_drive(
-                loco_slots, out, &ctx.loco, address, speed, direction, format,
+                loco_slots,
+                out,
+                &ctx.loco,
+                locomotive::DriveCommand {
+                    address,
+                    speed,
+                    direction,
+                    format,
+                },
             )
             .await
         }

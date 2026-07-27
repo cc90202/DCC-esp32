@@ -141,6 +141,24 @@ impl FunctionIndex {
     }
 }
 
+/// Identifies one software-managed locomotive consist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct ConsistId(u8);
+
+impl ConsistId {
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
 /// Correlates one network locomotive request with its scheduler response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -307,19 +325,19 @@ pub enum SchedulerCommand {
         packet: DccPacket,
     },
     CreateConsist {
-        id: u8,
+        id: ConsistId,
     },
     AddToConsist {
-        id: u8,
+        id: ConsistId,
         address: DccAddress,
         reverse_in_consist: bool,
     },
     RemoveFromConsist {
-        id: u8,
+        id: ConsistId,
         address: DccAddress,
     },
     SetConsistSpeed {
-        id: u8,
+        id: ConsistId,
         speed: LogicalSpeed,
         direction: Direction,
     },

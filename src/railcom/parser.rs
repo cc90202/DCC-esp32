@@ -157,12 +157,14 @@ pub enum RailcomParseStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+/// Parsed items plus completion status for one RailCom receive window.
 pub struct RailcomParseResult {
     pub items: Vec<RailcomItem, 6>,
     pub status: RailcomParseStatus,
 }
 
 #[must_use]
+/// Decode one NMRA 4-of-8 symbol into data, control, or error classification.
 pub fn decode_4_of_8(code: u8) -> DecodedSymbol {
     match REVERSE_4_OF_8[code as usize] {
         SYMBOL_ACK => DecodedSymbol::Ack,

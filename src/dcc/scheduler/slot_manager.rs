@@ -9,8 +9,8 @@ use crate::dcc::speed28::logical_to_nmra_packet_speed;
 
 use super::railcom_policy::PacketClass;
 use super::{
-    FunctionChange, FunctionIndex, LocoRequest, LocoRequestResult, LocoSnapshot, LogicalSpeed,
-    SchedulerCommand, SpeedFormat,
+    ConsistId, FunctionChange, FunctionIndex, LocoRequest, LocoRequestResult, LocoSnapshot,
+    LogicalSpeed, SchedulerCommand, SpeedFormat,
 };
 
 /// Maximum number of active locomotive slots.
@@ -46,7 +46,7 @@ struct ConsistMember {
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone, PartialEq, Eq))]
 struct Consist {
-    id: u8,
+    id: ConsistId,
     members: Vec<ConsistMember, MAX_CONSIST_MEMBERS>,
 }
 
@@ -722,7 +722,7 @@ impl SlotManager {
 
     /// Create an empty consist with given ID.
     #[must_use]
-    pub fn create_consist(&mut self, id: u8) -> bool {
+    pub fn create_consist(&mut self, id: ConsistId) -> bool {
         if self.consists.iter().any(|c| c.id == id) {
             return true;
         }
@@ -740,7 +740,7 @@ impl SlotManager {
     #[must_use]
     pub fn add_to_consist(
         &mut self,
-        id: u8,
+        id: ConsistId,
         address: DccAddress,
         reverse_in_consist: bool,
     ) -> bool {
@@ -764,7 +764,7 @@ impl SlotManager {
 
     /// Remove a locomotive from a consist.
     #[must_use]
-    pub fn remove_from_consist(&mut self, id: u8, address: DccAddress) -> bool {
+    pub fn remove_from_consist(&mut self, id: ConsistId, address: DccAddress) -> bool {
         let Some(consist) = self.consists.iter_mut().find(|c| c.id == id) else {
             return false;
         };
@@ -781,7 +781,7 @@ impl SlotManager {
     #[must_use]
     pub fn set_consist_speed(
         &mut self,
-        id: u8,
+        id: ConsistId,
         speed: LogicalSpeed,
         direction: Direction,
     ) -> usize {

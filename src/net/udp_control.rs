@@ -22,7 +22,6 @@ use crate::application::LocoSlots;
 use crate::application::StatusModel;
 use crate::application::client_safety::ClientSafetyPolicy;
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
-use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
 use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::{LocoCtx, PomCtx, TrackCtx, Z21Ctx};
 use crate::net::z21_dispatch::{encode_system_state, encoded_len, handle_packet};
@@ -38,6 +37,7 @@ pub use super::wifi::NetInitError;
 use super::{radio, wifi};
 
 const Z21_PORT: u16 = 21105;
+const Z21_KEEPALIVE_TIMEOUT_MS: u64 = 30_000;
 // Static buffers: avoids heap allocation in the hot UDP path.
 static RX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
