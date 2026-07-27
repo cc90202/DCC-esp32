@@ -304,7 +304,7 @@ impl TrackOutput {
                 cutout_off_fast(hw);
                 enable_low_fast(hw);
                 store_cutout_state(CutoutState::Idle);
-            } else if enabled {
+            } else {
                 match CutoutState::from_u8(CUTOUT_STATE.load(Ordering::Acquire)) {
                     Some(CutoutState::Idle) => enable_high_fast(hw),
                     None => {
