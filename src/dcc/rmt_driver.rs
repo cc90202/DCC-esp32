@@ -30,8 +30,8 @@ use esp_hal::rmt::{Channel as RmtChannel, ContinuousTxTransaction, LoopMode, Pul
 use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
-use crate::cutout::CutoutMode;
 use crate::cutout::timing::CUTOUT_CONTROL_END_US;
+use crate::cutout::{CutoutMode, PacketSequence};
 use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US, PREAMBLE_RMT_OFFSET};
 use crate::dcc::{DccAddress, PomRequestId};
 
@@ -311,9 +311,11 @@ fn rmt_interrupt() {
     let packet_boundary_us = now_us();
     clear_tx_loop_interrupt();
     reset_tx_loop_counter();
-    let packet_sequence = ISR_HEARTBEAT
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    let packet_sequence = PacketSequence::new(
+        ISR_HEARTBEAT
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1),
+    );
     // `on_dcc_packet_boundary()` is observation-only telemetry. It intentionally
     // runs before the cutout authorization check so packet-boundary health can be
     // counted on every loop. Do not add hardware side effects here: real cutout
