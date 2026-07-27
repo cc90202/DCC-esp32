@@ -526,9 +526,14 @@ pub enum DccPacket {
     PomReadByte { address: DccAddress, cv: PomCv },
 }
 
+/// Maximum number of bytes in an encoded DCC packet, including its checksum.
+///
+/// RCN-218 `LogonSelect` is the longest packet currently supported.
+pub const DCC_MAX_PACKET_BYTES: usize = 10;
+
 /// Builder for DCC packet byte sequences with incremental XOR checksum.
 struct PacketBytes {
-    bytes: Vec<u8, 10>,
+    bytes: Vec<u8, DCC_MAX_PACKET_BYTES>,
     checksum: u8,
 }
 
@@ -543,7 +548,7 @@ impl PacketBytes {
     fn push(&mut self, byte: u8) {
         self.bytes
             .push(byte)
-            .expect("packet payload must fit in ten-byte buffer");
+            .expect("packet payload must fit DCC_MAX_PACKET_BYTES");
         self.checksum ^= byte;
     }
 
@@ -563,10 +568,10 @@ impl PacketBytes {
         self.push(crc);
     }
 
-    fn finalize(mut self) -> Vec<u8, 10> {
+    fn finalize(mut self) -> Vec<u8, DCC_MAX_PACKET_BYTES> {
         self.bytes
             .push(self.checksum)
-            .expect("packet checksum must fit in ten-byte buffer");
+            .expect("packet checksum must fit DCC_MAX_PACKET_BYTES");
         self.bytes
     }
 }
@@ -742,7 +747,7 @@ impl DccPacket {
     /// Returns [`PacketEncodeError::InvalidSpeed28`] only if the internal
     /// Speed28 encoder receives an impossible value. Public speed and CV ranges
     /// are guaranteed by newtypes.
-    pub fn to_bytes(&self) -> Result<Vec<u8, 10>, PacketEncodeError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8, DCC_MAX_PACKET_BYTES>, PacketEncodeError> {
         let mut packet = PacketBytes::new();
 
         match *self {
@@ -927,6 +932,29 @@ impl DccPacket {
 mod tests {
     use super::*;
 
+    fn variant_name(packet: DccPacket) -> &'static str {
+        match packet {
+            DccPacket::Idle => "Idle",
+            DccPacket::Reset => "Reset",
+            DccPacket::Speed28 { .. } => "Speed28",
+            DccPacket::Speed128 { .. } => "Speed128",
+            DccPacket::FunctionGroup1 { .. } => "FunctionGroup1",
+            DccPacket::FunctionGroup2A { .. } => "FunctionGroup2A",
+            DccPacket::FunctionGroup2B { .. } => "FunctionGroup2B",
+            DccPacket::FunctionGroup3 { .. } => "FunctionGroup3",
+            DccPacket::FunctionGroup4 { .. } => "FunctionGroup4",
+            DccPacket::EmergencyStop { .. } => "EmergencyStop",
+            DccPacket::BroadcastStop => "BroadcastStop",
+            DccPacket::BroadcastBinaryStateShort { .. } => "BroadcastBinaryStateShort",
+            DccPacket::LogonEnable { .. } => "LogonEnable",
+            DccPacket::LogonSelect { .. } => "LogonSelect",
+            DccPacket::ServiceModeVerifyByte { .. } => "ServiceModeVerifyByte",
+            DccPacket::ServiceModeWriteByte { .. } => "ServiceModeWriteByte",
+            DccPacket::PomWriteByte { .. } => "PomWriteByte",
+            DccPacket::PomReadByte { .. } => "PomReadByte",
+        }
+    }
+
     fn service_cv(cv: u16) -> ServiceModeCv {
         ServiceModeCv::new(cv).expect("test service-mode CV must be valid")
     }
@@ -941,6 +969,128 @@ mod tests {
 
     fn logon_group(group: u8) -> LogonGroup {
         LogonGroup::new(group).expect("test logon group must be valid")
+    }
+
+    #[test]
+    fn every_packet_variant_fits_the_declared_byte_capacity() {
+        let long_address = DccAddress::new_long(10_239).unwrap();
+        let all_variants = [
+            DccPacket::Idle,
+            DccPacket::Reset,
+            DccPacket::Speed28 {
+                address: long_address,
+                direction: Direction::Forward,
+                speed: NmraSpeed28::new(29).unwrap(),
+            },
+            DccPacket::Speed128 {
+                address: long_address,
+                direction: Direction::Reverse,
+                speed: NmraSpeed128::new(126).unwrap(),
+            },
+            DccPacket::FunctionGroup1 {
+                address: long_address,
+                fl: true,
+                f1: true,
+                f2: true,
+                f3: true,
+                f4: true,
+            },
+            DccPacket::FunctionGroup2A {
+                address: long_address,
+                f5: true,
+                f6: true,
+                f7: true,
+                f8: true,
+            },
+            DccPacket::FunctionGroup2B {
+                address: long_address,
+                f9: true,
+                f10: true,
+                f11: true,
+                f12: true,
+            },
+            DccPacket::FunctionGroup3 {
+                address: long_address,
+                f13: true,
+                f14: true,
+                f15: true,
+                f16: true,
+                f17: true,
+                f18: true,
+                f19: true,
+                f20: true,
+            },
+            DccPacket::FunctionGroup4 {
+                address: long_address,
+                f21: true,
+                f22: true,
+                f23: true,
+                f24: true,
+                f25: true,
+                f26: true,
+                f27: true,
+                f28: true,
+            },
+            DccPacket::EmergencyStop {
+                address: long_address,
+                direction: Direction::Forward,
+            },
+            DccPacket::BroadcastStop,
+            DccPacket::BroadcastBinaryStateShort {
+                bin_addr: binary_state_addr(127),
+                state: true,
+            },
+            DccPacket::LogonEnable {
+                group: logon_group(3),
+                command_station_id: u16::MAX,
+                session_id: u8::MAX,
+            },
+            DccPacket::LogonSelect {
+                manufacturer_id: u16::MAX,
+                decoder_id: u32::MAX,
+                subcommand: u8::MAX,
+            },
+            DccPacket::ServiceModeVerifyByte {
+                cv: service_cv(256),
+                value: u8::MAX,
+            },
+            DccPacket::ServiceModeWriteByte {
+                cv: service_cv(256),
+                value: u8::MAX,
+            },
+            DccPacket::PomWriteByte {
+                address: long_address,
+                cv: pom_cv(1024),
+                value: u8::MAX,
+            },
+            DccPacket::PomReadByte {
+                address: long_address,
+                cv: pom_cv(1024),
+            },
+        ];
+
+        for packet in all_variants {
+            let encoded = packet.to_bytes().unwrap_or_else(|error| {
+                panic!("{} failed to encode: {error:?}", variant_name(packet))
+            });
+            assert!(
+                encoded.len() <= DCC_MAX_PACKET_BYTES,
+                "{} encoded to {} bytes, exceeding DCC_MAX_PACKET_BYTES",
+                variant_name(packet),
+                encoded.len()
+            );
+        }
+
+        let longest = DccPacket::LogonSelect {
+            manufacturer_id: u16::MAX,
+            decoder_id: u32::MAX,
+            subcommand: u8::MAX,
+        };
+        assert_eq!(
+            longest.to_bytes().unwrap().len(),
+            DCC_MAX_PACKET_BYTES,
+            "the declared capacity should remain tight"
+        );
     }
 
     #[test]
