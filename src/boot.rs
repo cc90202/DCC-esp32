@@ -49,7 +49,8 @@ use crate::dcc::{
 };
 use crate::dcc_runtime::DccPacketChannel;
 use crate::fault_manager::{
-    FaultManagerState, FaultManagerTaskContext, FaultStateWatch, fault_manager_task,
+    FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerState, FaultManagerTaskContext,
+    FaultStateWatch, fault_effects_task, fault_manager_task,
 };
 use crate::net::provisioning::run_provisioning_ap;
 use crate::net::udp_control::NetTaskChannels;
@@ -76,6 +77,7 @@ static SYSTEM_STATUS: SystemStatusChannel = SystemStatusChannel::new();
 static NET_STATUS: NetStatusChannel = NetStatusChannel::new();
 static FAULT_CHANNEL: FaultEventChannel = FaultEventChannel::new();
 static FAULT_STATE: FaultStateWatch = FaultStateWatch::new_with(FaultManagerState::Normal);
+static FAULT_EFFECTS: FaultEffectsSignal = FaultEffectsSignal::new();
 static DISPLAY_CHANNEL: DisplayChannel = DisplayChannel::new();
 static BOOT_READY: BootReadyChannel = BootReadyChannel::new();
 static BOOT_FAILURE: BootFailureChannel = BootFailureChannel::new();
@@ -321,14 +323,22 @@ pub async fn run(
 
     spawn_critical(
         &spawner,
-        fault_manager_task(FaultManagerTaskContext {
-            receiver: FAULT_CHANNEL.receiver(),
+        fault_effects_task(FaultEffectsTaskContext {
+            effects_signal: &FAULT_EFFECTS,
             scheduler_sender: scheduler_commands.sender(),
             status_sender: SYSTEM_STATUS.sender(),
             net_status_sender: NET_STATUS.sender(),
-            track_output,
             display_sender: DISPLAY_CHANNEL.sender(),
+        }),
+        CriticalTask::FaultEffects,
+    )?;
+    spawn_critical(
+        &spawner,
+        fault_manager_task(FaultManagerTaskContext {
+            receiver: FAULT_CHANNEL.receiver(),
+            track_output,
             state_sender: FAULT_STATE.sender(),
+            effects_signal: &FAULT_EFFECTS,
             ready_sender: BOOT_READY.sender(),
         }),
         CriticalTask::FaultManager,
