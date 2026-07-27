@@ -102,8 +102,6 @@ pub enum LedState {
     FaultLatched,
 }
 
-pub use crate::application::StatusModel;
-
 // --- Boot lifecycle events ---
 //
 // Events emitted by tasks during boot to acknowledge readiness (or report a
@@ -204,6 +202,7 @@ pub enum DisplayEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::StatusModel;
 
     #[test]
     fn test_boot_to_running() {

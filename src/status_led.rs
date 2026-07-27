@@ -91,7 +91,7 @@ fn blink_period_for(state: LedState) -> Option<Duration> {
     }
 }
 
-async fn apply_status_event(
+fn apply_status_event(
     model: &mut StatusModel,
     prev_state: &mut LedState,
     event: crate::system_status::SystemStatusEvent,
@@ -150,14 +150,14 @@ pub async fn status_led_task(
         if let Some(period) = blink_period_for(state) {
             if let Ok(event) = with_timeout(period, status_receiver.receive()).await {
                 blink_on = true;
-                apply_status_event(&mut model, &mut prev_state, event, &display_sender).await;
+                apply_status_event(&mut model, &mut prev_state, event, &display_sender);
             } else {
                 blink_on = !blink_on;
             }
         } else {
             let event = status_receiver.receive().await;
             blink_on = true;
-            apply_status_event(&mut model, &mut prev_state, event, &display_sender).await;
+            apply_status_event(&mut model, &mut prev_state, event, &display_sender);
         }
     }
 }

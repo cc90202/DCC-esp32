@@ -335,21 +335,4 @@ pub enum SchedulerCommand {
 }
 
 #[cfg(test)]
-fn is_safety_critical_packet(packet: &DccPacket) -> bool {
-    matches!(
-        packet,
-        DccPacket::BroadcastStop | DccPacket::EmergencyStop { .. }
-    )
-}
-
-#[cfg(test)]
-fn advance_safety_send_timeout_streak(streak: u8, timed_out: bool) -> u8 {
-    if timed_out {
-        streak.saturating_add(1)
-    } else {
-        0
-    }
-}
-
-#[cfg(test)]
 mod tests;

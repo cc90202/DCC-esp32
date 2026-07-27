@@ -14,7 +14,8 @@ pub enum BootAction {
     DegradedMode,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum BootError {
     OptionalPeripheralInit(OptionalPeripheralInit),
     DccSelfCheck(DccSelfCheckError),
