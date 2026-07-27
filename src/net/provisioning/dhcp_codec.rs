@@ -6,26 +6,7 @@ use smoltcp::wire::{
 };
 use smoltcp::wire::{DhcpMessageType, DhcpPacket, DhcpRepr, Ipv4Address};
 
-use super::net_config::{CLIENT_IP_OCTETS, SERVER_IP_OCTETS, SUBNET_MASK_OCTETS};
-
-pub(crate) const SERVER_IP: Ipv4Address = Ipv4Address::new(
-    SERVER_IP_OCTETS[0],
-    SERVER_IP_OCTETS[1],
-    SERVER_IP_OCTETS[2],
-    SERVER_IP_OCTETS[3],
-);
-pub(crate) const CLIENT_IP: Ipv4Address = Ipv4Address::new(
-    CLIENT_IP_OCTETS[0],
-    CLIENT_IP_OCTETS[1],
-    CLIENT_IP_OCTETS[2],
-    CLIENT_IP_OCTETS[3],
-);
-pub(crate) const SUBNET_MASK: Ipv4Address = Ipv4Address::new(
-    SUBNET_MASK_OCTETS[0],
-    SUBNET_MASK_OCTETS[1],
-    SUBNET_MASK_OCTETS[2],
-    SUBNET_MASK_OCTETS[3],
-);
+use super::net_config::{CLIENT_IP, SERVER_IP, SUBNET_MASK};
 #[cfg(target_arch = "riscv32")]
 pub(crate) const BROADCAST_IP: Ipv4Address = Ipv4Address::BROADCAST;
 pub(crate) const UNSPECIFIED_IP: Ipv4Address = Ipv4Address::UNSPECIFIED;

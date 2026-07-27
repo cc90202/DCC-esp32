@@ -13,8 +13,8 @@ use embassy_time::{Instant, with_timeout};
 
 use crate::application::LocoSlots;
 use crate::application::pom::{
-    PomAdmissionError, PomOutcome, PomRefreshFailure, PomReply, apply_refresh_result, prepare_read,
-    prepare_write, resolve_reply,
+    PomAdmissionError, PomOutcome, PomRefreshFailure, apply_refresh_result, prepare_read,
+    prepare_write,
 };
 use crate::dcc::cv::drain_channel;
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
@@ -115,7 +115,7 @@ pub(super) async fn handle_cv_pom_write(
         )
         .await,
     );
-    match resolve_reply(reply) {
+    match reply {
         PomOutcome::Ack => encoded_len(z21_proto::encode_cv_result(cv, value, out)),
         PomOutcome::Nack => encoded_len(z21_proto::encode_cv_nack(out)),
         PomOutcome::Value(_) | PomOutcome::Unavailable => {
@@ -194,7 +194,7 @@ pub(super) async fn handle_cv_pom_read(
         )
         .await,
     );
-    match resolve_reply(reply) {
+    match reply {
         PomOutcome::Value(value) => encoded_len(z21_proto::encode_cv_result(cv, value, out)),
         PomOutcome::Ack | PomOutcome::Nack | PomOutcome::Unavailable => {
             warn!(
@@ -207,12 +207,12 @@ pub(super) async fn handle_cv_pom_read(
     }
 }
 
-fn classify_reply(response: Option<PomResponse>) -> PomReply {
+fn classify_reply(response: Option<PomResponse>) -> PomOutcome {
     match response {
-        Some(PomResponse::Value { value, .. }) => PomReply::Value(value),
-        Some(PomResponse::Ack { .. }) => PomReply::Ack,
-        Some(PomResponse::Nack { .. }) => PomReply::Nack,
-        None => PomReply::Unavailable,
+        Some(PomResponse::Value { value, .. }) => PomOutcome::Value(value),
+        Some(PomResponse::Ack { .. }) => PomOutcome::Ack,
+        Some(PomResponse::Nack { .. }) => PomOutcome::Nack,
+        None => PomOutcome::Unavailable,
     }
 }
 

@@ -130,12 +130,9 @@ pub fn encode_unknown_command(out: &mut [u8]) -> Option<usize> {
 /// Returns `None` if `out` is too short or `cv` is outside `1..=1024`.
 pub fn encode_cv_result(cv: u16, value: u8, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 10;
-    if !(1..=1024).contains(&cv) {
-        return None;
-    }
+    let wire_cv = cv_to_wire(cv)?;
     let out = output_with_capacity::<LEN>(out)?;
 
-    let wire_cv = cv - 1;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_CV_RESULT;
     out[5] = RESP_DB0_CV_RESULT;

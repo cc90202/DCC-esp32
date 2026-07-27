@@ -7,11 +7,10 @@ use defmt::warn;
 use crate::dcc::DccAddress;
 use crate::net::railcom_lookup::{latest_railcom_sighting, railcom_sighting_for_address};
 use crate::railcom::loco_tracker::RailcomLocoSighting;
-use crate::z21 as z21_proto;
+use crate::z21::{self as z21_proto, RailcomRequestType};
 
 use super::encoded_len;
 
-const RAILCOM_GETDATA_TYPE_LOCO: u8 = 0x01;
 static RAILCOM_GETDATA_NO_DATA_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[must_use]
@@ -20,12 +19,12 @@ pub(crate) fn railcom_getdata_no_data_count() -> u32 {
 }
 
 pub(super) fn encode_getdata_response(
-    request_type: u8,
+    request_type: RailcomRequestType,
     address: Option<DccAddress>,
     out: &mut [u8],
 ) -> usize {
-    if request_type != RAILCOM_GETDATA_TYPE_LOCO {
-        warn!("RailCom GETDATA unsupported type={}", request_type);
+    if let RailcomRequestType::Unsupported(raw) = request_type {
+        warn!("RailCom GETDATA unsupported type={}", raw);
         return 0;
     }
 

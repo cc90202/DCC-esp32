@@ -7,7 +7,7 @@ use core::fmt::{self, Write};
 
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_net::{Config, Ipv4Address, Ipv4Cidr, StackResources, StaticConfigV4};
+use embassy_net::{Config, Ipv4Cidr, StackResources, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Sender;
 use esp_hal::rng::Rng;
@@ -17,12 +17,12 @@ use static_cell::StaticCell;
 
 use crate::net::radio::{self, WifiBringupError};
 use crate::net::wifi::wifi_runner_task;
-use crate::net::wifi_config::WifiCredentialsStore;
+use crate::net::wifi_config::{CredentialError, WifiCredentials, WifiCredentialsStore};
 use crate::system_status::DisplayEvent;
 
 use super::dhcp_server::run_dhcp_server;
 use super::http_server::run_http_server;
-use super::net_config::{PREFIX_LEN, SERVER_IP_OCTETS, SETUP_URL};
+use super::net_config::{PREFIX_LEN, SERVER_IP, SETUP_URL};
 
 const AP_SSID_PREFIX: &str = "DCC-Setup-";
 const AP_PASSWORD: &str = "dcc-setup";
@@ -35,6 +35,7 @@ pub enum ProvisioningApError {
     WifiBringup(WifiBringupError),
     WifiRunnerSpawn,
     DhcpServerSpawn,
+    InvalidCredentials(CredentialError),
     SsidBuild,
 }
 
@@ -48,6 +49,7 @@ impl fmt::Display for ProvisioningApError {
             Self::DhcpServerSpawn => {
                 formatter.write_str("failed to spawn provisioning DHCP server")
             }
+            Self::InvalidCredentials(error) => write!(formatter, "{error}"),
             Self::SsidBuild => formatter.write_str("WiFi AP SSID build failed"),
         }
     }
@@ -61,11 +63,11 @@ fn provisioning_ssid() -> Result<String<14>, ProvisioningApError> {
     Ok(ssid)
 }
 
-fn access_point_mode_config(ssid: &str) -> ModeConfig {
+fn access_point_mode_config(credentials: &WifiCredentials) -> ModeConfig {
     ModeConfig::AccessPoint(
         AccessPointConfig::default()
-            .with_ssid(ssid.to_string())
-            .with_password(AP_PASSWORD.to_string())
+            .with_ssid(credentials.ssid().to_string())
+            .with_password(credentials.password().to_string())
             .with_auth_method(AuthMethod::Wpa2Personal)
             .with_max_connections(1),
     )
@@ -73,15 +75,7 @@ fn access_point_mode_config(ssid: &str) -> ModeConfig {
 
 fn provisioning_net_config() -> Config {
     Config::ipv4_static(StaticConfigV4 {
-        address: Ipv4Cidr::new(
-            Ipv4Address::new(
-                SERVER_IP_OCTETS[0],
-                SERVER_IP_OCTETS[1],
-                SERVER_IP_OCTETS[2],
-                SERVER_IP_OCTETS[3],
-            ),
-            PREFIX_LEN,
-        ),
+        address: Ipv4Cidr::new(SERVER_IP, PREFIX_LEN),
         gateway: None,
         dns_servers: Default::default(),
     })
@@ -100,11 +94,13 @@ where
     S: WifiCredentialsStore,
 {
     let ssid = provisioning_ssid()?;
+    let credentials = WifiCredentials::new(ssid.as_str(), AP_PASSWORD)
+        .map_err(ProvisioningApError::InvalidCredentials)?;
 
     // The controller must stay alive for the whole provisioning session;
     // dropping it would stop the radio.
     let (_wifi_ctrl, interfaces) =
-        radio::start_wifi(wifi_peripheral, &access_point_mode_config(ssid.as_str()))
+        radio::start_wifi(wifi_peripheral, &access_point_mode_config(&credentials))
             .await
             .map_err(ProvisioningApError::WifiBringup)?;
 

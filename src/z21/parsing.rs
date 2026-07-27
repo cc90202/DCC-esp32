@@ -62,7 +62,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
             let raw_address = u16::from_le_bytes([frame[5], frame[6]]);
             let address = DccAddress::from_magnitude(raw_address);
             Ok(Z21Command::RailcomGetData {
-                request_type: frame[4],
+                request_type: frame[4].into(),
                 address,
             })
         }
@@ -208,11 +208,8 @@ fn parse_cv_pom_command(payload: &[u8]) -> Result<Z21Command, ParseError> {
 
     let address = parse_loco_address(payload[2], payload[3]).ok_or(ParseError::InvalidAddress)?;
     let op = payload[4] & 0xFC;
-    let cv = (u16::from(payload[4] & 0x03) << 8) | u16::from(payload[5]);
-    let cv = cv + 1;
-    if !(1..=1024).contains(&cv) {
-        return Err(ParseError::InvalidCvAddress);
-    }
+    let wire_cv = (u16::from(payload[4] & 0x03) << 8) | u16::from(payload[5]);
+    let cv = cv_from_wire(wire_cv).ok_or(ParseError::InvalidCvAddress)?;
 
     match op {
         POM_OP_WRITE => Ok(Z21Command::CvPomWriteByte {

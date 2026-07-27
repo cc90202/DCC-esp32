@@ -303,7 +303,7 @@ fn test_parse_railcom_getdata() {
     else {
         panic!("expected RailcomGetData, got {:?}", parse_frame(&frame));
     };
-    assert_eq!(request_type, 1);
+    assert_eq!(request_type, RailcomRequestType::Locomotive);
     assert_eq!(address, Some(addr_short(3)));
 }
 
@@ -317,7 +317,7 @@ fn test_parse_railcom_getdata_zero_address_requests_latest() {
     else {
         panic!("expected RailcomGetData, got {:?}", parse_frame(&frame));
     };
-    assert_eq!(request_type, 1);
+    assert_eq!(request_type, RailcomRequestType::Locomotive);
     assert_eq!(address, None);
 }
 

@@ -56,6 +56,21 @@ pub enum ProvisioningRequest {
     Requested,
 }
 
+#[derive(Clone, Copy)]
+enum ButtonLevel {
+    Pressed,
+    Released,
+}
+
+impl ButtonLevel {
+    fn is_active(self, button: &Input<'static>) -> bool {
+        match self {
+            Self::Pressed => button.is_low(),
+            Self::Released => button.is_high(),
+        }
+    }
+}
+
 /// Return whether GPIO21 is held through the full provisioning window at boot.
 ///
 /// Returns immediately with `false` when the button is not pressed at
@@ -72,45 +87,31 @@ pub async fn wait_for_boot_provisioning_override(button: &mut Input<'static>) ->
 
     with_timeout(
         Duration::from_millis(RESUME_PROVISIONING_PRESS_MS),
-        wait_for_debounced_release(button),
+        wait_for_debounced_level(button, ButtonLevel::Released),
     )
     .await
     .is_err()
-}
-
-async fn wait_for_debounced_press(button: &mut Input<'static>) {
-    loop {
-        if button.is_low() {
-            Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-            if button.is_low() {
-                return;
-            }
-        }
-
-        button.wait_for_falling_edge().await;
-        Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-        if button.is_low() {
-            return;
-        }
-    }
 }
 
 /// Cancellation-safe by construction: no state is held across `.await`
 /// points, so dropping this future mid-debounce during `with_timeout`
 /// simply restarts the loop on the next call. Keep it that way; adding side
 /// effects here would break classification.
-async fn wait_for_debounced_release(button: &mut Input<'static>) {
+async fn wait_for_debounced_level(button: &mut Input<'static>, target: ButtonLevel) {
     loop {
-        if button.is_high() {
+        if target.is_active(button) {
             Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-            if button.is_high() {
+            if target.is_active(button) {
                 return;
             }
         }
 
-        button.wait_for_rising_edge().await;
+        match target {
+            ButtonLevel::Pressed => button.wait_for_falling_edge().await,
+            ButtonLevel::Released => button.wait_for_rising_edge().await,
+        }
         Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-        if button.is_high() {
+        if target.is_active(button) {
             return;
         }
     }
@@ -120,7 +121,7 @@ async fn wait_for_debounced_release(button: &mut Input<'static>) {
 /// duration through the pure `classify_resume_press` policy.
 async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePress {
     let pressed_at = Instant::now();
-    wait_for_debounced_release(button).await;
+    wait_for_debounced_level(button, ButtonLevel::Released).await;
     classify_resume_press(pressed_at.elapsed().as_millis())
 }
 
@@ -155,12 +156,12 @@ pub async fn stop_button_task(
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::StopButton).await;
     loop {
-        wait_for_debounced_press(&mut stop_button).await;
+        wait_for_debounced_level(&mut stop_button, ButtonLevel::Pressed).await;
         defmt::info!("STOP pressed");
         crate::track_safety::disable_track_intentionally();
         fault_sender.send(FaultEvent::StopPressed).await;
 
-        wait_for_debounced_release(&mut stop_button).await;
+        wait_for_debounced_level(&mut stop_button, ButtonLevel::Released).await;
     }
 }
 
@@ -173,7 +174,7 @@ pub async fn resume_button_task(
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::ResumeButton).await;
     loop {
-        wait_for_debounced_press(&mut resume_button).await;
+        wait_for_debounced_level(&mut resume_button, ButtonLevel::Pressed).await;
         defmt::info!("RESUME pressed");
 
         let press = classify_resume_button_press(&mut resume_button).await;

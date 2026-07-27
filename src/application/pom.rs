@@ -34,14 +34,6 @@ pub(crate) enum PomRefreshFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PomReply {
-    Value(u8),
-    Ack,
-    Nack,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PomOutcome {
     Value(u8),
     Ack,
@@ -91,16 +83,6 @@ pub(crate) fn apply_refresh_result(
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(PomRefreshFailure::SchedulerRejected(result)),
         Err(error) => Err(PomRefreshFailure::Projection(error)),
-    }
-}
-
-#[must_use]
-pub(crate) const fn resolve_reply(reply: PomReply) -> PomOutcome {
-    match reply {
-        PomReply::Value(value) => PomOutcome::Value(value),
-        PomReply::Ack => PomOutcome::Ack,
-        PomReply::Nack => PomOutcome::Nack,
-        PomReply::Unavailable => PomOutcome::Unavailable,
     }
 }
 
@@ -200,13 +182,17 @@ mod tests {
     }
 
     #[test]
-    fn pom_replies_resolve_to_one_shared_outcome() {
-        assert_eq!(resolve_reply(PomReply::Value(42)), PomOutcome::Value(42));
-        assert_eq!(resolve_reply(PomReply::Ack), PomOutcome::Ack);
-        assert_eq!(resolve_reply(PomReply::Nack), PomOutcome::Nack);
-        assert_eq!(
-            resolve_reply(PomReply::Unavailable),
-            PomOutcome::Unavailable
-        );
+    fn pom_outcome_represents_every_actor_reply() {
+        let outcomes = [
+            PomOutcome::Value(42),
+            PomOutcome::Ack,
+            PomOutcome::Nack,
+            PomOutcome::Unavailable,
+        ];
+
+        assert_eq!(outcomes[0], PomOutcome::Value(42));
+        assert_eq!(outcomes[1], PomOutcome::Ack);
+        assert_eq!(outcomes[2], PomOutcome::Nack);
+        assert_eq!(outcomes[3], PomOutcome::Unavailable);
     }
 }
