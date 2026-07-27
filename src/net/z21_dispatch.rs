@@ -63,9 +63,7 @@ async fn route_command(
 
         Z21Command::GetSystemState => track::encode_current_system_state(ctx.status_model, out),
         // Z21 apps expect an immediate state push after subscription.
-        Z21Command::SetBroadcastFlags { .. } => {
-            track::encode_current_system_state(ctx.status_model, out)
-        }
+        Z21Command::SetBroadcastFlags => track::encode_current_system_state(ctx.status_model, out),
         Z21Command::GetStatus => track::encode_current_status(ctx.status_model, out),
         Z21Command::SetTrackPowerOn => {
             track::apply_power_request(TrackPowerRequest::Enable, out, ctx).await

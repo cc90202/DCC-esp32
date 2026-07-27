@@ -66,10 +66,7 @@ fn test_parse_get_hwinfo() {
 fn test_parse_set_broadcast_flags() {
     // DataLen=8, header=0x0050, flags=0x00000001 (LE)
     let buf = [0x08, 0x00, 0x50, 0x00, 0x01, 0x00, 0x00, 0x00];
-    let Ok(Z21Command::SetBroadcastFlags { flags }) = parse_frame(&buf) else {
-        panic!("expected SetBroadcastFlags, got {:?}", parse_frame(&buf));
-    };
-    assert_eq!(flags, BroadcastFlags::new(1));
+    assert_eq!(parse_frame(&buf), Ok(Z21Command::SetBroadcastFlags));
 }
 
 #[test]

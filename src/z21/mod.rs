@@ -62,22 +62,6 @@ pub struct LocoInfo {
     pub functions: u32,
 }
 
-/// `LAN_SET_BROADCASTFLAGS` payload, an OR-combination of Z21 broadcast
-/// subscription bits (Z21 LAN Protocol Specification v1.13, §2.16).
-///
-/// The parser preserves the raw payload in the command. Broadcast delivery is
-/// currently unconditional, so no bit-level policy is exposed here yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct BroadcastFlags(u32);
-
-impl BroadcastFlags {
-    #[must_use]
-    pub const fn new(raw: u32) -> Self {
-        Self(raw)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct FrameKind {
@@ -97,9 +81,11 @@ pub enum Z21Command {
     GetXBusVersion,
     GetFirmwareVersion,
     GetStatus,
-    SetBroadcastFlags {
-        flags: BroadcastFlags,
-    },
+    /// Accept a `LAN_SET_BROADCASTFLAGS` subscription request.
+    ///
+    /// Broadcast delivery is currently unconditional, so the validated
+    /// payload is intentionally not retained.
+    SetBroadcastFlags,
     SetTrackPowerOn,
     SetTrackPowerOff,
     SetStop,

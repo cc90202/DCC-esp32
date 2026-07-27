@@ -1,7 +1,7 @@
 use crate::dcc::{DccAddress, Direction, SpeedFormat};
 
 use super::wire::*;
-use super::{BroadcastFlags, FrameKind, FunctionAction, ParseError, Z21Command};
+use super::{FrameKind, FunctionAction, ParseError, Z21Command};
 
 /// Parse a single Z21 frame from `buf`.
 ///
@@ -76,10 +76,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
             if frame.len() < 8 {
                 return Err(ParseError::FrameTooShort);
             }
-            let flags = u32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
-            Ok(Z21Command::SetBroadcastFlags {
-                flags: BroadcastFlags::new(flags),
-            })
+            Ok(Z21Command::SetBroadcastFlags)
         }
         HEADER_XBUS => parse_xbus(frame),
         _ => Ok(Z21Command::Unknown),
