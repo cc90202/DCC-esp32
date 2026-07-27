@@ -1,5 +1,7 @@
 //! ESP32-C6 flash adapter for the WiFi configuration store.
 
+use core::fmt;
+
 use esp_bootloader_esp_idf::partitions::{
     FlashRegion, PARTITION_TABLE_MAX_LEN, read_partition_table,
 };
@@ -20,6 +22,18 @@ pub enum EspFlashStoreError {
     PartitionTable,
     MissingPartition,
     InvalidPartitionSize,
+}
+
+impl fmt::Display for EspFlashStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PartitionTable => formatter.write_str("failed to read the partition table"),
+            Self::MissingPartition => formatter.write_str("WiFi configuration partition missing"),
+            Self::InvalidPartitionSize => {
+                formatter.write_str("WiFi configuration partition has an invalid size")
+            }
+        }
+    }
 }
 
 pub fn wifi_config_store_from_partition<'a, 'd>(
