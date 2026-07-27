@@ -205,68 +205,94 @@ fn decode_symbols<const N: usize>(raw_bytes: &[u8]) -> Result<Vec<DecodedSymbol,
     Ok(symbols)
 }
 
+enum ParsedSymbolItem {
+    Item {
+        item: RailcomItem,
+        consumed_symbols: usize,
+    },
+    UnsupportedDatagram(u8),
+}
+
+fn parse_symbol_item(
+    symbols: &[DecodedSymbol],
+    index: usize,
+) -> Result<ParsedSymbolItem, ParseError> {
+    match symbols[index] {
+        DecodedSymbol::Ack => Ok(ParsedSymbolItem::Item {
+            item: RailcomItem::Ack,
+            consumed_symbols: 1,
+        }),
+        DecodedSymbol::Nack => Ok(ParsedSymbolItem::Item {
+            item: RailcomItem::Nack,
+            consumed_symbols: 1,
+        }),
+        DecodedSymbol::Data6(first) => parse_symbol_datagram(symbols, index, first),
+        DecodedSymbol::Reserved(code) => Err(ParseError::Reserved4Of8Code(code)),
+        DecodedSymbol::Invalid(code) => Err(ParseError::Invalid4Of8Code(code)),
+    }
+}
+
+fn parse_symbol_datagram(
+    symbols: &[DecodedSymbol],
+    index: usize,
+    first: u8,
+) -> Result<ParsedSymbolItem, ParseError> {
+    let id = first >> 2;
+    let symbol_count = match datagram_symbol_count(id) {
+        Ok(symbol_count) => symbol_count,
+        Err(ParseError::UnsupportedDatagramId(id)) => {
+            return Ok(ParsedSymbolItem::UnsupportedDatagram(id));
+        }
+        Err(error) => return Err(error),
+    };
+    let available_symbols = symbols.len() - index;
+    if available_symbols < symbol_count {
+        return Err(ParseError::TruncatedDatagram {
+            id,
+            needed_symbols: symbol_count,
+            available_symbols,
+        });
+    }
+
+    let mut useful_bits = 0u64;
+    for symbol in &symbols[index..index + symbol_count] {
+        let DecodedSymbol::Data6(value) = *symbol else {
+            return Err(ParseError::TruncatedDatagram {
+                id,
+                needed_symbols: symbol_count,
+                available_symbols,
+            });
+        };
+        useful_bits = (useful_bits << 6) | u64::from(value);
+    }
+
+    let payload_bits = symbol_count * 6 - 4;
+    let payload = useful_bits & ((1u64 << payload_bits) - 1);
+    Ok(ParsedSymbolItem::Item {
+        item: RailcomItem::Datagram(parse_datagram(id, payload, payload_bits as u8)?),
+        consumed_symbols: symbol_count,
+    })
+}
+
 /// Turns already-decoded symbols into RailCom items (ACK/NACK/datagrams).
 fn items_from_symbols(symbols: &[DecodedSymbol]) -> Result<RailcomParseResult, ParseError> {
     let mut items = Vec::<RailcomItem, 6>::new();
     let mut index = 0usize;
     while index < symbols.len() {
-        match symbols[index] {
-            DecodedSymbol::Ack => {
-                items
-                    .push(RailcomItem::Ack)
-                    .map_err(|_| ParseError::TooManyItems)?;
-                index += 1;
+        match parse_symbol_item(symbols, index)? {
+            ParsedSymbolItem::Item {
+                item,
+                consumed_symbols,
+            } => {
+                items.push(item).map_err(|_| ParseError::TooManyItems)?;
+                index += consumed_symbols;
             }
-            DecodedSymbol::Nack => {
-                items
-                    .push(RailcomItem::Nack)
-                    .map_err(|_| ParseError::TooManyItems)?;
-                index += 1;
+            ParsedSymbolItem::UnsupportedDatagram(id) => {
+                return Ok(RailcomParseResult {
+                    items,
+                    status: RailcomParseStatus::PartialUnsupportedDatagram(id),
+                });
             }
-            DecodedSymbol::Data6(first) => {
-                let id = first >> 2;
-                let symbol_count = match datagram_symbol_count(id) {
-                    Ok(symbol_count) => symbol_count,
-                    Err(ParseError::UnsupportedDatagramId(id)) => {
-                        return Ok(RailcomParseResult {
-                            items,
-                            status: RailcomParseStatus::PartialUnsupportedDatagram(id),
-                        });
-                    }
-                    Err(err) => return Err(err),
-                };
-                let available = symbols.len() - index;
-                if available < symbol_count {
-                    return Err(ParseError::TruncatedDatagram {
-                        id,
-                        needed_symbols: symbol_count,
-                        available_symbols: available,
-                    });
-                }
-
-                let mut useful_bits: u64 = 0;
-                for symbol in &symbols[index..index + symbol_count] {
-                    let DecodedSymbol::Data6(value) = *symbol else {
-                        return Err(ParseError::TruncatedDatagram {
-                            id,
-                            needed_symbols: symbol_count,
-                            available_symbols: available,
-                        });
-                    };
-                    useful_bits = (useful_bits << 6) | u64::from(value);
-                }
-
-                let payload_bits = symbol_count * 6 - 4;
-                let payload_mask = (1u64 << payload_bits) - 1;
-                let payload = useful_bits & payload_mask;
-                let datagram = parse_datagram(id, payload, payload_bits as u8)?;
-                items
-                    .push(RailcomItem::Datagram(datagram))
-                    .map_err(|_| ParseError::TooManyItems)?;
-                index += symbol_count;
-            }
-            DecodedSymbol::Reserved(code) => return Err(ParseError::Reserved4Of8Code(code)),
-            DecodedSymbol::Invalid(code) => return Err(ParseError::Invalid4Of8Code(code)),
         }
     }
 
