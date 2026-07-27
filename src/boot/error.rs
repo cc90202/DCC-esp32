@@ -58,6 +58,7 @@ pub enum CriticalTask {
     RailcomIsrCapture,
     RailcomUartDispatch,
     Net,
+    FaultEffects,
     FaultManager,
     ProvisioningRequest,
     ProvisioningLed,
@@ -166,6 +167,9 @@ impl BootError {
                 "failed to spawn railcom_uart_runtime_dispatch_task"
             }
             Self::CriticalTaskSpawn(CriticalTask::Net) => "failed to spawn net_task",
+            Self::CriticalTaskSpawn(CriticalTask::FaultEffects) => {
+                "failed to spawn fault_effects_task"
+            }
             Self::CriticalTaskSpawn(CriticalTask::FaultManager) => {
                 "failed to spawn fault_manager_task"
             }

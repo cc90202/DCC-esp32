@@ -1,7 +1,9 @@
 //! Central fault and e-stop state manager.
 //!
-//! The pure `policy` module drives all transitions; the async firmware fault-manager task
-//! is an adapter that applies the requested effects to Embassy channels and GPIO.
+//! The pure `policy` module drives all transitions. The firmware fault-manager
+//! task applies GPIO and state-watch changes immediately, while a separate
+//! relay task forwards scheduler and presentation effects without
+//! backpressuring the safety loop.
 //!
 //! The fault manager is a state machine with three states. In `Normal` the
 //! track is powered, motion commands are accepted and the track driver is
@@ -19,74 +21,48 @@
 //! The runtime state is exposed as [`FaultManagerState`] for observers. State
 //! transitions and their required effects remain private to the pure policy so
 //! callers cannot bypass the fault manager's application rules.
-//!
-//! Each transition can emit scheduler commands (`EmergencyStopAll`, `Pause`,
-//! `Resume`), status events (`EstopActive`, `EstopCleared`, `FaultLatched`,
-//! `FaultCleared`), and a level on the track-driver enable GPIO, which is HIGH
-//! in `Normal` and LOW otherwise.
 
 mod policy;
+#[cfg(any(test, target_arch = "riscv32"))]
+mod relay;
 
 pub use policy::FaultManagerState;
+#[cfg(target_arch = "riscv32")]
+pub(crate) use relay::{FaultEffectsSignal, FaultEffectsTaskContext, fault_effects_task};
 
+#[cfg(target_arch = "riscv32")]
+use embassy_sync::watch;
+
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::FaultEvent;
 #[cfg(target_arch = "riscv32")]
 use crate::track_output::TrackOutput;
 #[cfg(target_arch = "riscv32")]
-use crate::{
-    dcc::SchedulerCommand,
-    system_status::{DisplayEvent, FaultCause, FaultEvent, SystemStatusEvent},
-};
+use policy::FaultPolicy;
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::Sender;
-#[cfg(target_arch = "riscv32")]
-use embassy_sync::watch;
-#[cfg(target_arch = "riscv32")]
-use policy::{FaultPolicy, SchedulerEffect, StatusEffect};
+use relay::FaultEffectsSnapshot;
 
 #[cfg(target_arch = "riscv32")]
 pub type FaultStateWatch =
     watch::Watch<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, FaultManagerState, 1>;
 
 #[cfg(target_arch = "riscv32")]
-pub struct FaultManagerTaskContext {
-    pub receiver: embassy_sync::channel::Receiver<
+pub(crate) struct FaultManagerTaskContext {
+    pub(crate) receiver: embassy_sync::channel::Receiver<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
         FaultEvent,
         16,
     >,
-    pub scheduler_sender: Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SchedulerCommand,
-        32,
-    >,
-    pub status_sender: Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SystemStatusEvent,
-        16,
-    >,
-    pub net_status_sender: Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SystemStatusEvent,
-        8,
-    >,
-    pub track_output: TrackOutput,
-    pub display_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::system_status::DisplayEvent,
-        8,
-    >,
-    pub state_sender: watch::Sender<
+    pub(crate) track_output: TrackOutput,
+    pub(crate) state_sender: watch::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
         FaultManagerState,
         1,
     >,
-    pub ready_sender: embassy_sync::channel::Sender<
+    pub(crate) effects_signal: &'static FaultEffectsSignal,
+    pub(crate) ready_sender: embassy_sync::channel::Sender<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
         crate::system_status::BootReadyEvent,
@@ -94,26 +70,23 @@ pub struct FaultManagerTaskContext {
     >,
 }
 
-/// Async adapter that applies pure fault-policy decisions to runtime outputs.
-///
-/// Owns the track-driver enable GPIO and forwards scheduler/status commands via channels.
+/// Applies pure fault-policy decisions to GPIO and non-blocking state outputs.
 #[cfg(target_arch = "riscv32")]
 #[embassy_executor::task]
-pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
+pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     let FaultManagerTaskContext {
         receiver,
-        scheduler_sender,
-        status_sender,
-        net_status_sender,
         mut track_output,
-        display_sender,
         state_sender,
+        effects_signal,
         ready_sender,
     } = context;
 
     let mut policy = FaultPolicy::new();
+    let mut effects = FaultEffectsSnapshot::new();
     track_output.set_track_enabled(policy.track_enabled());
     state_sender.send(policy.state());
+    effects_signal.signal(effects);
     ready_sender
         .send(crate::system_status::BootReadyEvent::FaultManager)
         .await;
@@ -146,40 +119,7 @@ pub async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             );
         }
 
-        for effect in decision.scheduler_effects.into_iter().flatten() {
-            let command = match effect {
-                SchedulerEffect::EmergencyStopAll => SchedulerCommand::EmergencyStopAll,
-                SchedulerEffect::Pause => SchedulerCommand::Pause,
-                SchedulerEffect::Resume => SchedulerCommand::Resume,
-                SchedulerEffect::RestartRailcomDiscovery => {
-                    SchedulerCommand::RestartRailcomDiscovery
-                }
-            };
-            scheduler_sender.send(command).await;
-        }
-
-        for effect in decision.status_effects.into_iter().flatten() {
-            let (event, display_event) = match effect {
-                StatusEffect::EstopActive => (
-                    SystemStatusEvent::EstopActive,
-                    DisplayEvent::Fault(FaultCause::Estop),
-                ),
-                StatusEffect::EstopCleared => {
-                    (SystemStatusEvent::EstopCleared, DisplayEvent::FaultCleared)
-                }
-                StatusEffect::FaultLatched(cause) => (
-                    SystemStatusEvent::FaultLatched(cause),
-                    DisplayEvent::Fault(cause),
-                ),
-                StatusEffect::FaultCleared => {
-                    (SystemStatusEvent::FaultCleared, DisplayEvent::FaultCleared)
-                }
-            };
-            status_sender.send(event).await;
-            net_status_sender.send(event).await;
-            if display_sender.try_send(display_event).is_err() {
-                defmt::warn!("fault_manager: display event dropped");
-            }
-        }
+        effects.apply(decision);
+        effects_signal.signal(effects);
     }
 }
