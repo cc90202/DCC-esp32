@@ -430,19 +430,19 @@ fn stop_cutout_timer_fast(hw: &mut TrackOutputHw) {
 }
 
 #[inline(always)]
-fn open_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
-    RAILCOM_WINDOW_PACKET_SEQUENCE.store(packet_sequence, Ordering::Release);
+fn open_realtime_window_from_isr(packet_sequence: PacketSequence, channel: RailcomChannel) {
+    RAILCOM_WINDOW_PACKET_SEQUENCE.store(packet_sequence.value(), Ordering::Release);
     RAILCOM_WINDOW_CHANNEL.store(u8::from(channel), Ordering::Release);
     #[cfg(target_arch = "riscv32")]
     crate::railcom_capture::open_window_from_isr();
 }
 
 #[inline(always)]
-fn close_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
+fn close_realtime_window_from_isr(packet_sequence: PacketSequence, channel: RailcomChannel) {
     // Guard: only forward the close (and its FIFO read) if this is still the
     // window that was most recently opened. See the comment on
     // `RAILCOM_WINDOW_PACKET_SEQUENCE`/`RAILCOM_WINDOW_CHANNEL` above.
-    if RAILCOM_WINDOW_PACKET_SEQUENCE.load(Ordering::Acquire) == packet_sequence
+    if RAILCOM_WINDOW_PACKET_SEQUENCE.load(Ordering::Acquire) == packet_sequence.value()
         && RAILCOM_WINDOW_CHANNEL.load(Ordering::Acquire) == u8::from(channel)
     {
         #[cfg(target_arch = "riscv32")]
@@ -452,7 +452,8 @@ fn close_realtime_window_from_isr(packet_sequence: u32, channel: RailcomChannel)
 
 #[inline(always)]
 fn close_stale_window_from_isr(state: CutoutState) {
-    let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
+    let packet_sequence =
+        PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
     match state {
         CutoutState::Ch1Open => {
             close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
@@ -510,20 +511,31 @@ fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
     }
 }
 
+/// Complete context captured at an RMT packet boundary for one cutout request.
+pub struct CutoutRequest {
+    pub packet_boundary_us: u32,
+    pub packet_sequence: PacketSequence,
+    pub dcc_packet_duration_us: u32,
+    pub cutout: CutoutMode,
+    pub target_address: Option<DccAddress>,
+    pub pom_request_id: Option<PomRequestId>,
+}
+
 /// Requests a physical empty cutout from the RMT packet-boundary ISR.
 ///
 /// This function is intentionally minimal: no policy, no mutex, only the
 /// hardware transition required to start the cutout.
 #[inline(always)]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".rwtext"))]
-pub fn request_cutout_from_isr(
-    packet_boundary_us: u32,
-    packet_sequence: PacketSequence,
-    dcc_packet_duration_us: u32,
-    cutout: CutoutMode,
-    target_address: Option<DccAddress>,
-    pom_request_id: Option<PomRequestId>,
-) -> bool {
+pub fn request_cutout_from_isr(request: CutoutRequest) -> bool {
+    let CutoutRequest {
+        packet_boundary_us,
+        packet_sequence,
+        dcc_packet_duration_us,
+        cutout,
+        target_address,
+        pom_request_id,
+    } = request;
     // The RMT handler captures this timestamp at the hardware packet boundary,
     // before counters and shared-state access. Work performed below therefore
     // cannot shift the receiver windows relative to the waveform in flight.
@@ -688,7 +700,8 @@ fn cutout_timer_interrupt() {
             }
         }
         Some(CutoutState::WaitingCh1Open) => {
-            let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
+            let packet_sequence =
+                PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
             let capture_start_deadline =
                 PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
             record_deadline_lateness(capture_start_deadline);
@@ -701,7 +714,7 @@ fn cutout_timer_interrupt() {
                     PENDING_CUTOUT_METADATA.load(Ordering::Acquire),
                 );
                 push_cutout_event_from_isr(CutoutRuntimeEvent::Opened {
-                    packet_sequence: PacketSequence::new(packet_sequence),
+                    packet_sequence,
                     cutout: pending_metadata.cutout(),
                     target_address: pending_metadata.target_address(),
                     pom_request_id: pending_metadata
@@ -717,7 +730,8 @@ fn cutout_timer_interrupt() {
             }
         }
         Some(CutoutState::Ch1Open) => {
-            let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
+            let packet_sequence =
+                PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
             let split_deadline =
                 PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
             wait_until_cutout_offset(split_deadline);
@@ -738,7 +752,8 @@ fn cutout_timer_interrupt() {
             }
         }
         Some(CutoutState::Ch2Open) => {
-            let packet_sequence = PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire);
+            let packet_sequence =
+                PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
             let channel2_end_deadline =
                 PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
             wait_until_cutout_offset(channel2_end_deadline);

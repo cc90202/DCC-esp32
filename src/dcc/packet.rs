@@ -622,31 +622,25 @@ impl DccPacket {
         if value { mask } else { 0 }
     }
 
+    #[inline]
+    fn direction_mask(direction: Direction, mask: u8) -> u8 {
+        Self::bool_mask(direction == Direction::Forward, mask)
+    }
+
     fn encode_speed28_instruction(
         direction: Direction,
         speed: NmraSpeed28,
     ) -> Result<u8, PacketEncodeError> {
         // Instruction format: 01DCSSSS (NMRA S-9.2 §2.3.2.3)
-        let direction_bit = if direction == Direction::Forward {
-            0b0010_0000
-        } else {
-            0
-        };
-
         let speed_bits = encode_nmra_instruction_speed_bits(speed.value())?;
 
-        Ok(0b0100_0000 | direction_bit | speed_bits)
+        Ok(0b0100_0000 | Self::direction_mask(direction, 0b0010_0000) | speed_bits)
     }
 
     fn encode_speed128_data(direction: Direction, speed: NmraSpeed128) -> u8 {
         let raw = speed.value();
         let wire_speed = if raw == 0 { 0 } else { raw + 1 };
-        let direction_bit = if direction == Direction::Forward {
-            0x80
-        } else {
-            0
-        };
-        direction_bit | (wire_speed & 0x7F)
+        Self::direction_mask(direction, 0x80) | (wire_speed & 0x7F)
     }
 
     fn encode_function_group1(fl: bool, f1: bool, f2: bool, f3: bool, f4: bool) -> u8 {
@@ -689,12 +683,7 @@ impl DccPacket {
 
     fn encode_emergency_stop_instruction(direction: Direction) -> u8 {
         // E-stop per NMRA S-9.2: 01DC0001 with C=0, SSSS=0001
-        let direction_bit = if direction == Direction::Forward {
-            0b0010_0000
-        } else {
-            0
-        };
-        0b0100_0001 | direction_bit
+        0b0100_0001 | Self::direction_mask(direction, 0b0010_0000)
     }
 
     /// Encodes a validated 1-based CV number into the two on-wire bytes used by
@@ -706,7 +695,8 @@ impl DccPacket {
         (cv_high, cv_low)
     }
 
-    /// Helper function for tests - create an idle packet
+    /// Helper function for tests - create an idle packet.
+    #[cfg(test)]
     pub fn idle() -> Self {
         DccPacket::Idle
     }

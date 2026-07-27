@@ -18,11 +18,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use esp_hal::Async;
 use esp_hal::uart::UartRx;
-use heapless::Vec;
 
 use crate::railcom::pipeline::{
-    MAX_RAILCOM_WINDOW_BYTES, RailcomChannel, RailcomRxWindow, RailcomRxWindowError,
-    process_rx_window, record_oversized_window, record_rx_overflows,
+    MAX_RAILCOM_WINDOW_BYTES, PacketSequence, RailcomChannel, RailcomRxWindow,
+    RailcomRxWindowError, process_rx_window, record_oversized_window, record_rx_overflows,
 };
 use crate::railcom::uart_reader::{RailcomRxOutput, RailcomUartWindowError};
 
@@ -46,7 +45,7 @@ static CAPTURE_NOTIFY: CaptureNotifyChannel = CaptureNotifyChannel::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CapturedWindow {
-    packet_sequence: u32,
+    packet_sequence: PacketSequence,
     channel: RailcomChannel,
     len: usize,
     bytes: [u8; MAX_RAILCOM_WINDOW_BYTES],
@@ -120,7 +119,7 @@ pub fn open_window_from_isr() {
 // counter publishes availability, while the per-slot generation prevents a
 // slow consumer from combining fields from two different ring revolutions.
 #[inline(always)]
-pub fn close_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
+pub fn close_window_from_isr(packet_sequence: PacketSequence, channel: RailcomChannel) {
     let write_count = CAPTURE_WRITE_COUNT.load(Ordering::Relaxed);
     let slot = write_count as usize % CAPTURE_RING_CAPACITY;
     let Some(fifo_len) = uart1_rx_fifo_count().map(|len| len as usize) else {
@@ -131,7 +130,7 @@ pub fn close_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
         .wrapping_add(1)
         | 1;
     CAPTURE_GENERATIONS[slot].store(updating_generation, Ordering::SeqCst);
-    CAPTURE_SEQUENCES[slot].store(packet_sequence, Ordering::Relaxed);
+    CAPTURE_SEQUENCES[slot].store(packet_sequence.value(), Ordering::Relaxed);
     CAPTURE_CHANNELS[slot].store(u8::from(channel), Ordering::Relaxed);
     CAPTURE_LENS[slot].store(fifo_len.min(u8::MAX as usize) as u8, Ordering::Relaxed);
     for cell in &CAPTURE_BYTES[slot][..fifo_len.min(MAX_RAILCOM_WINDOW_BYTES)] {
@@ -149,10 +148,7 @@ pub fn close_window_from_isr(packet_sequence: u32, channel: RailcomChannel) {
 // See `track_output::drain_cutout_runtime_events` for the sibling ring-drain.
 // Both use the same publication rule, but their payloads and overflow counters
 // remain deliberately local to their hardware paths.
-fn drain_captured_windows(
-    next_read: &mut u32,
-    out: &mut Vec<CapturedWindow, CAPTURE_RING_CAPACITY>,
-) {
+fn take_captured_window(next_read: &mut u32) -> Option<CapturedWindow> {
     let write = CAPTURE_WRITE_COUNT.load(Ordering::Acquire);
     let available = write.wrapping_sub(*next_read);
     if available > CAPTURE_RING_CAPACITY as u32 {
@@ -164,7 +160,7 @@ fn drain_captured_windows(
     let mut remaining = write
         .wrapping_sub(*next_read)
         .min(CAPTURE_RING_CAPACITY as u32);
-    while remaining > 0 && out.len() < CAPTURE_RING_CAPACITY {
+    while remaining > 0 {
         let slot = *next_read as usize % CAPTURE_RING_CAPACITY;
         let generation_before = CAPTURE_GENERATIONS[slot].load(Ordering::SeqCst);
         if generation_before & 1 != 0 {
@@ -184,22 +180,23 @@ fn drain_captured_windows(
         for index in 0..len.min(MAX_RAILCOM_WINDOW_BYTES) {
             bytes[index] = CAPTURE_BYTES[slot][index].load(Ordering::Acquire);
         }
-        let packet_sequence = CAPTURE_SEQUENCES[slot].load(Ordering::Acquire);
+        let packet_sequence = PacketSequence::new(CAPTURE_SEQUENCES[slot].load(Ordering::Acquire));
         let generation_after = CAPTURE_GENERATIONS[slot].load(Ordering::SeqCst);
 
         if generation_before == generation_after && generation_after & 1 == 0 {
-            let _ = out.push(CapturedWindow {
+            *next_read = next_read.wrapping_add(1);
+            return Some(CapturedWindow {
                 packet_sequence,
                 channel,
                 len,
                 bytes,
             });
-        } else {
-            record_rx_overflows(1);
         }
+        record_rx_overflows(1);
         *next_read = next_read.wrapping_add(1);
         remaining -= 1;
     }
+    None
 }
 
 async fn send_captured_window(
@@ -267,9 +264,7 @@ pub async fn railcom_isr_capture_task(
     loop {
         capture_receiver.receive().await;
 
-        let mut windows = Vec::<CapturedWindow, CAPTURE_RING_CAPACITY>::new();
-        drain_captured_windows(&mut next_read, &mut windows);
-        for window in windows {
+        while let Some(window) = take_captured_window(&mut next_read) {
             send_captured_window(&result_sender, window).await;
         }
     }

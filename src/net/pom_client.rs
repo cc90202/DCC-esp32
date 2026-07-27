@@ -28,6 +28,12 @@ use crate::z21 as z21_proto;
 // RailCom app:pom attribution window, with margin for task scheduling.
 const POM_CLIENT_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_millis(2_700);
 
+#[derive(Clone, Copy, defmt::Format)]
+enum PomOperation {
+    Read,
+    Write,
+}
+
 /// Allocate the next [`PomRequestId`] from the net task's local counter.
 ///
 /// Replaces a global `AtomicU32`: the counter only needs to be unique within
@@ -88,7 +94,7 @@ pub(super) async fn handle_cv_pom_write(
 ) -> usize {
     let plan = match prepare_write(ctx.status_model.pom_allowed(), address, cv, value) {
         Ok(plan) => plan,
-        Err(error) => return reject_admission(out, ctx, address, cv, "write", error),
+        Err(error) => return reject_admission(out, ctx, address, cv, PomOperation::Write, error),
     };
 
     ctx.scheduler_sender
@@ -132,7 +138,7 @@ pub(super) async fn handle_cv_pom_read(
 ) -> usize {
     let plan = match prepare_read(loco_slots, ctx.status_model.pom_allowed(), address, cv) {
         Ok(plan) => plan,
-        Err(error) => return reject_admission(out, ctx, address, cv, "read", error),
+        Err(error) => return reject_admission(out, ctx, address, cv, PomOperation::Read, error),
     };
     let refresh = request_loco(
         ctx.loco.request_sender,
@@ -215,20 +221,20 @@ fn reject_admission(
     ctx: &PomCtx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
-    operation: &str,
+    operation: PomOperation,
     error: PomAdmissionError,
 ) -> usize {
     match error {
         PomAdmissionError::InvalidCv(_) => {
             warn!(
-                "POM {} addr={} invalid cv={}",
+                "POM {:?} addr={} invalid cv={}",
                 operation,
                 address.value(),
                 cv
             );
         }
         PomAdmissionError::TrackPowerOff => warn!(
-            "POM {} addr={} cv={} rejected (track_on={} estop={} fault={:?})",
+            "POM {:?} addr={} cv={} rejected (track_on={} estop={} fault={:?})",
             operation,
             address.value(),
             cv,
