@@ -33,22 +33,6 @@ pub(crate) enum PomRefreshFailure {
     Projection(ProjectionError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PomReply {
-    Value(u8),
-    Ack,
-    Nack,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PomOutcome {
-    Value(u8),
-    Ack,
-    Nack,
-    Unavailable,
-}
-
 pub(crate) fn prepare_read(
     slots: &LocoSlots,
     pom_allowed: bool,
@@ -94,16 +78,6 @@ pub(crate) fn apply_refresh_result(
     }
 }
 
-#[must_use]
-pub(crate) const fn resolve_reply(reply: PomReply) -> PomOutcome {
-    match reply {
-        PomReply::Value(value) => PomOutcome::Value(value),
-        PomReply::Ack => PomOutcome::Ack,
-        PomReply::Nack => PomOutcome::Nack,
-        PomReply::Unavailable => PomOutcome::Unavailable,
-    }
-}
-
 fn projected_format(slots: &LocoSlots, address: DccAddress) -> SpeedFormat {
     slots
         .iter()
@@ -116,7 +90,7 @@ fn projected_format(slots: &LocoSlots, address: DccAddress) -> SpeedFormat {
 mod tests {
     use super::*;
     use crate::application::LocoState;
-    use crate::dcc::{Direction, LocoSnapshot, LogicalSpeed};
+    use crate::dcc::{Direction, FunctionState, LocoSnapshot, LogicalSpeed};
 
     fn address() -> DccAddress {
         DccAddress::new_short(3).unwrap()
@@ -127,7 +101,7 @@ mod tests {
             address: address(),
             speed: LogicalSpeed::zero(format),
             direction: Direction::Forward,
-            functions: 0,
+            functions: FunctionState::empty(),
         }
     }
 
@@ -136,7 +110,7 @@ mod tests {
             address: address(),
             speed: LogicalSpeed::zero(SpeedFormat::Speed128),
             direction: Direction::Forward,
-            functions: 0,
+            functions: FunctionState::empty(),
         }
     }
 
@@ -197,16 +171,5 @@ mod tests {
             Ok(())
         );
         assert_eq!(slots[0], Some(snapshot().into()));
-    }
-
-    #[test]
-    fn pom_replies_resolve_to_one_shared_outcome() {
-        assert_eq!(resolve_reply(PomReply::Value(42)), PomOutcome::Value(42));
-        assert_eq!(resolve_reply(PomReply::Ack), PomOutcome::Ack);
-        assert_eq!(resolve_reply(PomReply::Nack), PomOutcome::Nack);
-        assert_eq!(
-            resolve_reply(PomReply::Unavailable),
-            PomOutcome::Unavailable
-        );
     }
 }

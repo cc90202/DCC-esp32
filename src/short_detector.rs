@@ -27,7 +27,9 @@
 //! cycle that stresses the driver.
 
 #[cfg(target_arch = "riscv32")]
-use crate::config::TRACK_SHORT_BOOT_BLANKING_MS;
+use crate::runtime_channels::{BootReadySender, FaultEventSender, announce_ready};
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::BootReadyEvent;
 #[cfg(target_arch = "riscv32")]
 use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(target_arch = "riscv32")]
@@ -35,13 +37,14 @@ use embassy_futures::select::{Either, select};
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::Sender;
-#[cfg(target_arch = "riscv32")]
 use embassy_sync::watch;
 #[cfg(target_arch = "riscv32")]
 use embassy_time::{Duration, Timer};
 #[cfg(target_arch = "riscv32")]
 use esp_hal::gpio::{Input, InputConfig, Pull};
+
+#[cfg(target_arch = "riscv32")]
+const TRACK_SHORT_BOOT_BLANKING_MS: u64 = 5_000;
 
 /// Settling delay after the fault manager re-enters Normal, before re-arming
 /// short detection. Lets the track driver wake up and the decoder's bulk/keep-alive
@@ -54,10 +57,10 @@ const RECOVERY_SETTLE_MS: u64 = 100;
 static SHORT_EDGE_SUPPRESSED_UNTIL_MS: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_arch = "riscv32")]
-pub fn suppress_short_edges_for_ms(duration_ms: u64) {
+pub fn suppress_short_edges_for(duration: Duration) {
     let until = embassy_time::Instant::now()
         .as_millis()
-        .saturating_add(duration_ms) as u32;
+        .saturating_add(duration.as_millis()) as u32;
     SHORT_EDGE_SUPPRESSED_UNTIL_MS.store(until, Ordering::Release);
 }
 
@@ -150,10 +153,10 @@ async fn confirm_short(pin: &Input<'static>) -> bool {
 }
 
 #[cfg(target_arch = "riscv32")]
-async fn report_track_short(
-    fault_sender: &Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
-) {
-    crate::track_output::emergency_disable();
+async fn report_track_short(fault_sender: &FaultEventSender) {
+    if !crate::track_output::emergency_disable() {
+        defmt::error!("track short detected before output hardware initialization");
+    }
     defmt::warn!("Short circuit detected on GPIO3!");
     fault_sender
         .send(crate::system_status::FaultEvent::FaultLatched(
@@ -166,14 +169,14 @@ async fn report_track_short(
 #[embassy_executor::task]
 pub async fn short_detector_task(
     mut pin: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
+    fault_sender: FaultEventSender,
     mut fault_state_receiver: watch::Receiver<
         'static,
         CriticalSectionRawMutex,
         crate::fault_manager::FaultManagerState,
         1,
     >,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
+    ready_sender: BootReadySender,
 ) -> ! {
     // Boot blanking: ignore transients from WiFi radio startup and DCC stabilization.
     Timer::after(Duration::from_millis(TRACK_SHORT_BOOT_BLANKING_MS)).await;
@@ -184,9 +187,7 @@ pub async fn short_detector_task(
         report_track_short(&fault_sender).await;
     }
 
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::ShortDetector)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::ShortDetector).await;
 
     let initial_state = if initial_low { "LOW" } else { "HIGH" };
     defmt::info!(

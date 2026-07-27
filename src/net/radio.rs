@@ -1,5 +1,7 @@
 //! Shared esp-radio controller ownership and WiFi bring-up.
 
+use core::fmt;
+
 use esp_radio::wifi::{Interfaces, ModeConfig, WifiController};
 use static_cell::StaticCell;
 
@@ -34,6 +36,23 @@ impl From<esp_radio::InitializationError> for RadioInitError {
     }
 }
 
+impl fmt::Display for RadioInitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::General(code) => write!(formatter, "general esp-radio error {code}"),
+            Self::WifiDriver => formatter.write_str("esp-radio WiFi driver initialization failed"),
+            Self::WrongClockConfig => {
+                formatter.write_str("esp-radio clock configuration is invalid")
+            }
+            Self::InterruptsDisabled => formatter.write_str("esp-radio interrupts are disabled"),
+            Self::SchedulerNotInitialized => {
+                formatter.write_str("esp-radio scheduler is not initialized")
+            }
+            Self::Unknown => formatter.write_str("unknown esp-radio initialization error"),
+        }
+    }
+}
+
 /// Error for the WiFi bring-up sequence shared by station and AP mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -44,13 +63,13 @@ pub enum WifiBringupError {
     WifiStart,
 }
 
-impl WifiBringupError {
-    pub(crate) const fn as_str(self) -> &'static str {
+impl fmt::Display for WifiBringupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EspRadioInit(_) => "esp-radio init failed",
-            Self::WifiInit => "WiFi init failed",
-            Self::WifiSetConfig => "WiFi set_config failed",
-            Self::WifiStart => "WiFi start failed",
+            Self::EspRadioInit(error) => write!(formatter, "esp-radio init failed: {error}"),
+            Self::WifiInit => formatter.write_str("WiFi init failed"),
+            Self::WifiSetConfig => formatter.write_str("WiFi set_config failed"),
+            Self::WifiStart => formatter.write_str("WiFi start failed"),
         }
     }
 }

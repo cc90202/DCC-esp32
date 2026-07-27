@@ -34,8 +34,6 @@
 //! Buttons are wired with pull-up resistors (GPIO22 and GPIO21 internal pull-up enabled).
 //! Press pulls the line LOW; release lets pull-up drive it HIGH.
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Sender;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::gpio::{Input, InputConfig, Pull};
 
@@ -43,16 +41,34 @@ use crate::control_logic::{
     RESUME_PROVISIONING_PRESS_MS, ResumeButtonAction, ResumePress, classify_resume_press,
     resume_action_for_press,
 };
+use crate::runtime_channels::{
+    BootReadySender, FaultEventSender, RuntimeChannel, RuntimeSender, announce_ready,
+};
+use crate::system_status::{BootReadyEvent, FaultEvent};
 
 const DEBOUNCE_MS: u64 = 30;
 
-pub type ProvisioningRequestChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, ProvisioningRequest, 1>;
+pub type ProvisioningRequestChannel = RuntimeChannel<ProvisioningRequest, 1>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum ProvisioningRequest {
     Requested,
+}
+
+#[derive(Clone, Copy)]
+enum ButtonLevel {
+    Pressed,
+    Released,
+}
+
+impl ButtonLevel {
+    fn is_active(self, button: &Input<'static>) -> bool {
+        match self {
+            Self::Pressed => button.is_low(),
+            Self::Released => button.is_high(),
+        }
+    }
 }
 
 /// Return whether GPIO21 is held through the full provisioning window at boot.
@@ -71,45 +87,31 @@ pub async fn wait_for_boot_provisioning_override(button: &mut Input<'static>) ->
 
     with_timeout(
         Duration::from_millis(RESUME_PROVISIONING_PRESS_MS),
-        wait_for_debounced_release(button),
+        wait_for_debounced_level(button, ButtonLevel::Released),
     )
     .await
     .is_err()
-}
-
-async fn wait_for_debounced_press(button: &mut Input<'static>) {
-    loop {
-        if button.is_low() {
-            Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-            if button.is_low() {
-                return;
-            }
-        }
-
-        button.wait_for_falling_edge().await;
-        Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-        if button.is_low() {
-            return;
-        }
-    }
 }
 
 /// Cancellation-safe by construction: no state is held across `.await`
 /// points, so dropping this future mid-debounce during `with_timeout`
 /// simply restarts the loop on the next call. Keep it that way; adding side
 /// effects here would break classification.
-async fn wait_for_debounced_release(button: &mut Input<'static>) {
+async fn wait_for_debounced_level(button: &mut Input<'static>, target: ButtonLevel) {
     loop {
-        if button.is_high() {
+        if target.is_active(button) {
             Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-            if button.is_high() {
+            if target.is_active(button) {
                 return;
             }
         }
 
-        button.wait_for_rising_edge().await;
+        match target {
+            ButtonLevel::Pressed => button.wait_for_falling_edge().await,
+            ButtonLevel::Released => button.wait_for_rising_edge().await,
+        }
         Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
-        if button.is_high() {
+        if target.is_active(button) {
             return;
         }
     }
@@ -119,25 +121,21 @@ async fn wait_for_debounced_release(button: &mut Input<'static>) {
 /// duration through the pure `classify_resume_press` policy.
 async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePress {
     let pressed_at = Instant::now();
-    wait_for_debounced_release(button).await;
+    wait_for_debounced_level(button, ButtonLevel::Released).await;
     classify_resume_press(pressed_at.elapsed().as_millis())
 }
 
 async fn send_resume_action(
     action: ResumeButtonAction,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
-    provisioning_sender: Sender<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
+    fault_sender: FaultEventSender,
+    provisioning_sender: RuntimeSender<ProvisioningRequest, 1>,
 ) {
     match action {
         ResumeButtonAction::ResumeShortFault => {
-            fault_sender
-                .send(crate::system_status::FaultEvent::ResumeShortPressed)
-                .await;
+            fault_sender.send(FaultEvent::ResumeShortPressed).await;
         }
         ResumeButtonAction::ResumeLongFault => {
-            fault_sender
-                .send(crate::system_status::FaultEvent::ResumeLongPressed)
-                .await;
+            fault_sender.send(FaultEvent::ResumeLongPressed).await;
         }
         ResumeButtonAction::RequestWifiProvisioning => {
             if provisioning_sender
@@ -153,36 +151,30 @@ async fn send_resume_action(
 #[embassy_executor::task]
 pub async fn stop_button_task(
     mut stop_button: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
+    fault_sender: FaultEventSender,
+    ready_sender: BootReadySender,
 ) -> ! {
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::StopButton)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::StopButton).await;
     loop {
-        wait_for_debounced_press(&mut stop_button).await;
+        wait_for_debounced_level(&mut stop_button, ButtonLevel::Pressed).await;
         defmt::info!("STOP pressed");
         crate::track_safety::disable_track_intentionally();
-        fault_sender
-            .send(crate::system_status::FaultEvent::StopPressed)
-            .await;
+        fault_sender.send(FaultEvent::StopPressed).await;
 
-        wait_for_debounced_release(&mut stop_button).await;
+        wait_for_debounced_level(&mut stop_button, ButtonLevel::Released).await;
     }
 }
 
 #[embassy_executor::task]
 pub async fn resume_button_task(
     mut resume_button: Input<'static>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::FaultEvent, 16>,
-    provisioning_sender: Sender<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
+    fault_sender: FaultEventSender,
+    provisioning_sender: RuntimeSender<ProvisioningRequest, 1>,
+    ready_sender: BootReadySender,
 ) -> ! {
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::ResumeButton)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::ResumeButton).await;
     loop {
-        wait_for_debounced_press(&mut resume_button).await;
+        wait_for_debounced_level(&mut resume_button, ButtonLevel::Pressed).await;
         defmt::info!("RESUME pressed");
 
         let press = classify_resume_button_press(&mut resume_button).await;

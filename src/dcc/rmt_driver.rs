@@ -338,15 +338,18 @@ fn rmt_interrupt() {
         let cutout_allowed = if cutout_requested {
             RMT_CUTOUT_REQUEST_MAX_LATENCY_US
                 .fetch_max(now_us().wrapping_sub(packet_boundary_us), Ordering::Relaxed);
-            crate::track_output::request_cutout_from_isr(
+            crate::track_output::request_cutout_from_isr(crate::track_output::CutoutRequest {
                 packet_boundary_us,
                 packet_sequence,
-                pkt.dcc_duration_us,
-                pkt.meta.cutout,
-                pkt.meta.target_address,
-                matches!(pkt.meta.cutout, CutoutMode::PomWrite | CutoutMode::PomRead)
-                    .then(|| PomRequestId::new(pkt.meta.pom_request_id)),
-            )
+                dcc_packet_duration_us: pkt.dcc_duration_us,
+                cutout: pkt.meta.cutout,
+                target_address: pkt.meta.target_address,
+                pom_request_id: matches!(
+                    pkt.meta.cutout,
+                    CutoutMode::PomWrite | CutoutMode::PomRead
+                )
+                .then(|| PomRequestId::new(pkt.meta.pom_request_id)),
+            })
         } else {
             false
         };

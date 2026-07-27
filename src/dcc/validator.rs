@@ -1,6 +1,8 @@
-//! NMRA DCC compliance validator
+//! Test-only NMRA DCC compliance validator.
 //!
-//! Validates DCC packets and pulse sequences against NMRA standards S-9.1 and S-9.2.
+//! This module deliberately has no production feature flag or public re-export.
+//! It independently checks encoded packets against NMRA S-9.1 and S-9.2 so
+//! tests can catch regressions in packet construction and pulse generation.
 //!
 //! The validator provides several module-level functions at different levels:
 //! - [`validate_timing`] checks pulse timing against NMRA acceptable ranges
@@ -130,8 +132,6 @@ pub enum ValidationError {
     InvalidAddress,
     /// Missing start bit
     MissingStartBit,
-    /// Missing end bit
-    MissingEndBit,
     /// Packet too short
     PacketTooShort { min: usize, actual: usize },
     /// Invalid byte/bit structure in pulse sequence

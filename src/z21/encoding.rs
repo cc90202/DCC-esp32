@@ -3,7 +3,13 @@ use crate::dcc::{DccAddress, Direction, SpeedFormat};
 use super::LocoInfo;
 use super::wire::*;
 
-/// Encode `LAN_X_LOCO_INFO` into `out`. Returns bytes written, or 0 if `out` is shorter than 14.
+fn output_with_capacity<const LEN: usize>(out: &mut [u8]) -> Option<&mut [u8]> {
+    out.get_mut(..LEN)
+}
+
+/// Encode `LAN_X_LOCO_INFO` into `out`.
+///
+/// Returns `None` when `out` is shorter than 14 bytes.
 ///
 /// Wire format per spec §4.4:
 /// ```text
@@ -13,11 +19,9 @@ use super::wire::*;
 /// ```
 /// KKK: 0=14-step, 2=28-step, 4=128-step.  DB4: L=F0, F=F4, G=F3, H=F2, J=F1.
 /// Total: 14 bytes.
-pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> usize {
+pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 14;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_LOCO_INFO);
     out[4] = RESP_XH_LOCO_INFO;
 
@@ -77,16 +81,14 @@ pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> usize {
     // XBus checksum: XOR of bytes [4..13)
     write_xbus_checksum(out, 4, 9);
 
-    LEN
+    Some(LEN)
 }
 
 /// Encode `LAN_X_BC_TRACK_POWER_ON` or `LAN_X_BC_TRACK_POWER_OFF` into `out`.
-/// Returns bytes written (7), or 0 if `out` is shorter than 7.
-pub fn encode_bc_track_power(on: bool, out: &mut [u8]) -> usize {
+/// Returns `None` if `out` is shorter than 7 bytes.
+pub fn encode_bc_track_power(on: bool, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 7;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_TRACK_POWER;
     if on {
@@ -95,42 +97,42 @@ pub fn encode_bc_track_power(on: bool, out: &mut [u8]) -> usize {
         out[5] = RESP_DB0_POWER_OFF;
     }
     write_xbus_checksum(out, 4, 2);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_BC_STOPPED` into `out`. Returns bytes written (6), or 0 if `out` is shorter than 6.
-pub fn encode_bc_stopped(out: &mut [u8]) -> usize {
+/// Encode `LAN_X_BC_STOPPED` into `out`.
+///
+/// Returns `None` if `out` is shorter than 6 bytes.
+pub fn encode_bc_stopped(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 6;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_BC_STOPPED;
     write_xbus_checksum(out, 4, 1);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_UNKNOWN_COMMAND` into `out`. Returns bytes written (7), or 0 if `out` is shorter than 7.
-pub fn encode_unknown_command(out: &mut [u8]) -> usize {
+/// Encode `LAN_X_UNKNOWN_COMMAND` into `out`.
+///
+/// Returns `None` if `out` is shorter than 7 bytes.
+pub fn encode_unknown_command(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 7;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_TRACK_POWER;
     out[5] = RESP_DB0_UNKNOWN_COMMAND;
     write_xbus_checksum(out, 4, 2);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_CV_RESULT` into `out`. Returns bytes written (10), or 0 if `out` is too short.
-pub fn encode_cv_result(cv: u16, value: u8, out: &mut [u8]) -> usize {
+/// Encode `LAN_X_CV_RESULT` into `out`.
+///
+/// Returns `None` if `out` is too short or `cv` is outside `1..=1024`.
+pub fn encode_cv_result(cv: u16, value: u8, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 10;
-    if out.len() < LEN || !(1..=1024).contains(&cv) {
-        return 0;
-    }
+    let wire_cv = cv_to_wire(cv)?;
+    let out = output_with_capacity::<LEN>(out)?;
 
-    let wire_cv = cv - 1;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_CV_RESULT;
     out[5] = RESP_DB0_CV_RESULT;
@@ -138,34 +140,34 @@ pub fn encode_cv_result(cv: u16, value: u8, out: &mut [u8]) -> usize {
     out[7] = (wire_cv & 0xFF) as u8;
     out[8] = value;
     write_xbus_checksum(out, 4, 5);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_CV_NACK` into `out`. Returns bytes written (7), or 0 if `out` is too short.
-pub fn encode_cv_nack(out: &mut [u8]) -> usize {
+/// Encode `LAN_X_CV_NACK` into `out`.
+///
+/// Returns `None` if `out` is shorter than 7 bytes.
+pub fn encode_cv_nack(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 7;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
 
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_TRACK_POWER;
     out[5] = RESP_DB0_CV_NACK;
     write_xbus_checksum(out, 4, 2);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_TURNOUT_INFO` into `out`. Returns bytes written (9), or 0 if `out` is shorter than 9.
+/// Encode `LAN_X_TURNOUT_INFO` into `out`.
+///
+/// Returns `None` if `out` is shorter than 9 bytes.
 ///
 /// XBus reply, header=0x0040, X-Header=0x43 (same byte as request).
 /// DB2=0x00 means state unknown, since there is no accessory decoder support.
 /// Spec section: Z21 LAN Protocol v1.13, accessory decoder chapter.
-pub fn encode_turnout_info(address: DccAddress, out: &mut [u8]) -> usize {
+pub fn encode_turnout_info(address: DccAddress, out: &mut [u8]) -> Option<usize> {
     // [DataLen:2][Header=0x0040:2][0x43][AddrH][AddrL][DB2=0x00][XCS]
     const LEN: usize = 9;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     let address = address.value();
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = XHEADER_TURNOUT_INFO;
@@ -173,95 +175,95 @@ pub fn encode_turnout_info(address: DccAddress, out: &mut [u8]) -> usize {
     out[6] = (address & 0xFF) as u8;
     out[7] = 0x00; // state: unknown
     write_xbus_checksum(out, 4, 4);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_SERIAL_NUMBER` into `out`. Returns bytes written (8), or 0 if `out` is shorter than 8.
-pub fn encode_serial_number(serial: u32, out: &mut [u8]) -> usize {
+/// Encode `LAN_SERIAL_NUMBER` into `out`.
+///
+/// Returns `None` if `out` is shorter than 8 bytes.
+pub fn encode_serial_number(serial: u32, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 8;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_GET_SERIAL_NUMBER);
     write_u32_le(out, 4, serial);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_GET_VERSION` reply into `out`. Returns bytes written (9), or 0 if `out` is shorter than 9.
+/// Encode `LAN_X_GET_VERSION` reply into `out`.
+///
+/// Returns `None` if `out` is shorter than 9 bytes.
 ///
 /// Per spec §2.3: XBus reply, header=0x0040, X-Header=0x63.
 /// DB0=0x21 (echo), DB1=XBUS_VER=0x30 (V3.0), DB2=CMDST_ID=0x12 (Z21 family).
-pub fn encode_xbus_version(out: &mut [u8]) -> usize {
+pub fn encode_xbus_version(out: &mut [u8]) -> Option<usize> {
     // [DataLen:2][Header=0x0040:2][0x63][0x21][0x30][0x12][XCS]
     const LEN: usize = 9;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_VERSION;
     out[5] = DB0_GET_XBUS_VERSION; // DB0 echo
     out[6] = XBUS_VERSION;
     out[7] = CMDST_ID;
     write_xbus_checksum(out, 4, 4);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_GET_FIRMWARE_VERSION` reply into `out`. Returns bytes written (9), or 0.
+/// Encode `LAN_X_GET_FIRMWARE_VERSION` reply into `out`.
+///
+/// Returns `None` if `out` is shorter than 9 bytes.
 ///
 /// Spec §2.15: XBus reply, header=0x0040, X-Header=0xF3, DB0=0x0A,
 /// DB1/DB2 contain the BCD firmware version. `FW_VERSION=0x00000140` is reported as 1.40.
-pub fn encode_firmware_version(out: &mut [u8]) -> usize {
+pub fn encode_firmware_version(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 9;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_FIRMWARE_VERSION;
     out[5] = DB0_GET_FIRMWARE_VERSION;
     out[6] = ((FW_VERSION >> 8) & 0xFF) as u8;
     out[7] = (FW_VERSION & 0xFF) as u8;
     write_xbus_checksum(out, 4, 4);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_GET_CODE` response into `out`. Returns bytes written (5), or 0 if `out` is shorter than 5.
+/// Encode `LAN_GET_CODE` response into `out`.
+///
+/// Returns `None` if `out` is shorter than 5 bytes.
 ///
 /// Code=0x00 means no feature restrictions, so all Z21 functionality available.
-pub fn encode_code(out: &mut [u8]) -> usize {
+pub fn encode_code(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 5;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_GET_CODE);
     out[4] = 0x00; // no feature lock
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_GET_HWINFO` response into `out`. Returns bytes written (12), or 0 if `out` is shorter than 12.
+/// Encode `LAN_GET_HWINFO` response into `out`.
+///
+/// Returns `None` if `out` is shorter than 12 bytes.
 ///
 /// Reports HW_TYPE = 0x00000200 (Z21 black, full-featured) so the app enables
 /// all controls. FW_VERSION = 1.40 (consistent with `encode_xbus_version`).
-pub fn encode_hwinfo(out: &mut [u8]) -> usize {
+pub fn encode_hwinfo(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 12;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, HEADER_GET_HWINFO);
     write_u32_le(out, 4, HW_TYPE);
     write_u32_le(out, 8, FW_VERSION);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_X_STATUS_CHANGED` into `out`. Returns bytes written (8), or 0 if `out` is shorter than 8.
+/// Encode `LAN_X_STATUS_CHANGED` into `out`.
+///
+/// Returns `None` if `out` is shorter than 8 bytes.
 ///
 /// Per spec §2.12: XBus reply, header=0x0040, X-Header=0x62, DB0=0x22, DB1=Status, XCS.
 /// Bitmask: bit0=EmergencyStop, bit1=TrackVoltageOff, bit2=ShortCircuit, bit5=ProgrammingMode.
-pub fn encode_status(track_on: bool, estop: bool, out: &mut [u8]) -> usize {
+pub fn encode_status(track_on: bool, estop: bool, out: &mut [u8]) -> Option<usize> {
     // [DataLen:2][Header=0x0040:2][0x62][0x22][Status][XCS]
     const LEN: usize = 8;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_BC_XBUS);
     out[4] = RESP_XH_STATUS_CHANGED;
     out[5] = RESP_DB0_STATUS_CHANGED;
@@ -274,10 +276,12 @@ pub fn encode_status(track_on: bool, estop: bool, out: &mut [u8]) -> usize {
     }
     out[6] = status;
     write_xbus_checksum(out, 4, 3);
-    LEN
+    Some(LEN)
 }
 
-/// Encode `LAN_SYSTEMSTATE_DATACHANGED` (0x0084) into `out`. Returns bytes written (20), or 0 if `out` is shorter than 20.
+/// Encode `LAN_SYSTEMSTATE_DATACHANGED` (0x0084) into `out`.
+///
+/// Returns `None` if `out` is shorter than 20 bytes.
 ///
 /// Layout (Z21 spec §2.2):
 ///   [4-5]  MainCurrent         i16 mA  (we report 0, no live ADC path here)
@@ -294,11 +298,9 @@ pub fn encode_system_state(
     estop: bool,
     short_circuit: bool,
     out: &mut [u8],
-) -> usize {
+) -> Option<usize> {
     const LEN: usize = 20;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_SYSTEMSTATE);
     // MainCurrent, ProgCurrent, FilteredMainCurrent are all 0 (no ADC)
     out[4] = 0;
@@ -329,20 +331,18 @@ pub fn encode_system_state(
     out[17] = 0; // CentralStateEx
     out[18] = 0;
     out[19] = 0;
-    LEN
+    Some(LEN)
 }
 
 /// Encode `LAN_GET_LOCOMODE` reply. Mode 0 means DCC output format.
-pub fn encode_loco_mode(address: DccAddress, out: &mut [u8]) -> usize {
+pub fn encode_loco_mode(address: DccAddress, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 7;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
 
     write_frame_header(out, LEN as u16, RESP_LOCOMODE);
     write_loco_address_be(address, out, 4);
     out[6] = LOCO_MODE_DCC;
-    LEN
+    Some(LEN)
 }
 
 /// Encode `LAN_RAILCOM_DATACHANGED`.
@@ -354,11 +354,9 @@ pub fn encode_railcom_data(
     receive_counter: u32,
     error_counter: u16,
     out: &mut [u8],
-) -> usize {
+) -> Option<usize> {
     const LEN: usize = 17;
-    if out.len() < LEN {
-        return 0;
-    }
+    let out = output_with_capacity::<LEN>(out)?;
 
     write_frame_header(out, LEN as u16, RESP_RAILCOM_DATACHANGED);
     write_u16_le(out, 4, address.value());
@@ -369,5 +367,5 @@ pub fn encode_railcom_data(
     out[14] = 0; // speed
     out[15] = 0; // QoS
     out[16] = 0; // reserved
-    LEN
+    Some(LEN)
 }

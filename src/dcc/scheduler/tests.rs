@@ -140,10 +140,11 @@ fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
             address: snapshot_address,
             speed,
             direction: Direction::Reverse,
-            functions: 0,
+            functions,
         }) if snapshot_address == address
             && speed.value() == 12
             && speed.format() == SpeedFormat::Speed28
+            && functions == FunctionState::empty()
     ));
 
     let function = FunctionIndex::new(4).unwrap();
@@ -155,14 +156,15 @@ fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
     assert!(matches!(
         updated,
         LocoRequestResult::Updated(LocoSnapshot { functions, .. })
-            if functions == 1 << function.get()
+            if functions == FunctionState::from_bits(1 << function.get()).unwrap()
     ));
 
     let found = manager.handle_loco_request(LocoRequest::GetState { address });
     assert!(matches!(
         found,
         LocoRequestResult::Found(LocoSnapshot { speed, functions, .. })
-            if speed.value() == 12 && functions == 1 << function.get()
+            if speed.value() == 12
+                && functions == FunctionState::from_bits(1 << function.get()).unwrap()
     ));
 }
 
@@ -182,7 +184,7 @@ fn function_toggle_is_resolved_against_scheduler_state() {
             result,
             LocoRequestResult::Inserted(LocoSnapshot { functions, .. })
                 | LocoRequestResult::Updated(LocoSnapshot { functions, .. })
-                if ((functions >> function.get()) & 1 != 0) == expected_enabled
+                if functions.is_enabled(function) == expected_enabled
         ));
     }
 }
@@ -290,7 +292,10 @@ fn simultaneous_global_stop_uses_lowest_logical_index_as_tie_breaker() {
                 functions,
                 ..
             },
-        } if removed == addr(1) && inserted == addr(13) && speed.is_zero() && functions == 1 << 1
+        } if removed == addr(1)
+            && inserted == addr(13)
+            && speed.is_zero()
+            && functions == FunctionState::from_bits(1 << 1).unwrap()
     ));
 }
 
@@ -400,8 +405,8 @@ fn dirty_function_prevents_replacement_and_consist_does_not_keep_removed_address
     let mut manager = SlotManager::new();
     fill_with_moving_locomotives(&mut manager);
     drain_pending_slot_transmissions(&mut manager);
-    assert!(manager.create_consist(1));
-    assert!(manager.add_to_consist(1, addr(4), false));
+    assert!(manager.create_consist(ConsistId::new(1)));
+    assert!(manager.add_to_consist(ConsistId::new(1), addr(4), false));
     assert!(manager.request_emergency_stop(addr(4)));
     drain_pending_slot_transmissions(&mut manager);
     assert!(set_function(&mut manager, addr(4), 2, true));
@@ -421,7 +426,11 @@ fn dirty_function_prevents_replacement_and_consist_does_not_keep_removed_address
         LocoRequestResult::Replaced { removed, .. } if removed == addr(4)
     ));
     assert_eq!(
-        manager.set_consist_speed(1, ls(5, SpeedFormat::Speed28), Direction::Forward),
+        manager.set_consist_speed(
+            ConsistId::new(1),
+            ls(5, SpeedFormat::Speed28),
+            Direction::Forward
+        ),
         0
     );
 }
@@ -840,11 +849,15 @@ fn test_function_refresh_fairness_speed_then_function() {
 #[test]
 fn test_consist_base_direction_mapping() {
     let mut mgr = SlotManager::new();
-    assert!(mgr.create_consist(1));
-    assert!(mgr.add_to_consist(1, addr(3), false));
-    assert!(mgr.add_to_consist(1, addr(4), true));
+    assert!(mgr.create_consist(ConsistId::new(1)));
+    assert!(mgr.add_to_consist(ConsistId::new(1), addr(3), false));
+    assert!(mgr.add_to_consist(ConsistId::new(1), addr(4), true));
 
-    let updated = mgr.set_consist_speed(1, ls(18, SpeedFormat::Speed28), Direction::Forward);
+    let updated = mgr.set_consist_speed(
+        ConsistId::new(1),
+        ls(18, SpeedFormat::Speed28),
+        Direction::Forward,
+    );
     assert_eq!(updated, 2);
 
     let mut seen_fwd = false;
@@ -986,6 +999,21 @@ fn test_function_index_validation() {
     assert!(FunctionIndex::new(29).is_none());
     assert!(FunctionIndex::try_from(12).is_ok());
     assert!(FunctionIndex::try_from(40).is_err());
+}
+
+#[test]
+fn function_state_rejects_reserved_bits_unless_truncation_is_explicit() {
+    const VALID_BITS: u32 = 0x1fff_ffff;
+
+    assert_eq!(
+        FunctionState::from_bits(VALID_BITS),
+        Some(FunctionState::from_bits_truncate(VALID_BITS))
+    );
+    assert_eq!(FunctionState::from_bits(1 << 29), None);
+    assert_eq!(
+        FunctionState::from_bits_truncate(VALID_BITS | (1 << 31)).bits(),
+        VALID_BITS
+    );
 }
 
 #[test]

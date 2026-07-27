@@ -9,7 +9,6 @@ mod error;
 mod hardware;
 mod provisioning;
 mod readiness;
-mod runtime_channels;
 mod runtime_tasks;
 mod self_check;
 mod startup_sequence;
@@ -33,8 +32,6 @@ use startup_sequence::{send_decoder_reset_sequence, send_power_on_idle_burst};
 
 use defmt::{info, warn};
 use embassy_executor::{SpawnToken, Spawner};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Sender;
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_hal::gpio::{Input, Output};
 use esp_hal::timer::timg::TimerGroup;
@@ -46,7 +43,7 @@ use crate::control_buttons::{
     wait_for_boot_provisioning_override,
 };
 use crate::dcc::{
-    DccFrame, LocoRequestChannel, LocoResponseChannel, PomRailcomResultChannel, PomRequestChannel,
+    LocoRequestChannel, LocoResponseChannel, PomRailcomResultChannel, PomRequestChannel,
     PomResponseChannel, PomTxStartedChannel, SchedulerCommandChannel, pom_actor_task,
 };
 use crate::dcc_runtime::DccPacketChannel;
@@ -62,13 +59,14 @@ use crate::net::wifi_config::{
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
 use crate::railcom::uart_reader::RailcomUartRuntimeResultChannel;
+use crate::runtime_channels::{
+    BootReadyChannel, DccFrameSender, DisplayChannel, FaultEventChannel, NetStatusChannel,
+    SystemStatusChannel,
+};
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
 use crate::system_status::{BootStep, DisplayEvent, FaultEvent, SystemStatusEvent};
 use crate::track_output::TrackOutput;
-use runtime_channels::{
-    BootReadyChannel, DisplayChannel, FaultEventChannel, NetStatusChannel, SystemStatusChannel,
-};
 
 // Static channels/signals shared across Embassy tasks.
 static DCC_CHANNEL: StaticCell<DccPacketChannel> = StaticCell::new();
@@ -102,8 +100,6 @@ fn spawn_critical<S>(
         .map_err(|_| BootError::CriticalTaskSpawn(task))
 }
 
-type DccSender = Sender<'static, CriticalSectionRawMutex, DccFrame, 16>;
-
 struct WifiBootDecision {
     decision: ProvisioningDecision,
     credentials: Option<WifiCredentials>,
@@ -113,7 +109,7 @@ struct WifiBootDecision {
 }
 
 struct DccCore {
-    sender: DccSender,
+    sender: DccFrameSender,
     scheduler_commands: &'static SchedulerCommandChannel,
     track_output: TrackOutput,
 }

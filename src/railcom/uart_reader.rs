@@ -3,7 +3,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::uart::{Config, Parity, RxConfig, StopBits};
 
-use crate::railcom::pipeline::{RailcomChannel, RailcomRxResult};
+use crate::railcom::pipeline::{PacketSequence, RailcomChannel, RailcomRxResult};
 
 /// RailCom UART baud rate mandated by the protocol.
 pub const RAILCOM_UART_BAUDRATE: u32 = 250_000;
@@ -19,7 +19,7 @@ pub enum RailcomRxOutput {
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum RailcomUartWindowError {
     WindowTooLong {
-        packet_sequence: u32,
+        packet_sequence: PacketSequence,
         channel: RailcomChannel,
         provided_len: usize,
         max_len: usize,

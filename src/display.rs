@@ -3,11 +3,11 @@
 use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
 
 #[cfg(target_arch = "riscv32")]
+use crate::runtime_channels::{BootReadySender, DisplayReceiver, announce_ready};
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::BootReadyEvent;
+#[cfg(target_arch = "riscv32")]
 use defmt::warn;
-#[cfg(target_arch = "riscv32")]
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::{Receiver, Sender};
 #[cfg(target_arch = "riscv32")]
 use embassy_time::{Duration, Instant, with_timeout};
 #[cfg(target_arch = "riscv32")]
@@ -260,16 +260,18 @@ async fn render(
 #[cfg(target_arch = "riscv32")]
 pub async fn display_task(
     i2c: Option<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
-    receiver: Receiver<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, crate::system_status::BootReadyEvent, 9>,
+    receiver: DisplayReceiver,
+    ready_sender: BootReadySender,
 ) -> ! {
     let Some(i2c) = i2c else {
         warn!("display: disabled, draining display events");
-        ready_sender
-            .send(crate::system_status::BootReadyEvent::DisplayDegraded(
+        announce_ready(
+            ready_sender,
+            BootReadyEvent::DisplayDegraded(
                 crate::system_status::OptionalPeripheralInit::DisplayUnavailable,
-            ))
-            .await;
+            ),
+        )
+        .await;
         loop {
             let _ = receiver.receive().await;
         }
@@ -283,19 +285,19 @@ pub async fn display_task(
         .into_buffered_graphics_mode();
     if display.init().await.is_err() {
         warn!("display: SSD1306 init failed, draining display events");
-        ready_sender
-            .send(crate::system_status::BootReadyEvent::DisplayDegraded(
+        announce_ready(
+            ready_sender,
+            BootReadyEvent::DisplayDegraded(
                 crate::system_status::OptionalPeripheralInit::DisplayInit,
-            ))
-            .await;
+            ),
+        )
+        .await;
         loop {
             let _ = receiver.receive().await;
         }
     }
 
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::DisplayReady)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::DisplayReady).await;
 
     let mut model = DisplayModel::new();
     let mut throbber_frame: u8 = 0;

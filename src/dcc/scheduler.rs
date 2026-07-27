@@ -141,6 +141,65 @@ impl FunctionIndex {
     }
 }
 
+/// Identifies one software-managed locomotive consist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct ConsistId(u8);
+
+impl ConsistId {
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+/// State of locomotive functions F0 through F28.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct FunctionState(u32);
+
+impl FunctionState {
+    const VALID_BITS: u32 = 0x1fff_ffff;
+
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Build a function state when no bits above F28 are set.
+    #[must_use]
+    pub const fn from_bits(bits: u32) -> Option<Self> {
+        if bits & !Self::VALID_BITS == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Build a function state while explicitly discarding bits above F28.
+    #[must_use]
+    pub const fn from_bits_truncate(bits: u32) -> Self {
+        Self(bits & Self::VALID_BITS)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_enabled(self, function: FunctionIndex) -> bool {
+        self.0 & (1u32 << function.get()) != 0
+    }
+}
+
 /// Correlates one network locomotive request with its scheduler response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -185,7 +244,7 @@ pub struct LocoSnapshot {
     pub address: DccAddress,
     pub speed: LogicalSpeed,
     pub direction: Direction,
-    pub functions: u32,
+    pub functions: FunctionState,
 }
 
 /// Requested change to one locomotive function.
@@ -307,19 +366,19 @@ pub enum SchedulerCommand {
         packet: DccPacket,
     },
     CreateConsist {
-        id: u8,
+        id: ConsistId,
     },
     AddToConsist {
-        id: u8,
+        id: ConsistId,
         address: DccAddress,
         reverse_in_consist: bool,
     },
     RemoveFromConsist {
-        id: u8,
+        id: ConsistId,
         address: DccAddress,
     },
     SetConsistSpeed {
-        id: u8,
+        id: ConsistId,
         speed: LogicalSpeed,
         direction: Direction,
     },
