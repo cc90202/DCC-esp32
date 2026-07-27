@@ -22,7 +22,10 @@ use crate::dcc::scheduler::{RailcomSchedulerStats, railcom_scheduler_stats};
 #[cfg(target_arch = "riscv32")]
 use crate::railcom::loco_tracker::{RailcomLocoTrackerStats, railcom_loco_tracker_stats};
 #[cfg(target_arch = "riscv32")]
-use crate::railcom::pipeline::{RailcomRxStats, railcom_rx_stats};
+use crate::railcom::pipeline::{
+    RAILCOM_CHANNEL_COUNT, RailcomChannelStats, RailcomRxStats, railcom_rx_channel_stats,
+    railcom_rx_stats,
+};
 #[cfg(target_arch = "riscv32")]
 use crate::track_output::{TrackOutputStats, stats as track_output_stats};
 
@@ -80,6 +83,9 @@ pub struct RailcomDiagnostics {
     pub track_output: TrackOutputStats,
     #[cfg(target_arch = "riscv32")]
     pub rx: RailcomRxStats,
+    /// Per-channel receive counters, indexed by `RailcomChannel::index`.
+    #[cfg(target_arch = "riscv32")]
+    pub rx_channels: [RailcomChannelStats; RAILCOM_CHANNEL_COUNT],
     #[cfg(target_arch = "riscv32")]
     pub loco: RailcomLocoTrackerStats,
 }
@@ -94,6 +100,7 @@ pub fn diagnostics() -> RailcomDiagnostics {
         scheduler: railcom_scheduler_stats(),
         track_output: track_output_stats(),
         rx: railcom_rx_stats(),
+        rx_channels: railcom_rx_channel_stats(),
         loco: railcom_loco_tracker_stats(),
     }
 }

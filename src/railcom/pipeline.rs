@@ -1,6 +1,8 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 use heapless::Vec;
+
+use crate::diagnostics::diagnostic_counters;
 
 pub use crate::cutout::{PacketSequence, RailcomChannel};
 
@@ -9,32 +11,49 @@ use crate::railcom::parser::{
 };
 use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
-// Per-outcome counters. Every window lands in exactly one bucket:
-// empty, parsed, parse-error, or oversized (FIFO snapshot exceeded the max
-// captured byte count; this is an overflow condition, not detected UART
-// framing/glitch corruption).
-static RX_EMPTY_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_PARSE_OK_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_PARSE_ERR_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_OVERSIZED_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
-// Within-parsed counters (not mutually exclusive; derived from items).
-static RX_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_NACK_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_ADR_HIGH_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_ADR_LOW_COUNT: AtomicU32 = AtomicU32::new(0);
-// Capture-level overflow counter (dropped ring entries or windows too long).
-static RX_OVERFLOW_COUNT: AtomicU32 = AtomicU32::new(0);
-// Delivery counters between the RailCom dispatcher and the single-flight POM
-// actor. A full channel must remain observable without logging every window.
-static RX_POM_RESULT_FORWARDED_COUNT: AtomicU32 = AtomicU32::new(0);
-static RX_POM_RESULT_DROPPED_COUNT: AtomicU32 = AtomicU32::new(0);
+diagnostic_counters! {
+    static RAILCOM_RX: RailcomRxCounters;
+
+    /// Snapshot of RX pipeline counters.
+    ///
+    /// The persisted atomics cover only orthogonal outcomes; `rx_window_count`
+    /// and `rx_windows_with_bytes_count` are derived at snapshot time so the
+    /// totals stay exactly consistent with their parts regardless of ISR racing.
+    pub snapshot RailcomRxStats;
+
+    @test reset;
+
+    // Per-outcome counters. Every window lands in exactly one bucket.
+    rx_empty_window_count,
+    rx_parse_ok_count,
+    rx_parse_err_count,
+    rx_oversized_window_count,
+    // Within-parsed counters (not mutually exclusive; derived from items).
+    rx_ack_count,
+    rx_nack_count,
+    rx_adr_high_count,
+    rx_adr_low_count,
+    // Capture-level overflow counter (dropped ring entries or oversized windows).
+    rx_overflow_count,
+    // Delivery between the dispatcher and the single-flight POM actor.
+    pom_result_forwarded_count,
+    pom_result_dropped_count,
+}
 
 /// Number of RailCom receive channels tracked by per-channel diagnostics.
-const RAILCOM_CHANNEL_COUNT: usize = 2;
-static RX_CHANNEL_WINDOW_COUNTS: [AtomicU32; RAILCOM_CHANNEL_COUNT] =
-    [const { AtomicU32::new(0) }; RAILCOM_CHANNEL_COUNT];
-static RX_CHANNEL_EMPTY_COUNTS: [AtomicU32; RAILCOM_CHANNEL_COUNT] =
-    [const { AtomicU32::new(0) }; RAILCOM_CHANNEL_COUNT];
+pub const RAILCOM_CHANNEL_COUNT: usize = 2;
+
+diagnostic_counters! {
+    static RX_CHANNEL: [RailcomChannelCounters; RAILCOM_CHANNEL_COUNT];
+
+    /// Snapshot of one RailCom receive channel's counters.
+    pub snapshot RailcomChannelStats;
+
+    @test reset;
+
+    window_count,
+    empty_count,
+}
 
 pub(crate) const MAX_RAILCOM_WINDOW_BYTES: usize = 6;
 
@@ -130,31 +149,6 @@ impl RailcomRxResult {
     }
 }
 
-/// Snapshot of RX pipeline counters.
-///
-/// The persisted atomics cover only orthogonal outcomes; `rx_window_count`
-/// and `rx_windows_with_bytes_count` are derived at snapshot time so the
-/// totals stay exactly consistent with their parts regardless of ISR racing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct RailcomRxStats {
-    pub rx_empty_window_count: u32,
-    pub rx_parse_ok_count: u32,
-    pub rx_parse_err_count: u32,
-    pub rx_oversized_window_count: u32,
-    pub rx_ack_count: u32,
-    pub rx_nack_count: u32,
-    pub rx_adr_high_count: u32,
-    pub rx_adr_low_count: u32,
-    pub rx_overflow_count: u32,
-    pub pom_result_forwarded_count: u32,
-    pub pom_result_dropped_count: u32,
-    pub ch1_window_count: u32,
-    pub ch1_empty_count: u32,
-    pub ch2_window_count: u32,
-    pub ch2_empty_count: u32,
-}
-
 impl RailcomRxStats {
     #[must_use]
     pub fn rx_windows_with_bytes_count(&self) -> u32 {
@@ -169,76 +163,63 @@ impl RailcomRxStats {
 
 #[must_use]
 pub fn railcom_rx_stats() -> RailcomRxStats {
-    RailcomRxStats {
-        rx_empty_window_count: RX_EMPTY_WINDOW_COUNT.load(Ordering::Acquire),
-        rx_parse_ok_count: RX_PARSE_OK_COUNT.load(Ordering::Acquire),
-        rx_parse_err_count: RX_PARSE_ERR_COUNT.load(Ordering::Acquire),
-        rx_oversized_window_count: RX_OVERSIZED_WINDOW_COUNT.load(Ordering::Acquire),
-        rx_ack_count: RX_ACK_COUNT.load(Ordering::Acquire),
-        rx_nack_count: RX_NACK_COUNT.load(Ordering::Acquire),
-        rx_adr_high_count: RX_ADR_HIGH_COUNT.load(Ordering::Acquire),
-        rx_adr_low_count: RX_ADR_LOW_COUNT.load(Ordering::Acquire),
-        rx_overflow_count: RX_OVERFLOW_COUNT.load(Ordering::Acquire),
-        pom_result_forwarded_count: RX_POM_RESULT_FORWARDED_COUNT.load(Ordering::Acquire),
-        pom_result_dropped_count: RX_POM_RESULT_DROPPED_COUNT.load(Ordering::Acquire),
-        ch1_window_count: RX_CHANNEL_WINDOW_COUNTS[RailcomChannel::Channel1.index()]
-            .load(Ordering::Acquire),
-        ch1_empty_count: RX_CHANNEL_EMPTY_COUNTS[RailcomChannel::Channel1.index()]
-            .load(Ordering::Acquire),
-        ch2_window_count: RX_CHANNEL_WINDOW_COUNTS[RailcomChannel::Channel2.index()]
-            .load(Ordering::Acquire),
-        ch2_empty_count: RX_CHANNEL_EMPTY_COUNTS[RailcomChannel::Channel2.index()]
-            .load(Ordering::Acquire),
-    }
+    RAILCOM_RX.snapshot()
+}
+
+/// Per-channel receive counters, indexed by [`RailcomChannel::index`].
+#[must_use]
+pub fn railcom_rx_channel_stats() -> [RailcomChannelStats; RAILCOM_CHANNEL_COUNT] {
+    core::array::from_fn(|index| RX_CHANNEL[index].snapshot())
 }
 
 #[cfg(test)]
 pub fn reset_railcom_rx_stats() {
-    RX_EMPTY_WINDOW_COUNT.store(0, Ordering::Release);
-    RX_PARSE_OK_COUNT.store(0, Ordering::Release);
-    RX_PARSE_ERR_COUNT.store(0, Ordering::Release);
-    RX_OVERSIZED_WINDOW_COUNT.store(0, Ordering::Release);
-    RX_ACK_COUNT.store(0, Ordering::Release);
-    RX_NACK_COUNT.store(0, Ordering::Release);
-    RX_ADR_HIGH_COUNT.store(0, Ordering::Release);
-    RX_ADR_LOW_COUNT.store(0, Ordering::Release);
-    RX_OVERFLOW_COUNT.store(0, Ordering::Release);
-    RX_POM_RESULT_FORWARDED_COUNT.store(0, Ordering::Release);
-    RX_POM_RESULT_DROPPED_COUNT.store(0, Ordering::Release);
-    for index in 0..RAILCOM_CHANNEL_COUNT {
-        RX_CHANNEL_WINDOW_COUNTS[index].store(0, Ordering::Release);
-        RX_CHANNEL_EMPTY_COUNTS[index].store(0, Ordering::Release);
+    RAILCOM_RX.reset();
+    for channel in &RX_CHANNEL {
+        channel.reset();
     }
 }
 
 pub fn record_oversized_window() {
-    RX_OVERSIZED_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
+    RAILCOM_RX
+        .rx_oversized_window_count
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_rx_overflows(count: u32) {
-    RX_OVERFLOW_COUNT.fetch_add(count, Ordering::Relaxed);
+    RAILCOM_RX
+        .rx_overflow_count
+        .fetch_add(count, Ordering::Relaxed);
 }
 
 #[cfg(any(target_arch = "riscv32", test))]
 pub(crate) fn record_pom_result_forwarded() {
-    RX_POM_RESULT_FORWARDED_COUNT.fetch_add(1, Ordering::Relaxed);
+    RAILCOM_RX
+        .pom_result_forwarded_count
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(any(target_arch = "riscv32", test))]
 pub(crate) fn record_pom_result_dropped() {
-    RX_POM_RESULT_DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
+    RAILCOM_RX
+        .pom_result_dropped_count
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 fn record_channel_window(channel: RailcomChannel) {
-    RX_CHANNEL_WINDOW_COUNTS[channel.index()].fetch_add(1, Ordering::Relaxed);
+    RX_CHANNEL[channel.index()]
+        .window_count
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 fn record_channel_empty(channel: RailcomChannel) {
-    RX_CHANNEL_EMPTY_COUNTS[channel.index()].fetch_add(1, Ordering::Relaxed);
+    RX_CHANNEL[channel.index()]
+        .empty_count
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 fn parsed_result(window: RailcomRxWindow, parsed: RailcomParseResult) -> RailcomRxResult {
-    RX_PARSE_OK_COUNT.fetch_add(1, Ordering::Relaxed);
+    RAILCOM_RX.rx_parse_ok_count.fetch_add(1, Ordering::Relaxed);
     record_parsed_items(parsed.items.as_slice());
 
     RailcomRxResult {
@@ -257,7 +238,9 @@ fn parsed_result(window: RailcomRxWindow, parsed: RailcomParseResult) -> Railcom
 pub fn process_rx_window(window: RailcomRxWindow) -> RailcomRxResult {
     record_channel_window(window.channel);
     if window.is_empty() {
-        RX_EMPTY_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
+        RAILCOM_RX
+            .rx_empty_window_count
+            .fetch_add(1, Ordering::Relaxed);
         record_channel_empty(window.channel);
         return RailcomRxResult {
             window,
@@ -274,7 +257,9 @@ pub fn process_rx_window(window: RailcomRxWindow) -> RailcomRxResult {
     match parse_fn(window.raw_slice()) {
         Ok(parsed) => parsed_result(window, parsed),
         Err(err) => {
-            RX_PARSE_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
+            RAILCOM_RX
+                .rx_parse_err_count
+                .fetch_add(1, Ordering::Relaxed);
             RailcomRxResult {
                 window,
                 outcome: RailcomRxOutcome::ParseError(err),
@@ -288,16 +273,16 @@ fn record_parsed_items(items: &[RailcomItem]) {
     for item in items {
         match item {
             RailcomItem::Ack => {
-                RX_ACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                RAILCOM_RX.rx_ack_count.fetch_add(1, Ordering::Relaxed);
             }
             RailcomItem::Nack => {
-                RX_NACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                RAILCOM_RX.rx_nack_count.fetch_add(1, Ordering::Relaxed);
             }
             RailcomItem::Datagram(RailcomDatagram::AdrHigh(_)) => {
-                RX_ADR_HIGH_COUNT.fetch_add(1, Ordering::Relaxed);
+                RAILCOM_RX.rx_adr_high_count.fetch_add(1, Ordering::Relaxed);
             }
             RailcomItem::Datagram(RailcomDatagram::AdrLow(_)) => {
-                RX_ADR_LOW_COUNT.fetch_add(1, Ordering::Relaxed);
+                RAILCOM_RX.rx_adr_low_count.fetch_add(1, Ordering::Relaxed);
             }
             RailcomItem::Datagram(_) => {}
         }
@@ -428,7 +413,8 @@ mod tests {
         assert_eq!(stats.rx_windows_with_bytes_count(), 1);
         assert_eq!(stats.rx_parse_ok_count, 1);
         assert_eq!(stats.rx_parse_err_count, 0);
-        assert_eq!(stats.ch1_window_count, 1);
+        let channels = railcom_rx_channel_stats();
+        assert_eq!(channels[RailcomChannel::Channel1.index()].window_count, 1);
         assert_eq!(stats.rx_adr_low_count, 1);
     }
 
@@ -444,7 +430,8 @@ mod tests {
         let stats = railcom_rx_stats();
         assert_eq!(stats.rx_parse_ok_count, 1);
         assert_eq!(stats.rx_parse_err_count, 0);
-        assert_eq!(stats.ch1_window_count, 1);
+        let channels = railcom_rx_channel_stats();
+        assert_eq!(channels[RailcomChannel::Channel1.index()].window_count, 1);
         assert_eq!(stats.rx_ack_count, 1);
     }
 
