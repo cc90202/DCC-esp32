@@ -30,6 +30,7 @@ use crate::cutout::timing::{
 use crate::cutout::{CutoutMode, PacketSequence, RailcomChannel};
 use crate::dcc::{DccAddress, PackedAddressFlags, PomRequestId};
 use crate::diagnostics::diagnostic_counters;
+use crate::seqlock::SeqSlot;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,14 +86,8 @@ diagnostic_counters! {
 }
 
 pub(crate) const CUTOUT_EVENT_RING_CAPACITY: usize = 32;
-static CUTOUT_EVENT_SEQUENCES: [AtomicU32; CUTOUT_EVENT_RING_CAPACITY] =
-    [const { AtomicU32::new(0) }; CUTOUT_EVENT_RING_CAPACITY];
-static CUTOUT_EVENT_METADATA: [AtomicU32; CUTOUT_EVENT_RING_CAPACITY] =
-    [const { AtomicU32::new(0) }; CUTOUT_EVENT_RING_CAPACITY];
-static CUTOUT_EVENT_POM_REQUEST_IDS: [AtomicU32; CUTOUT_EVENT_RING_CAPACITY] =
-    [const { AtomicU32::new(0) }; CUTOUT_EVENT_RING_CAPACITY];
-static CUTOUT_EVENT_GENERATIONS: [AtomicU32; CUTOUT_EVENT_RING_CAPACITY] =
-    [const { AtomicU32::new(0) }; CUTOUT_EVENT_RING_CAPACITY];
+static CUTOUT_EVENT_SLOTS: [SeqSlot<3>; CUTOUT_EVENT_RING_CAPACITY] =
+    [const { SeqSlot::new() }; CUTOUT_EVENT_RING_CAPACITY];
 static CUTOUT_EVENT_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Ring size for the packet_sequence -> RailCom metadata side channel.
@@ -103,14 +98,8 @@ static CUTOUT_EVENT_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 // scheduler cadence that is on the order of seconds of slack, which is ample
 // for an Embassy task woken by a channel notification rather than polling.
 const RAILCOM_PACKET_META_CAPACITY: usize = 64;
-static RAILCOM_PACKET_META_SEQUENCES: [AtomicU32; RAILCOM_PACKET_META_CAPACITY] =
-    [const { AtomicU32::new(0) }; RAILCOM_PACKET_META_CAPACITY];
-static RAILCOM_PACKET_META_WORDS: [AtomicU32; RAILCOM_PACKET_META_CAPACITY] =
-    [const { AtomicU32::new(0) }; RAILCOM_PACKET_META_CAPACITY];
-static RAILCOM_PACKET_META_POM_REQUEST_IDS: [AtomicU32; RAILCOM_PACKET_META_CAPACITY] =
-    [const { AtomicU32::new(0) }; RAILCOM_PACKET_META_CAPACITY];
-static RAILCOM_PACKET_META_GENERATIONS: [AtomicU32; RAILCOM_PACKET_META_CAPACITY] =
-    [const { AtomicU32::new(0) }; RAILCOM_PACKET_META_CAPACITY];
+static RAILCOM_PACKET_META_SLOTS: [SeqSlot<3>; RAILCOM_PACKET_META_CAPACITY] =
+    [const { SeqSlot::new() }; RAILCOM_PACKET_META_CAPACITY];
 
 #[cfg(target_arch = "riscv32")]
 type CutoutEventNotifyChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, u8, 1>;
@@ -475,11 +464,9 @@ fn close_stale_window_from_isr(state: CutoutState) {
     }
 }
 
-// Per-slot odd/even generation publication. The packet sequence is payload,
-// not an invalidation sentinel: zero is a valid value after the u32 counter
-// wraps. Generation zero means that the slot has never been published; an odd
-// generation marks an update in progress. The reader accepts a snapshot only
-// when the same non-zero even generation surrounds the payload reads.
+// The packet sequence remains payload, not an invalidation sentinel: zero is a
+// valid value after the u32 counter wraps. SeqSlot owns the odd/even generation
+// protocol and all associated memory orderings.
 #[inline(always)]
 fn record_railcom_packet_metadata_from_isr(
     packet_sequence: PacketSequence,
@@ -488,21 +475,11 @@ fn record_railcom_packet_metadata_from_isr(
 ) {
     let packet_sequence = packet_sequence.value();
     let slot = packet_sequence as usize % RAILCOM_PACKET_META_CAPACITY;
-    let updating_generation = RAILCOM_PACKET_META_GENERATIONS[slot]
-        .load(Ordering::Relaxed)
-        .wrapping_add(1)
-        | 1;
-    RAILCOM_PACKET_META_GENERATIONS[slot].store(updating_generation, Ordering::SeqCst);
-    RAILCOM_PACKET_META_SEQUENCES[slot].store(packet_sequence, Ordering::Relaxed);
-    RAILCOM_PACKET_META_WORDS[slot].store(metadata_raw, Ordering::Relaxed);
-    RAILCOM_PACKET_META_POM_REQUEST_IDS[slot].store(pom_request_id_raw, Ordering::Relaxed);
-    RAILCOM_PACKET_META_GENERATIONS[slot]
-        .store(updating_generation.wrapping_add(1), Ordering::SeqCst);
+    RAILCOM_PACKET_META_SLOTS[slot].publish([packet_sequence, metadata_raw, pom_request_id_raw]);
 }
 
-// Per-slot odd/even generation publication. This keeps the packet sequence a
-// pure payload value (including sequence zero after u32 wraparound) and lets
-// the reader reject a slot overwritten while it was being copied.
+// SeqSlot keeps the packet sequence a pure payload value (including zero after
+// wraparound) and rejects a slot overwritten while it is being copied.
 #[inline(always)]
 fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
     let write_count = CUTOUT_EVENT_WRITE_COUNT.load(Ordering::Relaxed);
@@ -515,18 +492,11 @@ fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
         pom_request_id,
     } = event;
     let metadata = PackedRailcomPacketMetadata::new(target_address, cutout, pom_request_id);
-    let updating_generation = CUTOUT_EVENT_GENERATIONS[slot]
-        .load(Ordering::Relaxed)
-        .wrapping_add(1)
-        | 1;
-    CUTOUT_EVENT_GENERATIONS[slot].store(updating_generation, Ordering::SeqCst);
-    CUTOUT_EVENT_SEQUENCES[slot].store(packet_sequence.value(), Ordering::Relaxed);
-    CUTOUT_EVENT_METADATA[slot].store(metadata.raw(), Ordering::Relaxed);
-    CUTOUT_EVENT_POM_REQUEST_IDS[slot].store(
+    CUTOUT_EVENT_SLOTS[slot].publish([
+        packet_sequence.value(),
+        metadata.raw(),
         pom_request_id.map_or(0, PomRequestId::value),
-        Ordering::Relaxed,
-    );
-    CUTOUT_EVENT_GENERATIONS[slot].store(updating_generation.wrapping_add(1), Ordering::SeqCst);
+    ]);
 
     CUTOUT_EVENT_WRITE_COUNT.store(write_count.wrapping_add(1), Ordering::Release);
 
@@ -630,28 +600,14 @@ pub fn stats() -> TrackOutputStats {
     CUTOUT.snapshot()
 }
 
-// Reader half of the odd/even generation publication documented on
-// `record_railcom_packet_metadata_from_isr` above.
 #[must_use]
 pub fn railcom_packet_metadata(packet_sequence: PacketSequence) -> Option<RailcomPacketMetadata> {
     let packet_sequence = packet_sequence.value();
     let slot = packet_sequence as usize % RAILCOM_PACKET_META_CAPACITY;
-    let generation_before = RAILCOM_PACKET_META_GENERATIONS[slot].load(Ordering::SeqCst);
-    if generation_before & 1 != 0 {
-        return None;
-    }
-
-    let recorded_sequence = RAILCOM_PACKET_META_SEQUENCES[slot].load(Ordering::Acquire);
-    let metadata = PackedRailcomPacketMetadata::from_raw(
-        RAILCOM_PACKET_META_WORDS[slot].load(Ordering::Acquire),
-    );
-    let pom_request_id = RAILCOM_PACKET_META_POM_REQUEST_IDS[slot].load(Ordering::Acquire);
-    let generation_after = RAILCOM_PACKET_META_GENERATIONS[slot].load(Ordering::SeqCst);
-    (generation_before == generation_after
-        && generation_after != 0
-        && generation_after & 1 == 0
-        && recorded_sequence == packet_sequence)
-        .then(|| metadata.public_metadata(pom_request_id))
+    let [recorded_sequence, metadata_raw, pom_request_id] =
+        RAILCOM_PACKET_META_SLOTS[slot].snapshot()?;
+    let metadata = PackedRailcomPacketMetadata::from_raw(metadata_raw);
+    (recorded_sequence == packet_sequence).then(|| metadata.public_metadata(pom_request_id))
 }
 
 /// Drain cutout runtime events observed since `next_read`.
@@ -680,28 +636,17 @@ pub fn drain_cutout_runtime_events(
         .min(CUTOUT_EVENT_RING_CAPACITY as u32);
     while remaining > 0 && out.len() < CUTOUT_EVENT_RING_CAPACITY {
         let slot = *next_read as usize % CUTOUT_EVENT_RING_CAPACITY;
-        let generation_before = CUTOUT_EVENT_GENERATIONS[slot].load(Ordering::SeqCst);
-        if generation_before & 1 != 0 {
+        let Some([sequence, metadata_raw, pom_request_id]) = CUTOUT_EVENT_SLOTS[slot].snapshot()
+        else {
             CUTOUT
                 .cutout_event_dropped_count
                 .fetch_add(1, Ordering::Relaxed);
             *next_read = next_read.wrapping_add(1);
             remaining -= 1;
             continue;
-        }
-        let sequence = CUTOUT_EVENT_SEQUENCES[slot].load(Ordering::Acquire);
-        let metadata = PackedRailcomPacketMetadata::from_raw(
-            CUTOUT_EVENT_METADATA[slot].load(Ordering::Acquire),
-        );
-        let pom_request_id = CUTOUT_EVENT_POM_REQUEST_IDS[slot].load(Ordering::Acquire);
-        let generation_after = CUTOUT_EVENT_GENERATIONS[slot].load(Ordering::SeqCst);
-        if generation_before == generation_after && generation_after & 1 == 0 {
-            let _ = out.push(metadata.runtime_event(PacketSequence::new(sequence), pom_request_id));
-        } else {
-            CUTOUT
-                .cutout_event_dropped_count
-                .fetch_add(1, Ordering::Relaxed);
-        }
+        };
+        let metadata = PackedRailcomPacketMetadata::from_raw(metadata_raw);
+        let _ = out.push(metadata.runtime_event(PacketSequence::new(sequence), pom_request_id));
         *next_read = next_read.wrapping_add(1);
         remaining -= 1;
     }
