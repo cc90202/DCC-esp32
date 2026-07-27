@@ -1,7 +1,7 @@
 //! Z21-side POM (Programming on Main) request/response client.
 //!
 //! Talks to the POM actor task (`dcc::cv::pom_actor_task`) over the
-//! single-slot request/response channels threaded through [`Z21Ctx`].
+//! single-slot request/response channels threaded through [`PomCtx`].
 //!
 //! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
@@ -9,8 +9,6 @@
 use core::cell::Cell;
 
 use defmt::warn;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Instant, with_timeout};
 
 use crate::application::LocoSlots;
@@ -21,7 +19,8 @@ use crate::application::pom::{
 use crate::dcc::cv::drain_channel;
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
-use crate::net::z21_context::Z21Ctx;
+use crate::net::z21_context::PomCtx;
+use crate::runtime_channels::{PomRequestSender, PomResponseReceiver};
 use crate::z21 as z21_proto;
 
 // Covers the single bounded POM actor attempt: TX-start waits + the
@@ -40,8 +39,8 @@ fn next_pom_request_id(counter: &Cell<u32>) -> PomRequestId {
 }
 
 pub(super) async fn request_pom(
-    pom_request_sender: &Sender<'static, CriticalSectionRawMutex, PomRequest, 1>,
-    pom_response_receiver: &Receiver<'static, CriticalSectionRawMutex, PomResponse, 1>,
+    pom_request_sender: &PomRequestSender,
+    pom_response_receiver: &PomResponseReceiver,
     next_request_id: &Cell<u32>,
     build_request: impl FnOnce(PomRequestId) -> PomRequest,
 ) -> Option<PomResponse> {
@@ -81,7 +80,7 @@ pub(super) async fn request_pom(
 
 pub(super) async fn handle_cv_pom_write(
     out: &mut [u8],
-    ctx: &Z21Ctx<'_>,
+    ctx: &PomCtx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
     value: u8,
@@ -97,9 +96,9 @@ pub(super) async fn handle_cv_pom_write(
 
     let reply = classify_reply(
         request_pom(
-            ctx.pom_request_sender,
-            ctx.pom_response_receiver,
-            ctx.next_pom_request_id,
+            ctx.request_sender,
+            ctx.response_receiver,
+            ctx.next_request_id,
             |request_id| PomRequest::Write {
                 request_id,
                 address: plan.address,
@@ -126,7 +125,7 @@ pub(super) async fn handle_cv_pom_write(
 pub(super) async fn handle_cv_pom_read(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
-    ctx: &Z21Ctx<'_>,
+    ctx: &PomCtx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
 ) -> usize {
@@ -135,9 +134,9 @@ pub(super) async fn handle_cv_pom_read(
         Err(error) => return reject_admission(out, ctx, address, cv, "read", error),
     };
     let refresh = request_loco(
-        ctx.loco_request_sender,
-        ctx.loco_response_receiver,
-        ctx.next_loco_request_id,
+        ctx.loco.request_sender,
+        ctx.loco.response_receiver,
+        ctx.loco.next_request_id,
         plan.refresh_request,
     )
     .await;
@@ -177,9 +176,9 @@ pub(super) async fn handle_cv_pom_read(
 
     let reply = classify_reply(
         request_pom(
-            ctx.pom_request_sender,
-            ctx.pom_response_receiver,
-            ctx.next_pom_request_id,
+            ctx.request_sender,
+            ctx.response_receiver,
+            ctx.next_request_id,
             |request_id| PomRequest::Read {
                 request_id,
                 address: plan.address,
@@ -212,7 +211,7 @@ fn classify_reply(response: Option<PomResponse>) -> PomReply {
 
 fn reject_admission(
     out: &mut [u8],
-    ctx: &Z21Ctx<'_>,
+    ctx: &PomCtx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
     operation: &str,

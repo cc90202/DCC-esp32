@@ -4,7 +4,7 @@ use crate::application::StatusModel;
 use crate::application::track_control::{
     TrackPowerFeedback, TrackPowerRequest, TrackStatus, decide_track_power,
 };
-use crate::net::z21_context::Z21Ctx;
+use crate::net::z21_context::TrackCtx;
 use crate::z21 as z21_proto;
 
 pub(super) fn encode_current_system_state(status_model: &StatusModel, out: &mut [u8]) -> usize {
@@ -28,7 +28,7 @@ pub(super) fn encode_current_status(status_model: &StatusModel, out: &mut [u8]) 
 pub(super) async fn apply_power_request(
     request: TrackPowerRequest,
     out: &mut [u8],
-    ctx: &Z21Ctx<'_>,
+    ctx: &TrackCtx<'_>,
 ) -> usize {
     let decision = decide_track_power(request);
     if decision.disable_output_immediately {

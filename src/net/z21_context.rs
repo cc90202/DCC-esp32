@@ -5,30 +5,41 @@
 
 use core::cell::Cell;
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
-
 use crate::application::StatusModel;
-use crate::dcc::{LocoRequestMessage, LocoResponse, PomRequest, PomResponse, SchedulerCommand};
-use crate::system_status::FaultEvent;
+use crate::runtime_channels::{
+    FaultEventSender, LocoRequestSender, LocoResponseReceiver, PomRequestSender,
+    PomResponseReceiver, SchedulerCommandSender,
+};
 
-/// Shared dependencies threaded through the Z21 command handlers.
-///
-/// Per-call buffers and locomotive slots remain explicit because handlers
-/// mutate them for each incoming frame.
-pub(super) struct Z21Ctx<'a> {
-    pub(super) scheduler_sender: &'a Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    pub(super) fault_sender: &'a Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
+/// Dependencies used only by track-power and status handlers.
+pub(super) struct TrackCtx<'a> {
+    pub(super) fault_sender: &'a FaultEventSender,
     pub(super) status_model: &'a StatusModel,
-    pub(super) pom_request_sender: &'a Sender<'static, CriticalSectionRawMutex, PomRequest, 1>,
-    pub(super) pom_response_receiver:
-        &'a Receiver<'static, CriticalSectionRawMutex, PomResponse, 1>,
-    /// Local counter: the network task is the sole POM request producer.
-    pub(super) next_pom_request_id: &'a Cell<u32>,
-    pub(super) loco_request_sender:
-        &'a Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
-    pub(super) loco_response_receiver:
-        &'a Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
+}
+
+/// Dependencies used only by locomotive handlers.
+pub(super) struct LocoCtx<'a> {
+    pub(super) status_model: &'a StatusModel,
+    pub(super) request_sender: &'a LocoRequestSender,
+    pub(super) response_receiver: &'a LocoResponseReceiver,
     /// Local counter: the network task is the sole locomotive request producer.
-    pub(super) next_loco_request_id: &'a Cell<u32>,
+    pub(super) next_request_id: &'a Cell<u32>,
+}
+
+/// Dependencies used only by Programming-on-Main handlers.
+pub(super) struct PomCtx<'a> {
+    pub(super) scheduler_sender: &'a SchedulerCommandSender,
+    pub(super) status_model: &'a StatusModel,
+    pub(super) request_sender: &'a PomRequestSender,
+    pub(super) response_receiver: &'a PomResponseReceiver,
+    /// Local counter: the network task is the sole POM request producer.
+    pub(super) next_request_id: &'a Cell<u32>,
+    pub(super) loco: LocoCtx<'a>,
+}
+
+/// Family-specific dependencies used by the Z21 router.
+pub(super) struct Z21Ctx<'a> {
+    pub(super) track: TrackCtx<'a>,
+    pub(super) loco: LocoCtx<'a>,
+    pub(super) pom: PomCtx<'a>,
 }

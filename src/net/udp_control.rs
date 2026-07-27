@@ -24,7 +24,7 @@ use crate::application::client_safety::ClientSafetyPolicy;
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
 use crate::config::Z21_KEEPALIVE_TIMEOUT_MS;
 use crate::net::wifi_config::WifiCredentials;
-use crate::net::z21_context::Z21Ctx;
+use crate::net::z21_context::{LocoCtx, PomCtx, TrackCtx, Z21Ctx};
 use crate::net::z21_dispatch::{encode_system_state, handle_packet};
 use crate::runtime_channels::{
     BootReadySender, DisplaySender, FaultEventSender, LocoRequestSender, LocoResponseReceiver,
@@ -181,15 +181,29 @@ pub async fn net_task(
                 // A Z21 UDP datagram may contain multiple concatenated frames.
                 // Process each frame and send its response individually.
                 let ctx = Z21Ctx {
-                    scheduler_sender: &scheduler_sender,
-                    fault_sender: &fault_sender,
-                    status_model: &status_model,
-                    pom_request_sender: &pom_request_sender,
-                    pom_response_receiver: &pom_response_receiver,
-                    next_pom_request_id: &next_pom_request_id,
-                    loco_request_sender: &loco_request_sender,
-                    loco_response_receiver: &loco_response_receiver,
-                    next_loco_request_id: &next_loco_request_id,
+                    track: TrackCtx {
+                        fault_sender: &fault_sender,
+                        status_model: &status_model,
+                    },
+                    loco: LocoCtx {
+                        status_model: &status_model,
+                        request_sender: &loco_request_sender,
+                        response_receiver: &loco_response_receiver,
+                        next_request_id: &next_loco_request_id,
+                    },
+                    pom: PomCtx {
+                        scheduler_sender: &scheduler_sender,
+                        status_model: &status_model,
+                        request_sender: &pom_request_sender,
+                        response_receiver: &pom_response_receiver,
+                        next_request_id: &next_pom_request_id,
+                        loco: LocoCtx {
+                            status_model: &status_model,
+                            request_sender: &loco_request_sender,
+                            response_receiver: &loco_response_receiver,
+                            next_request_id: &next_loco_request_id,
+                        },
+                    },
                 };
                 for frame in z21_proto::iter_frames(&recv_buf[..n]) {
                     let resp_len = handle_packet(frame, &mut loco_slots, &mut send_buf, &ctx).await;

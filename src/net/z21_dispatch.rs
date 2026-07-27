@@ -61,45 +61,54 @@ async fn route_command(
         Z21Command::GetFirmwareVersion => device::encode_firmware_version(out),
         Z21Command::GetTurnoutInfo { address } => device::encode_unknown_turnout(address, out),
 
-        Z21Command::GetSystemState => track::encode_current_system_state(ctx.status_model, out),
+        Z21Command::GetSystemState => {
+            track::encode_current_system_state(ctx.track.status_model, out)
+        }
         // Z21 apps expect an immediate state push after subscription.
-        Z21Command::SetBroadcastFlags => track::encode_current_system_state(ctx.status_model, out),
-        Z21Command::GetStatus => track::encode_current_status(ctx.status_model, out),
+        Z21Command::SetBroadcastFlags => {
+            track::encode_current_system_state(ctx.track.status_model, out)
+        }
+        Z21Command::GetStatus => track::encode_current_status(ctx.track.status_model, out),
         Z21Command::SetTrackPowerOn => {
-            track::apply_power_request(TrackPowerRequest::Enable, out, ctx).await
+            track::apply_power_request(TrackPowerRequest::Enable, out, &ctx.track).await
         }
         Z21Command::SetTrackPowerOff => {
-            track::apply_power_request(TrackPowerRequest::Disable, out, ctx).await
+            track::apply_power_request(TrackPowerRequest::Disable, out, &ctx.track).await
         }
         Z21Command::SetStop => {
-            track::apply_power_request(TrackPowerRequest::EmergencyStop, out, ctx).await
+            track::apply_power_request(TrackPowerRequest::EmergencyStop, out, &ctx.track).await
         }
 
         Z21Command::SetLocoEstop { address } => {
-            locomotive::emergency_stop(loco_slots, out, ctx, address).await
+            locomotive::emergency_stop(loco_slots, out, &ctx.loco, address).await
         }
         Z21Command::GetLocoMode { address } => locomotive::encode_mode(address, out),
         Z21Command::SetLocoMode { address, mode } => locomotive::set_mode(address, mode),
         Z21Command::GetLocoInfo { address } => {
-            locomotive::get_info(loco_slots, out, ctx, address).await
+            locomotive::get_info(loco_slots, out, &ctx.loco, address).await
         }
         Z21Command::SetLocoDrive {
             address,
             speed,
             direction,
             format,
-        } => locomotive::set_drive(loco_slots, out, ctx, address, speed, direction, format).await,
+        } => {
+            locomotive::set_drive(
+                loco_slots, out, &ctx.loco, address, speed, direction, format,
+            )
+            .await
+        }
         Z21Command::SetLocoFunction {
             address,
             function,
             action,
-        } => locomotive::set_function(loco_slots, out, ctx, address, function, action).await,
+        } => locomotive::set_function(loco_slots, out, &ctx.loco, address, function, action).await,
 
         Z21Command::CvPomWriteByte { address, cv, value } => {
-            handle_cv_pom_write(out, ctx, address, cv, value).await
+            handle_cv_pom_write(out, &ctx.pom, address, cv, value).await
         }
         Z21Command::CvPomReadByte { address, cv } => {
-            handle_cv_pom_read(loco_slots, out, ctx, address, cv).await
+            handle_cv_pom_read(loco_slots, out, &ctx.pom, address, cv).await
         }
 
         Z21Command::RailcomGetData {
