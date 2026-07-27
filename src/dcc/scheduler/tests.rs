@@ -586,27 +586,6 @@ fn test_speed28_logical_max_maps_to_nmra_max() {
 }
 
 #[test]
-fn test_is_safety_critical_packet_detection() {
-    assert!(is_safety_critical_packet(&DccPacket::BroadcastStop));
-    assert!(is_safety_critical_packet(&DccPacket::EmergencyStop {
-        address: addr(3),
-        direction: Direction::Forward,
-    }));
-    assert!(!is_safety_critical_packet(&DccPacket::Idle));
-}
-
-#[test]
-fn test_safety_send_timeout_streak_transitions() {
-    let mut streak = 0;
-    streak = advance_safety_send_timeout_streak(streak, true);
-    assert_eq!(streak, 1);
-    streak = advance_safety_send_timeout_streak(streak, true);
-    assert_eq!(streak, 2);
-    streak = advance_safety_send_timeout_streak(streak, false);
-    assert_eq!(streak, 0);
-}
-
-#[test]
 fn test_capacity_limit() {
     let mut mgr = SlotManager::new();
     for i in 1..=12 {

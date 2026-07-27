@@ -706,11 +706,6 @@ impl DccPacket {
         DccPacket::Idle
     }
 
-    /// Helper function for tests - create a reset packet
-    pub fn reset() -> Self {
-        DccPacket::Reset
-    }
-
     /// Create a 28-step speed packet.
     ///
     /// Returns `None` if speed > 29 (NMRA S-9.2 §2.3.2.3).
