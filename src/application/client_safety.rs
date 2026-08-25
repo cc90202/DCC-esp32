@@ -276,6 +276,58 @@ mod tests {
         assert_eq!(policy.next_deadline_ms(), Some(30_100));
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct ControllerEndpoint {
+        address: u8,
+        port: u16,
+    }
+
+    impl PartialEq for ControllerEndpoint {
+        fn eq(&self, other: &Self) -> bool {
+            self.address == other.address
+        }
+    }
+
+    impl Eq for ControllerEndpoint {}
+
+    #[test]
+    fn one_controller_can_rotate_its_udp_source_port() {
+        let mut policy = ClientSafetyPolicy::new(TIMEOUT_MS);
+        let first = ControllerEndpoint {
+            address: 7,
+            port: 30_001,
+        };
+        let rotated_port = ControllerEndpoint {
+            address: 7,
+            port: 30_002,
+        };
+
+        let LeaseDecision::Acquired(permit) = policy.handle(
+            LeaseRequest {
+                client: first,
+                activity: LeaseActivity::Acquire,
+                observed_at_ms: 100,
+            },
+            100,
+        ) else {
+            panic!("expected acquisition");
+        };
+        let LeaseDecision::Renewed(renewed) = policy.handle(
+            LeaseRequest {
+                client: rotated_port,
+                activity: LeaseActivity::Acquire,
+                observed_at_ms: 200,
+            },
+            200,
+        ) else {
+            panic!("expected same controller to renew after port rotation");
+        };
+
+        assert_ne!(first.port, rotated_port.port);
+        assert_eq!(permit.epoch(), renewed.epoch());
+        assert_eq!(renewed.expires_at_ms(), 30_200);
+    }
+
     #[test]
     fn owner_query_renews_same_epoch() {
         let mut policy = ClientSafetyPolicy::new(TIMEOUT_MS);

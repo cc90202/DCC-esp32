@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{Config, IpEndpoint, Stack, StackResources};
+use embassy_net::{Config, IpAddress, IpEndpoint, Stack, StackResources};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::Instant;
@@ -74,9 +74,9 @@ pub(crate) struct NetTaskChannels {
     pub(crate) loco_request_sender: LocoRequestSender,
     pub(crate) loco_response_receiver: LocoResponseReceiver,
     pub(crate) lease_request_sender:
-        Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpEndpoint>, 1>,
+        Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
     pub(crate) lease_response_receiver:
-        Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpEndpoint>, 1>,
+        Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
     pub(crate) lease_trip_receiver:
         Receiver<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
 }
@@ -88,9 +88,9 @@ struct Z21LoopIo {
     pom_response_receiver: PomResponseReceiver,
     loco_request_sender: LocoRequestSender,
     loco_response_receiver: LocoResponseReceiver,
-    lease_request_sender: Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpEndpoint>, 1>,
+    lease_request_sender: Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
     lease_response_receiver:
-        Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpEndpoint>, 1>,
+        Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
     lease_trip_receiver: Receiver<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
 }
 
@@ -365,14 +365,16 @@ async fn run_z21_loop(mut socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
                 broadcast_status(&mut socket, event, &mut send_buf, &mut state).await;
             }
             Either3::Third(trip) => {
-                if state.lease_owner == Some(trip.client) {
+                let owner_endpoint = state.lease_owner.filter(|owner| owner.addr == trip.client);
+                if owner_endpoint.is_some() {
                     state.lease_owner = None;
                 }
                 state.scheduler_epoch = None;
                 let response_len = encoded_len(z21_proto::encode_bc_stopped(&mut send_buf));
-                if response_len > 0
+                if let Some(endpoint) = owner_endpoint
+                    && response_len > 0
                     && socket
-                        .send_to(&send_buf[..response_len], trip.client)
+                        .send_to(&send_buf[..response_len], endpoint)
                         .await
                         .is_err()
                 {
@@ -444,8 +446,8 @@ async fn authorize_command(
     classification: LeaseClassification,
     endpoint: IpEndpoint,
     observed_at_ms: u64,
-    request_sender: &Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpEndpoint>, 1>,
-    response_receiver: &Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpEndpoint>, 1>,
+    request_sender: &Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
+    response_receiver: &Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
 ) -> CommandAuthorization {
     let LeaseClassification::Activity(activity) = classification else {
         return CommandAuthorization {
@@ -457,7 +459,10 @@ async fn authorize_command(
     };
     request_sender
         .send(LeaseRequest {
-            client: endpoint,
+            // Mobile Z21 clients commonly rotate their UDP source port. The
+            // controller lease is tied to the host address; the latest full
+            // endpoint is retained separately for replies and broadcasts.
+            client: endpoint.addr,
             activity,
             observed_at_ms,
         })
