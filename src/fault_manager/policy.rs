@@ -101,6 +101,7 @@ impl FaultPolicy {
                 status_effects[0] = Some(StatusEffect::EstopActive);
             }
             (FaultManagerState::EstopLatched, FaultEvent::ResumeShortPressed)
+            | (FaultManagerState::EstopLatched, FaultEvent::NetworkResume(_))
             | (FaultManagerState::EstopLatched, FaultEvent::ResumeLongPressed) => {
                 self.state = FaultManagerState::Normal;
                 scheduler_effects[0] = Some(SchedulerEffect::Resume);
@@ -132,12 +133,14 @@ impl FaultPolicy {
                 status_effects[0] = Some(StatusEffect::FaultCleared);
             }
             (FaultManagerState::Normal, FaultEvent::ResumeShortPressed)
+            | (FaultManagerState::Normal, FaultEvent::NetworkResume(_))
             | (FaultManagerState::Normal, FaultEvent::ResumeLongPressed) => {
                 scheduler_effects[0] = Some(SchedulerEffect::Resume);
             }
             (FaultManagerState::Normal, FaultEvent::FaultClearedByService)
             | (FaultManagerState::EstopLatched, FaultEvent::StopPressed)
             | (FaultManagerState::EstopLatched, FaultEvent::FaultClearedByService)
+            | (FaultManagerState::FaultLatched(_), FaultEvent::NetworkResume(_))
             | (FaultManagerState::FaultLatched(_), FaultEvent::StopPressed) => {}
         }
 

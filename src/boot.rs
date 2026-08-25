@@ -44,12 +44,17 @@ use crate::control_buttons::{
 };
 use crate::dcc::{
     LocoRequestChannel, LocoResponseChannel, PomRailcomResultChannel, PomRequestChannel,
-    PomResponseChannel, PomTxStartedChannel, SchedulerCommandChannel, pom_actor_task,
+    PomResponseChannel, PomTxStartedChannel, PowerQuiesceChannel, SchedulerCommandChannel,
+    pom_actor_task,
 };
-use crate::dcc_runtime::DccPacketChannel;
+use crate::dcc_runtime::{DccPacketChannel, PowerFenceAckChannel};
 use crate::fault_manager::{
     FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerState, FaultManagerTaskContext,
     FaultStateWatch, fault_effects_task, fault_manager_task,
+};
+use crate::net::client_watchdog::{
+    ClientWatchdogContext, LeaseRequestChannel, LeaseResponseChannel, LeaseTripChannel,
+    client_watchdog_task,
 };
 use crate::net::provisioning::run_provisioning_ap;
 use crate::net::udp_control::NetTaskChannels;
@@ -71,6 +76,8 @@ use crate::track_output::TrackOutput;
 // Static channels/signals shared across Embassy tasks.
 static DCC_CHANNEL: StaticCell<DccPacketChannel> = StaticCell::new();
 static SCHEDULER_COMMANDS: StaticCell<SchedulerCommandChannel> = StaticCell::new();
+static POWER_QUIESCE: PowerQuiesceChannel = PowerQuiesceChannel::new();
+static POWER_FENCE_ACKS: PowerFenceAckChannel = PowerFenceAckChannel::new();
 static LOCO_REQUESTS: LocoRequestChannel = LocoRequestChannel::new();
 static LOCO_RESPONSES: LocoResponseChannel = LocoResponseChannel::new();
 static SYSTEM_STATUS: SystemStatusChannel = SystemStatusChannel::new();
@@ -81,6 +88,9 @@ static FAULT_EFFECTS: FaultEffectsSignal = FaultEffectsSignal::new();
 static DISPLAY_CHANNEL: DisplayChannel = DisplayChannel::new();
 static BOOT_READY: BootReadyChannel = BootReadyChannel::new();
 static BOOT_FAILURE: BootFailureChannel = BootFailureChannel::new();
+static LEASE_REQUESTS: LeaseRequestChannel = LeaseRequestChannel::new();
+static LEASE_RESPONSES: LeaseResponseChannel = LeaseResponseChannel::new();
+static LEASE_TRIPS: LeaseTripChannel = LeaseTripChannel::new();
 static PROVISIONING_REQUESTS: ProvisioningRequestChannel = ProvisioningRequestChannel::new();
 static RAILCOM_RUNTIME_RESULTS: RailcomUartRuntimeResultChannel =
     RailcomUartRuntimeResultChannel::new();
@@ -222,7 +232,24 @@ async fn start_dcc_core(
 
     spawn_critical(
         spawner,
-        dcc_engine_task_wrapper(receiver, FAULT_CHANNEL.sender(), BOOT_READY.sender()),
+        client_watchdog_task(ClientWatchdogContext {
+            request_receiver: LEASE_REQUESTS.receiver(),
+            response_sender: LEASE_RESPONSES.sender(),
+            trip_sender: LEASE_TRIPS.sender(),
+            fault_sender: FAULT_CHANNEL.sender(),
+            ready_sender: BOOT_READY.sender(),
+        }),
+        CriticalTask::LeaseWatchdog,
+    )?;
+
+    spawn_critical(
+        spawner,
+        dcc_engine_task_wrapper(
+            receiver,
+            FAULT_CHANNEL.sender(),
+            POWER_FENCE_ACKS.sender(),
+            BOOT_READY.sender(),
+        ),
         CriticalTask::DccEngine,
     )?;
     info!("boot: DCC engine task spawned");
@@ -243,6 +270,7 @@ async fn start_dcc_core(
     spawn_critical(
         spawner,
         scheduler_task_wrapper(
+            POWER_QUIESCE.receiver(),
             command_receiver,
             LOCO_REQUESTS.receiver(),
             LOCO_RESPONSES.sender(),
@@ -311,7 +339,6 @@ async fn spawn_network_runtime(
     spawner: Spawner,
     wifi: esp_hal::peripherals::WIFI<'static>,
     credentials: WifiCredentials,
-    scheduler_commands: &'static SchedulerCommandChannel,
 ) -> Result<(), BootError> {
     spawn_critical(
         &spawner,
@@ -319,7 +346,6 @@ async fn spawn_network_runtime(
             spawner,
             wifi,
             credentials,
-            scheduler_sender: scheduler_commands.sender(),
             fault_sender: FAULT_CHANNEL.sender(),
             channels: NetTaskChannels {
                 net_status: NET_STATUS.receiver(),
@@ -330,6 +356,9 @@ async fn spawn_network_runtime(
                 pom_response_receiver: POM_RESPONSES.receiver(),
                 loco_request_sender: LOCO_REQUESTS.sender(),
                 loco_response_receiver: LOCO_RESPONSES.receiver(),
+                lease_request_sender: LEASE_REQUESTS.sender(),
+                lease_response_receiver: LEASE_RESPONSES.receiver(),
+                lease_trip_receiver: LEASE_TRIPS.receiver(),
             },
             failure_sender: BOOT_FAILURE.sender(),
         }),
@@ -387,6 +416,8 @@ async fn activate_safe_runtime(
         spawner,
         fault_manager_task(FaultManagerTaskContext {
             receiver: FAULT_CHANNEL.receiver(),
+            power_quiesce_sender: POWER_QUIESCE.sender(),
+            power_fence_ack_receiver: POWER_FENCE_ACKS.receiver(),
             track_output,
             state_sender: FAULT_STATE.sender(),
             effects_signal: &FAULT_EFFECTS,
@@ -536,13 +567,7 @@ pub async fn run(
         peripherals.GPIO5,
         core.scheduler_commands,
     )?;
-    spawn_network_runtime(
-        spawner,
-        peripherals.WIFI,
-        credentials,
-        core.scheduler_commands,
-    )
-    .await?;
+    spawn_network_runtime(spawner, peripherals.WIFI, credentials).await?;
 
     activate_safe_runtime(
         &spawner,

@@ -2,7 +2,7 @@
 
 use crate::dcc::encoder::{EncodeError, PulseCode as DccPulseCode, encode_dcc_data_portion};
 use crate::dcc::timing::{IDLE_RMT_SIZE, MAX_DATA_PULSES, RMT_CLOCK_HZ};
-use crate::dcc::{DccFrame, DccPacket, encode_dcc_packet};
+use crate::dcc::{DccFrame, DccPacket, PowerGeneration, encode_dcc_packet};
 use crate::rmt_dcc as rmt_driver;
 use crate::runtime_channels::{DccFrameReceiver, FaultEventSender, RuntimeChannel};
 use crate::system_status::{FaultCause, FaultEvent};
@@ -22,6 +22,7 @@ const ISR_RESET_GRACE_PERIOD: Duration = Duration::from_millis(100);
 
 /// DCC packet channel type for sending packets to the engine.
 pub type DccPacketChannel = RuntimeChannel<DccFrame, 16>;
+pub type PowerFenceAckChannel = RuntimeChannel<PowerGeneration, 1>;
 
 /// Pre-encoded idle waveform used to bootstrap continuous RMT loop mode.
 pub type IdleRmtBuffer = Vec<PulseCode, IDLE_RMT_SIZE>;
@@ -64,7 +65,11 @@ pub fn build_idle_rmt_buffer() -> Result<IdleRmtBuffer, IdleWaveformBuildError> 
 }
 
 /// Pure async feeder paced by the ISR ACK.
-pub async fn dcc_engine_task(receiver: DccFrameReceiver, fault_sender: FaultEventSender) -> ! {
+pub async fn dcc_engine_task(
+    receiver: DccFrameReceiver,
+    fault_sender: FaultEventSender,
+    fence_ack_sender: crate::runtime_channels::RuntimeSender<PowerGeneration, 1>,
+) -> ! {
     defmt::info!("DCC engine feeder started");
 
     let mut last_heartbeat = rmt_driver::isr_heartbeat();
@@ -110,6 +115,12 @@ pub async fn dcc_engine_task(receiver: DccFrameReceiver, fault_sender: FaultEven
         }
 
         let frame = receiver.receive().await;
+        if let Some(generation) = frame.fence_generation() {
+            // The feeder only receives after the RMT slot is consumed, and the
+            // fence was appended after every preceding scheduler frame.
+            fence_ack_sender.send(generation).await;
+            continue;
+        }
         let next_rmt = match encode_packet_to_rmt_data(&frame.packet) {
             Ok(buf) => buf,
             Err(error) => {

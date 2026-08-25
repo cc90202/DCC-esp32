@@ -79,21 +79,28 @@ fn loco_request_id_preserves_wrapped_counter_values() {
     assert_eq!(id.value(), u32::MAX);
 }
 
+fn permit() -> crate::authority::LeasePermit {
+    crate::authority::LeasePermit::new(crate::authority::LeaseEpoch::new(1), u64::MAX)
+}
+
 #[test]
 fn expired_loco_request_is_rejected_without_mutating_scheduler_state() {
     let mut manager = SlotManager::new();
     let message = LocoRequestMessage {
         request_id: LocoRequestId::new(4),
-        request: LocoRequest::SetSpeed {
-            address: addr(3),
-            speed: ls(10, SpeedFormat::Speed128),
-            direction: Direction::Forward,
+        request: SchedulerRequest::Loco {
+            request: LocoRequest::SetSpeed {
+                address: addr(3),
+                speed: ls(10, SpeedFormat::Speed128),
+                direction: Direction::Forward,
+            },
+            permit: Some(permit()),
         },
         deadline: LocoRequestDeadline::from_ticks(100),
     };
 
     assert_eq!(
-        handle_loco_request_message(&mut manager, message, 100),
+        handle_loco_request_message(&mut manager, message, 100, |_| true, |_| true),
         LocoResponse {
             request_id: LocoRequestId::new(4),
             result: LocoRequestResult::Expired,
@@ -105,23 +112,59 @@ fn expired_loco_request_is_rejected_without_mutating_scheduler_state() {
 #[test]
 fn unexpired_loco_request_is_applied_before_its_deadline() {
     let mut manager = SlotManager::new();
+    manager.reset_for_lease(permit());
     let message = LocoRequestMessage {
         request_id: LocoRequestId::new(5),
-        request: LocoRequest::SetSpeed {
-            address: addr(3),
-            speed: ls(10, SpeedFormat::Speed128),
-            direction: Direction::Forward,
+        request: SchedulerRequest::Loco {
+            request: LocoRequest::SetSpeed {
+                address: addr(3),
+                speed: ls(10, SpeedFormat::Speed128),
+                direction: Direction::Forward,
+            },
+            permit: Some(permit()),
         },
         deadline: LocoRequestDeadline::from_ticks(101),
     };
 
     assert!(matches!(
-        handle_loco_request_message(&mut manager, message, 100),
+        handle_loco_request_message(&mut manager, message, 100, |_| true, |_| true),
         LocoResponse {
             request_id,
             result: LocoRequestResult::Inserted(_),
         } if request_id == LocoRequestId::new(5)
     ));
+}
+
+#[test]
+fn reset_barrier_stops_motion_and_clears_pending_pom() {
+    let permit = permit();
+    let mut manager = SlotManager::new();
+    assert!(manager.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    assert!(manager.program_on_main(
+        pom_id(1),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(1),
+        },
+    ));
+    let message = LocoRequestMessage {
+        request_id: LocoRequestId::new(7),
+        request: SchedulerRequest::ResetForLease { permit },
+        deadline: LocoRequestDeadline::from_ticks(101),
+    };
+
+    assert_eq!(
+        handle_loco_request_message(&mut manager, message, 100, |_| true, |_| true).result,
+        LocoRequestResult::LeaseReset(permit.epoch())
+    );
+    assert!(manager.loco_snapshot(addr(3)).unwrap().speed.is_zero());
+    assert_ne!(
+        manager.build_next_packet(),
+        Some(DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(1),
+        })
+    );
 }
 
 #[test]

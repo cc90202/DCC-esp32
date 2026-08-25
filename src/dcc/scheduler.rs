@@ -27,6 +27,7 @@
 //! - 13-20 = F13-F20 (Function Group 3)
 //! - 21-28 = F21-F28 (Function Group 4)
 
+use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::dcc::PomRequestId;
 use crate::dcc::packet::{DccAddress, DccPacket, Direction};
 
@@ -44,7 +45,8 @@ mod slot_manager;
 pub use railcom_policy::{RailcomSchedulerStats, railcom_scheduler_stats};
 #[cfg(target_arch = "riscv32")]
 pub use runtime::{
-    LocoRequestChannel, LocoResponseChannel, SchedulerCommandChannel, packet_scheduler_task,
+    LocoRequestChannel, LocoResponseChannel, PowerQuiesceChannel, SchedulerCommandChannel,
+    packet_scheduler_task,
 };
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) use slot_manager::PENDING_POM_CAPACITY;
@@ -297,6 +299,27 @@ impl LocoRequest {
             | Self::EmergencyStop { address } => address,
         }
     }
+
+    #[must_use]
+    pub const fn requires_lease(self) -> bool {
+        matches!(
+            self,
+            Self::EnsureRefresh { .. } | Self::SetSpeed { .. } | Self::SetFunction { .. }
+        )
+    }
+}
+
+/// Work admitted to the correlated scheduler request boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum SchedulerRequest {
+    Loco {
+        request: LocoRequest,
+        permit: Option<LeasePermit>,
+    },
+    ResetForLease {
+        permit: LeasePermit,
+    },
 }
 
 /// One correlated request placed on the scheduler boundary.
@@ -304,7 +327,7 @@ impl LocoRequest {
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct LocoRequestMessage {
     pub request_id: LocoRequestId,
-    pub request: LocoRequest,
+    pub request: SchedulerRequest,
     pub deadline: LocoRequestDeadline,
 }
 
@@ -323,6 +346,7 @@ pub enum LocoRequestResult {
     NotFound,
     Rejected,
     Expired,
+    LeaseReset(LeaseEpoch),
 }
 
 /// Scheduler response carrying the request identity unchanged.
@@ -347,6 +371,7 @@ pub enum SchedulerCommand {
     EmergencyStopAll,
     ProgramOnMain {
         request_id: PomRequestId,
+        permit: LeasePermit,
         packet: DccPacket,
     },
     CloseProgramOnMain {

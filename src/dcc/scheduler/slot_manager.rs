@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use heapless::Vec;
 
+use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::cutout::CutoutMode;
 use crate::dcc::PomRequestId;
 use crate::dcc::packet::{DccAddress, DccPacket, Direction};
@@ -393,12 +394,14 @@ pub struct SlotManager {
     consists: Vec<Consist, MAX_CONSISTS>,
     pending_broadcast_estop: bool,
     pending_estop_targets: Vec<DccAddress, MAX_SLOTS>,
-    pending_pom: Vec<DccPacket, PENDING_POM_CAPACITY>,
+    pending_pom: Vec<PendingPomPacket, PENDING_POM_CAPACITY>,
     active_pom: Option<ActivePomRequest>,
     pending_railcom_telemetry: Option<DccPacket>,
     next_index: usize,
     mutation_sequence: u64,
     paused: bool,
+    accepted_lease_epoch: Option<LeaseEpoch>,
+    dequeued_authority: PacketAuthority,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,8 +414,32 @@ enum SlotAdmission {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActivePomRequest {
     request_id: PomRequestId,
+    permit: Option<LeasePermit>,
     target_address: DccAddress,
     cutout: CutoutMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingPomPacket {
+    request_id: PomRequestId,
+    permit: Option<LeasePermit>,
+    packet: DccPacket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PacketAuthority {
+    None,
+    Pom {
+        request_id: PomRequestId,
+        permit: LeasePermit,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ScheduledPacket {
+    pub(super) packet: DccPacket,
+    pub(super) class: PacketClass,
+    pub(super) authority: PacketAuthority,
 }
 
 enum DirtyFunctionSelection {
@@ -444,6 +471,8 @@ impl SlotManager {
             next_index: 0,
             mutation_sequence: 0,
             paused: false,
+            accepted_lease_epoch: None,
+            dequeued_authority: PacketAuthority::None,
         }
     }
 
@@ -695,6 +724,31 @@ impl SlotManager {
         self.pending_estop_targets.clear();
     }
 
+    /// Establish a fresh mutation epoch after stopping previous controller work.
+    pub(crate) fn reset_for_lease(&mut self, permit: LeasePermit) {
+        self.request_emergency_stop_all();
+        self.pending_pom.clear();
+        self.active_pom = None;
+        self.pending_railcom_telemetry = None;
+        self.accepted_lease_epoch = Some(permit.epoch());
+    }
+
+    /// Stop active work and drain authority-sensitive queues before a power-on
+    /// fence. The accepted lease remains unchanged.
+    #[cfg(target_arch = "riscv32")]
+    pub(crate) fn quiesce_for_power_on(&mut self) {
+        self.request_emergency_stop_all();
+        self.pending_pom.clear();
+        self.active_pom = None;
+        self.pending_railcom_telemetry = None;
+        self.paused = true;
+    }
+
+    #[must_use]
+    pub(crate) fn accepts_lease(&self, permit: LeasePermit) -> bool {
+        self.accepted_lease_epoch == Some(permit.epoch())
+    }
+
     /// Request emergency stop for a single locomotive.
     #[must_use]
     pub fn request_emergency_stop(&mut self, address: DccAddress) -> bool {
@@ -871,7 +925,12 @@ impl SlotManager {
 
     /// Queue one explicit POM packet for single transmission.
     #[must_use]
-    pub fn program_on_main(&mut self, request_id: PomRequestId, packet: DccPacket) -> bool {
+    fn queue_program_on_main(
+        &mut self,
+        request_id: PomRequestId,
+        permit: Option<LeasePermit>,
+        packet: DccPacket,
+    ) -> bool {
         let (target_address, cutout) = match packet {
             DccPacket::PomReadByte { address, .. } => (address, CutoutMode::PomRead),
             DccPacket::PomWriteByte { address, .. } => (address, CutoutMode::PomWrite),
@@ -888,10 +947,32 @@ impl SlotManager {
         }
         self.active_pom = Some(ActivePomRequest {
             request_id,
+            permit,
             target_address,
             cutout,
         });
-        self.pending_pom.push(packet).is_ok()
+        self.pending_pom
+            .push(PendingPomPacket {
+                request_id,
+                permit,
+                packet,
+            })
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn program_on_main(&mut self, request_id: PomRequestId, packet: DccPacket) -> bool {
+        self.queue_program_on_main(request_id, None, packet)
+    }
+
+    fn program_on_main_authorized(
+        &mut self,
+        request_id: PomRequestId,
+        permit: LeasePermit,
+        packet: DccPacket,
+    ) -> bool {
+        self.queue_program_on_main(request_id, Some(permit), packet)
     }
 
     pub fn close_program_on_main(&mut self, request_id: PomRequestId) -> bool {
@@ -980,10 +1061,6 @@ impl SlotManager {
         Some(DccPacket::EmergencyStop { address, direction })
     }
 
-    fn take_pending_programming_packet(&mut self) -> Option<DccPacket> {
-        (!self.pending_pom.is_empty()).then(|| self.pending_pom.remove(0))
-    }
-
     fn take_dirty_speed_packet(&mut self) -> Option<DccPacket> {
         for slot in &mut self.slots {
             if !slot.dirty_speed {
@@ -1050,6 +1127,7 @@ impl SlotManager {
         &mut self,
         max_slot_visits_without_function: u8,
     ) -> Option<(DccPacket, PacketClass)> {
+        self.dequeued_authority = PacketAuthority::None;
         if self.paused {
             return None;
         }
@@ -1057,8 +1135,16 @@ impl SlotManager {
         if let Some(packet) = self.take_pending_safety_packet() {
             return Some((packet, PacketClass::Safety));
         }
-        if let Some(packet) = self.take_pending_programming_packet() {
-            return Some((packet, PacketClass::Programming));
+        if !self.pending_pom.is_empty() {
+            let pending = self.pending_pom.remove(0);
+            self.dequeued_authority =
+                pending
+                    .permit
+                    .map_or(PacketAuthority::None, |permit| PacketAuthority::Pom {
+                        request_id: pending.request_id,
+                        permit,
+                    });
+            return Some((pending.packet, PacketClass::Programming));
         }
 
         if self.slots.is_empty() {
@@ -1105,8 +1191,13 @@ impl SlotManager {
                 self.request_emergency_stop_all();
                 true
             }
-            SchedulerCommand::ProgramOnMain { request_id, packet } => {
-                self.program_on_main(request_id, packet)
+            SchedulerCommand::ProgramOnMain {
+                request_id,
+                permit,
+                packet,
+            } => {
+                self.accepts_lease(permit)
+                    && self.program_on_main_authorized(request_id, permit, packet)
             }
             SchedulerCommand::CloseProgramOnMain { request_id } => {
                 self.close_program_on_main(request_id)
@@ -1137,6 +1228,23 @@ impl SlotManager {
                 self.resume();
                 true
             }
+        }
+    }
+
+    pub(super) fn take_dequeued_authority(&mut self) -> PacketAuthority {
+        core::mem::replace(&mut self.dequeued_authority, PacketAuthority::None)
+    }
+
+    pub(super) fn discard_pom(&mut self, request_id: PomRequestId, permit: LeasePermit) {
+        self.pending_pom.retain(|pending| {
+            pending.request_id != request_id
+                || pending.permit.map(LeasePermit::epoch) != Some(permit.epoch())
+        });
+        if self.active_pom.is_some_and(|active| {
+            active.request_id == request_id
+                && active.permit.map(LeasePermit::epoch) == Some(permit.epoch())
+        }) {
+            self.active_pom = None;
         }
     }
 

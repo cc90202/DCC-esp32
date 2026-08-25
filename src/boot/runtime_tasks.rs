@@ -6,14 +6,14 @@ use embassy_time::{Duration, Timer};
 use esp_hal::uart::UartRx;
 
 use crate::cutout::RailcomChannel;
-use crate::dcc::packet_scheduler_task;
+use crate::dcc::{PowerGeneration, packet_scheduler_task};
 use crate::dcc_runtime::dcc_engine_task;
 use crate::net::udp_control::{NetTaskChannels, net_task};
 use crate::net::wifi_config::WifiCredentials;
 use crate::runtime_channels::{
     BootReadySender, DccFrameReceiver, DccFrameSender, DisplayReceiver, DisplaySender,
     FaultEventSender, LocoRequestReceiver, LocoResponseSender, RailcomRxOutputSender,
-    RuntimeSender, SchedulerCommandReceiver, SchedulerCommandSender, announce_ready,
+    RuntimeSender, SchedulerCommandReceiver, announce_ready,
 };
 use crate::system_status::BootReadyEvent;
 
@@ -23,7 +23,6 @@ pub(super) struct NetTaskWrapperContext {
     pub(super) spawner: Spawner,
     pub(super) wifi: esp_hal::peripherals::WIFI<'static>,
     pub(super) credentials: WifiCredentials,
-    pub(super) scheduler_sender: SchedulerCommandSender,
     pub(super) fault_sender: FaultEventSender,
     pub(super) channels: NetTaskChannels,
     pub(super) failure_sender: RuntimeSender<CriticalTaskInit, 4>,
@@ -33,10 +32,11 @@ pub(super) struct NetTaskWrapperContext {
 pub(super) async fn dcc_engine_task_wrapper(
     receiver: DccFrameReceiver,
     fault_sender: FaultEventSender,
+    fence_ack_sender: RuntimeSender<PowerGeneration, 1>,
     ready_sender: BootReadySender,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::DccEngine).await;
-    dcc_engine_task(receiver, fault_sender).await
+    dcc_engine_task(receiver, fault_sender, fence_ack_sender).await
 }
 
 #[embassy_executor::task]
@@ -45,23 +45,13 @@ pub(super) async fn net_task_wrapper(context: NetTaskWrapperContext) {
         spawner,
         wifi,
         credentials,
-        scheduler_sender,
         fault_sender,
         channels,
         failure_sender,
     } = context;
 
     let runtime_fault_sender = fault_sender;
-    match net_task(
-        spawner,
-        wifi,
-        credentials,
-        scheduler_sender,
-        fault_sender,
-        channels,
-    )
-    .await
-    {
+    match net_task(spawner, wifi, credentials, fault_sender, channels).await {
         Ok(()) => {
             crate::track_safety::disable_track_intentionally();
             defmt::error!("boot: network task exited unexpectedly; track output disabled");
@@ -95,6 +85,7 @@ pub(super) async fn display_task_wrapper(
 
 #[embassy_executor::task]
 pub(super) async fn scheduler_task_wrapper(
+    power_quiesce_receiver: crate::runtime_channels::RuntimeReceiver<PowerGeneration, 1>,
     command_receiver: SchedulerCommandReceiver,
     loco_request_receiver: LocoRequestReceiver,
     loco_response_sender: LocoResponseSender,
@@ -104,6 +95,7 @@ pub(super) async fn scheduler_task_wrapper(
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::Scheduler).await;
     packet_scheduler_task(
+        power_quiesce_receiver,
         command_receiver,
         loco_request_receiver,
         loco_response_sender,

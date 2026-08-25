@@ -10,7 +10,7 @@ use crate::system_status::BootReadyEvent;
 use super::error::log_degraded_boot_error;
 use super::{BootError, CriticalTaskInit};
 
-#[repr(u8)]
+#[repr(u16)]
 enum CriticalReady {
     DccEngine = 1 << 0,
     StatusLed = 1 << 1,
@@ -19,16 +19,17 @@ enum CriticalReady {
     StopButton = 1 << 4,
     ResumeButton = 1 << 5,
     ShortDetector = 1 << 6,
+    LeaseWatchdog = 1 << 7,
 }
 
 #[derive(Default)]
-struct ReadySet(u8);
+struct ReadySet(u16);
 
 impl ReadySet {
-    const REQUIRED: u8 = (1 << 7) - 1;
+    const REQUIRED: u16 = (1 << 8) - 1;
 
     fn record(&mut self, task: CriticalReady) {
-        self.0 |= task as u8;
+        self.0 |= task as u16;
     }
 
     fn is_complete(&self) -> bool {
@@ -69,6 +70,7 @@ pub(super) async fn wait_for_runtime_ready(
                     BootReadyEvent::StopButton => ready.record(CriticalReady::StopButton),
                     BootReadyEvent::ResumeButton => ready.record(CriticalReady::ResumeButton),
                     BootReadyEvent::ShortDetector => ready.record(CriticalReady::ShortDetector),
+                    BootReadyEvent::LeaseWatchdog => ready.record(CriticalReady::LeaseWatchdog),
                 }
             }
             Ok(Either::Second(failure)) => return Err(BootError::CriticalTaskInit(failure)),

@@ -39,7 +39,6 @@ pub(crate) type DisplayReceiver = RuntimeReceiver<DisplayEvent, 8>;
 
 pub(crate) type DccFrameSender = RuntimeSender<DccFrame, 16>;
 pub(crate) type DccFrameReceiver = RuntimeReceiver<DccFrame, 16>;
-pub(crate) type SchedulerCommandSender = RuntimeSender<SchedulerCommand, 32>;
 pub(crate) type SchedulerCommandReceiver = RuntimeReceiver<SchedulerCommand, 32>;
 pub(crate) type LocoRequestSender = RuntimeSender<LocoRequestMessage, 1>;
 pub(crate) type LocoRequestReceiver = RuntimeReceiver<LocoRequestMessage, 1>;

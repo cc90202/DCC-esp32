@@ -44,7 +44,7 @@ pub use encoding::{
     encode_railcom_data, encode_serial_number, encode_status, encode_system_state,
     encode_turnout_info, encode_unknown_command, encode_xbus_version,
 };
-pub use parsing::{FrameIter, frame_kind, iter_frames, parse_frame};
+pub use parsing::{FrameBoundaryError, FrameIter, frame_kind, iter_frames, parse_frame};
 #[cfg(target_arch = "riscv32")]
 pub(crate) use wire::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 

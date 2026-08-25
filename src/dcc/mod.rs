@@ -46,6 +46,25 @@ pub struct DccFrame {
     pub cutout: CutoutMode,
     pub railcom_target_address: Option<DccAddress>,
     pub pom_request_id: Option<PomRequestId>,
+    fence_generation: Option<PowerGeneration>,
+}
+
+/// Monotonic identifier for a request to drain all earlier DCC frames before
+/// the track output may be enabled again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct PowerGeneration(u32);
+
+impl PowerGeneration {
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
 }
 
 impl DccFrame {
@@ -56,7 +75,24 @@ impl DccFrame {
             cutout,
             railcom_target_address: packet.railcom_target_address(),
             pom_request_id: None,
+            fence_generation: None,
         }
+    }
+
+    #[cfg(target_arch = "riscv32")]
+    pub(crate) const fn fence(generation: PowerGeneration) -> Self {
+        Self {
+            packet: DccPacket::Idle,
+            cutout: CutoutMode::None,
+            railcom_target_address: None,
+            pom_request_id: None,
+            fence_generation: Some(generation),
+        }
+    }
+
+    #[must_use]
+    pub const fn fence_generation(self) -> Option<PowerGeneration> {
+        self.fence_generation
     }
 
     #[must_use]
@@ -105,11 +141,13 @@ pub use scheduler::packet_scheduler_task;
 pub use scheduler::{
     ConsistId, FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex, LocoRequest,
     LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoRequestResult, LocoResponse,
-    LocoSnapshot, LogicalSpeed, SchedulerCommand, SpeedFormat,
+    LocoSnapshot, LogicalSpeed, SchedulerCommand, SchedulerRequest, SpeedFormat,
 };
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
-pub use scheduler::{LocoRequestChannel, LocoResponseChannel, SchedulerCommandChannel};
+pub use scheduler::{
+    LocoRequestChannel, LocoResponseChannel, PowerQuiesceChannel, SchedulerCommandChannel,
+};
 #[doc(inline)]
 pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};
 #[doc(inline)]
