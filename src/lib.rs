@@ -20,7 +20,6 @@
 pub mod application;
 #[cfg(target_arch = "riscv32")]
 pub mod boot;
-pub mod config;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod control_buttons;
 pub mod control_logic;
@@ -35,6 +34,7 @@ pub(crate) mod dcc_runtime;
 pub(crate) mod diagnostics;
 pub mod display;
 pub mod fault_manager;
+pub(crate) mod logon;
 pub mod net;
 pub mod railcom;
 #[cfg(target_arch = "riscv32")]
@@ -44,6 +44,10 @@ pub mod railcom_data;
 #[cfg(target_arch = "riscv32")]
 #[path = "dcc/rmt_driver.rs"]
 pub(crate) mod rmt_dcc;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod runtime_channels;
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod seqlock;
 pub(crate) mod short_detector;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod status_led;

@@ -5,6 +5,10 @@ use embassy_time::Instant;
 
 use crate::cutout::CutoutMode;
 use crate::dcc::{DccFrame, DccPacket};
+use crate::runtime_channels::{
+    DccFrameSender, DisplaySender, LocoRequestReceiver, LocoResponseSender, RuntimeChannel,
+    SchedulerCommandReceiver,
+};
 use crate::system_status::DisplayEvent;
 
 use super::core::{CommandOutcome, SchedulerCore};
@@ -13,55 +17,18 @@ use super::railcom_policy::{PacketClass, RailcomCutoutBudget, record_track_searc
 use super::slot_manager::scheduler_invariant_recovery_count;
 use super::{LocoRequestMessage, LocoResponse, SchedulerCommand};
 
-pub type SchedulerCommandChannel = embassy_sync::channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    SchedulerCommand,
-    32,
->;
+pub type SchedulerCommandChannel = RuntimeChannel<SchedulerCommand, 32>;
 
-pub type LocoRequestChannel = embassy_sync::channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    LocoRequestMessage,
-    1,
->;
+pub type LocoRequestChannel = RuntimeChannel<LocoRequestMessage, 1>;
 
-pub type LocoResponseChannel = embassy_sync::channel::Channel<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    LocoResponse,
-    1,
->;
+pub type LocoResponseChannel = RuntimeChannel<LocoResponse, 1>;
 
 pub async fn packet_scheduler_task(
-    command_receiver: embassy_sync::channel::Receiver<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SchedulerCommand,
-        32,
-    >,
-    loco_request_receiver: embassy_sync::channel::Receiver<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        LocoRequestMessage,
-        1,
-    >,
-    loco_response_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        LocoResponse,
-        1,
-    >,
-    sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        DccFrame,
-        16,
-    >,
-    display_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        DisplayEvent,
-        8,
-    >,
+    command_receiver: SchedulerCommandReceiver,
+    loco_request_receiver: LocoRequestReceiver,
+    loco_response_sender: LocoResponseSender,
+    sender: DccFrameSender,
+    display_sender: DisplaySender,
 ) -> ! {
     let mut core = SchedulerCore::new();
     let mut prev_slot_count: usize = 0;

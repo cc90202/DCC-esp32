@@ -24,6 +24,8 @@ pub const RESUME_LONG_PRESS_MS: u64 = 2_000;
 
 /// Runtime WiFi provisioning threshold for the blue Resume button.
 pub const RESUME_PROVISIONING_PRESS_MS: u64 = 10_000;
+const RESUME_SHORT_MAX_MS: u64 = RESUME_LONG_PRESS_MS - 1;
+const RESUME_LONG_MAX_MS: u64 = RESUME_PROVISIONING_PRESS_MS - 1;
 
 /// Classify a confirmed Resume button press by duration.
 ///
@@ -32,12 +34,10 @@ pub const RESUME_PROVISIONING_PRESS_MS: u64 = 10_000;
 /// single event.
 #[must_use]
 pub const fn classify_resume_press(duration_ms: u64) -> ResumePress {
-    if duration_ms >= RESUME_PROVISIONING_PRESS_MS {
-        ResumePress::Provisioning
-    } else if duration_ms >= RESUME_LONG_PRESS_MS {
-        ResumePress::Long
-    } else {
-        ResumePress::Short
+    match duration_ms {
+        0..=RESUME_SHORT_MAX_MS => ResumePress::Short,
+        RESUME_LONG_PRESS_MS..=RESUME_LONG_MAX_MS => ResumePress::Long,
+        RESUME_PROVISIONING_PRESS_MS.. => ResumePress::Provisioning,
     }
 }
 

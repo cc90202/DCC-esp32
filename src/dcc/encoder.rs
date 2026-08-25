@@ -160,25 +160,7 @@ pub fn encode_dcc_packet(
         push_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
     }
 
-    // Packet start bit: "0"
-    push_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
-
-    // Data bytes
-    let bytes = packet.to_bytes()?;
-    for (i, &byte) in bytes.iter().enumerate() {
-        let byte_pulses = encode_byte(byte);
-        for pulse in byte_pulses {
-            push_pulse(&mut pulses, pulse)?;
-        }
-
-        // Inter-byte start bit: "0" (except after last byte)
-        if i < bytes.len() - 1 {
-            push_pulse(&mut pulses, dcc_bit_to_pulse(false))?;
-        }
-    }
-
-    // Packet end bit: "1"
-    push_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
+    encode_packet_tail(packet, &mut pulses, push_pulse)?;
 
     Ok(pulses)
 }
@@ -191,26 +173,34 @@ pub(crate) fn encode_dcc_data_portion(packet: &DccPacket) -> Result<EncodedDccDa
     let mut pulses = Vec::new();
     let mut dcc_duration_us = PREAMBLE_DURATION_US;
 
-    push_timed_pulse(&mut pulses, &mut dcc_duration_us, dcc_bit_to_pulse(false))?;
-
-    let bytes = packet.to_bytes()?;
-    for (i, &byte) in bytes.iter().enumerate() {
-        let byte_pulses = encode_byte(byte);
-        for pulse in byte_pulses {
-            push_timed_pulse(&mut pulses, &mut dcc_duration_us, pulse)?;
-        }
-
-        if i < bytes.len() - 1 {
-            push_timed_pulse(&mut pulses, &mut dcc_duration_us, dcc_bit_to_pulse(false))?;
-        }
-    }
-
-    push_timed_pulse(&mut pulses, &mut dcc_duration_us, dcc_bit_to_pulse(true))?;
+    encode_packet_tail(packet, &mut pulses, |pulses, pulse| {
+        push_timed_pulse(pulses, &mut dcc_duration_us, pulse)
+    })?;
 
     Ok(EncodedDccData {
         pulses,
         dcc_duration_us,
     })
+}
+
+fn encode_packet_tail<const N: usize>(
+    packet: &DccPacket,
+    pulses: &mut Vec<PulseCode, N>,
+    mut push: impl FnMut(&mut Vec<PulseCode, N>, PulseCode) -> Result<(), EncodeError>,
+) -> Result<(), EncodeError> {
+    push(pulses, dcc_bit_to_pulse(false))?;
+
+    let bytes = packet.to_bytes()?;
+    for (index, &byte) in bytes.iter().enumerate() {
+        for pulse in encode_byte(byte) {
+            push(pulses, pulse)?;
+        }
+        if index + 1 < bytes.len() {
+            push(pulses, dcc_bit_to_pulse(false))?;
+        }
+    }
+
+    push(pulses, dcc_bit_to_pulse(true))
 }
 
 #[cfg(any(test, target_arch = "riscv32"))]

@@ -34,7 +34,7 @@ pub(crate) mod packet;
 pub(crate) mod scheduler;
 pub(crate) mod speed28;
 pub(crate) mod timing;
-#[cfg(any(test, feature = "dcc-validator"))]
+#[cfg(test)]
 pub(crate) mod validator;
 
 pub use crate::cutout::CutoutMode;
@@ -93,7 +93,7 @@ pub(crate) use packet::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{
     BinaryStateAddress, DCC_MAX_PACKET_BYTES, DccAddress, DccAddressKind, DccPacket, Direction,
-    LogonGroup, NmraSpeed28, NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
+    LogonGroup, LogonSessionId, NmraSpeed28, NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
 };
 #[cfg(any(test, target_arch = "riscv32"))]
 #[doc(inline)]
@@ -103,9 +103,9 @@ pub use scheduler::SlotManager;
 pub use scheduler::packet_scheduler_task;
 #[doc(inline)]
 pub use scheduler::{
-    FunctionChange, FunctionIndex, InvalidFunctionIndex, LocoRequest, LocoRequestDeadline,
-    LocoRequestId, LocoRequestMessage, LocoRequestResult, LocoResponse, LocoSnapshot, LogicalSpeed,
-    SchedulerCommand, SpeedFormat,
+    ConsistId, FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex, LocoRequest,
+    LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoRequestResult, LocoResponse,
+    LocoSnapshot, LogicalSpeed, SchedulerCommand, SpeedFormat,
 };
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
@@ -116,13 +116,6 @@ pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_spe
 pub use timing::{
     DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
 };
-#[cfg(any(test, feature = "dcc-validator"))]
-#[doc(inline)]
-pub use validator::{
-    ValidationError, validate_checksum, validate_complete, validate_full, validate_nmra_compliance,
-    validate_packet_structure, validate_timing,
-};
-
 #[cfg(test)]
 mod frame_tests {
     use super::*;

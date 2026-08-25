@@ -159,6 +159,21 @@ impl PackedAddressFlags {
     pub(crate) const fn flag(self, index: u32) -> bool {
         (self.0 & (1 << (Self::FLAG_BASE_BIT + index))) != 0
     }
+
+    /// Replaces a compact field starting at flag `index`.
+    #[must_use]
+    #[inline(always)]
+    pub(crate) const fn with_field(self, index: u32, width: u32, value: u32) -> Self {
+        let field_mask = (1u32 << width) - 1;
+        let shifted_mask = field_mask << (Self::FLAG_BASE_BIT + index);
+        Self((self.0 & !shifted_mask) | ((value & field_mask) << (Self::FLAG_BASE_BIT + index)))
+    }
+
+    #[inline(always)]
+    pub(crate) const fn field(self, index: u32, width: u32) -> u32 {
+        let field_mask = (1u32 << width) - 1;
+        (self.0 >> (Self::FLAG_BASE_BIT + index)) & field_mask
+    }
 }
 
 impl DccAddress {
@@ -401,6 +416,24 @@ impl LogonGroup {
     }
 }
 
+/// RCN-218 logon session identifier emitted by one command station.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct LogonSessionId(u8);
+
+impl LogonSessionId {
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
 /// DCC packet types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DccPacket {
@@ -500,7 +533,7 @@ pub enum DccPacket {
     LogonEnable {
         group: LogonGroup,
         command_station_id: u16,
-        session_id: u8,
+        session_id: LogonSessionId,
     },
     /// RCN-218 automatic logon select packet addressed to 254.
     LogonSelect {
@@ -564,7 +597,7 @@ impl PacketBytes {
     /// Used by RCN-218 automatic-logon packets (`LogonSelect`), which carry a
     /// CRC8 byte ahead of the usual trailing XOR checksum.
     fn push_crc8(&mut self) {
-        let crc = DccPacket::crc8_dallas_maxim(&self.bytes);
+        let crc = crate::logon::crc8_dallas_maxim(&self.bytes);
         self.push(crc);
     }
 
@@ -607,19 +640,9 @@ impl DccPacket {
         if value { mask } else { 0 }
     }
 
-    fn crc8_dallas_maxim(bytes: &[u8]) -> u8 {
-        let mut crc = 0u8;
-        for &byte in bytes {
-            crc ^= byte;
-            for _ in 0..8 {
-                crc = if crc & 0x01 != 0 {
-                    (crc >> 1) ^ 0x8C
-                } else {
-                    crc >> 1
-                };
-            }
-        }
-        crc
+    #[inline]
+    fn direction_mask(direction: Direction, mask: u8) -> u8 {
+        Self::bool_mask(direction == Direction::Forward, mask)
     }
 
     fn encode_speed28_instruction(
@@ -627,26 +650,15 @@ impl DccPacket {
         speed: NmraSpeed28,
     ) -> Result<u8, PacketEncodeError> {
         // Instruction format: 01DCSSSS (NMRA S-9.2 §2.3.2.3)
-        let direction_bit = if direction == Direction::Forward {
-            0b0010_0000
-        } else {
-            0
-        };
-
         let speed_bits = encode_nmra_instruction_speed_bits(speed.value())?;
 
-        Ok(0b0100_0000 | direction_bit | speed_bits)
+        Ok(0b0100_0000 | Self::direction_mask(direction, 0b0010_0000) | speed_bits)
     }
 
     fn encode_speed128_data(direction: Direction, speed: NmraSpeed128) -> u8 {
         let raw = speed.value();
         let wire_speed = if raw == 0 { 0 } else { raw + 1 };
-        let direction_bit = if direction == Direction::Forward {
-            0x80
-        } else {
-            0
-        };
-        direction_bit | (wire_speed & 0x7F)
+        Self::direction_mask(direction, 0x80) | (wire_speed & 0x7F)
     }
 
     fn encode_function_group1(fl: bool, f1: bool, f2: bool, f3: bool, f4: bool) -> u8 {
@@ -689,12 +701,7 @@ impl DccPacket {
 
     fn encode_emergency_stop_instruction(direction: Direction) -> u8 {
         // E-stop per NMRA S-9.2: 01DC0001 with C=0, SSSS=0001
-        let direction_bit = if direction == Direction::Forward {
-            0b0010_0000
-        } else {
-            0
-        };
-        0b0100_0001 | direction_bit
+        0b0100_0001 | Self::direction_mask(direction, 0b0010_0000)
     }
 
     /// Encodes a validated 1-based CV number into the two on-wire bytes used by
@@ -706,7 +713,8 @@ impl DccPacket {
         (cv_high, cv_low)
     }
 
-    /// Helper function for tests - create an idle packet
+    /// Helper function for tests - create an idle packet.
+    #[cfg(test)]
     pub fn idle() -> Self {
         DccPacket::Idle
     }
@@ -862,7 +870,7 @@ impl DccPacket {
                 packet.push(0xFC | group.value());
                 packet.push((command_station_id >> 8) as u8);
                 packet.push((command_station_id & 0xFF) as u8);
-                packet.push(session_id);
+                packet.push(session_id.value());
             }
             DccPacket::LogonSelect {
                 manufacturer_id,
@@ -1038,7 +1046,7 @@ mod tests {
             DccPacket::LogonEnable {
                 group: logon_group(3),
                 command_station_id: u16::MAX,
-                session_id: u8::MAX,
+                session_id: LogonSessionId::new(u8::MAX),
             },
             DccPacket::LogonSelect {
                 manufacturer_id: u16::MAX,
@@ -1146,6 +1154,17 @@ mod tests {
         assert_eq!(packed.address(), None);
         assert!(!packed.flag(0));
         assert!(!packed.flag(1));
+    }
+
+    #[test]
+    fn test_packed_address_flags_field_replaces_previous_value() {
+        let packed = PackedAddressFlags::new(None)
+            .with_field(0, 2, 1)
+            .with_field(0, 2, 3);
+
+        assert_eq!(packed.field(0, 2), 3);
+        assert!(packed.flag(0));
+        assert!(packed.flag(1));
     }
 
     #[test]
@@ -1337,7 +1356,7 @@ mod tests {
         let packet = DccPacket::LogonEnable {
             group: logon_group(3),
             command_station_id: 0x0DCC,
-            session_id: 0x42,
+            session_id: LogonSessionId::new(0x42),
         };
         let bytes = packet.to_bytes().unwrap();
 
@@ -1372,7 +1391,7 @@ mod tests {
             0x0B, 0x0A, 0x00, 0x00, 0x8E, 0x40, 0x00, 0x0D, 0x67, 0x00, 0x01, 0x00,
         ];
 
-        assert_eq!(DccPacket::crc8_dallas_maxim(&data), 0x4C);
+        assert_eq!(crate::logon::crc8_dallas_maxim(&data), 0x4C);
     }
 
     #[test]

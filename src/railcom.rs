@@ -1,9 +1,10 @@
-//! RMT packet-boundary telemetry for RailCom integration.
+//! RailCom capture, decoding, attribution, and runtime dispatch.
 //!
-//! Counts DCC packet boundaries observed by the RMT ISR. Cutout authorisation
-//! lives in the scheduler (`dcc::scheduler`) and physical execution in
-//! `track_output`; this module only exposes a boundary counter so higher-level
-//! diagnostics can correlate ISR activity with scheduler/track events.
+//! The pure parser and pipeline turn UART windows into typed datagrams, the
+//! locomotive tracker correlates decoder sightings, and target-only adapters
+//! route logon and POM feedback. Cutout authorisation lives in the scheduler
+//! and physical timing in `track_output`; this module also exposes aggregate
+//! diagnostics across those paths.
 
 pub mod loco_tracker;
 pub mod parser;

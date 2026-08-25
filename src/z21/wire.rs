@@ -147,6 +147,24 @@ pub(super) fn write_loco_address_be(address: DccAddress, out: &mut [u8], pos: us
     }
 }
 
+/// Convert a public 1-based CV number into its 10-bit wire representation.
+#[must_use]
+pub(super) const fn cv_to_wire(cv: u16) -> Option<u16> {
+    match cv {
+        1..=1024 => Some(cv - 1),
+        _ => None,
+    }
+}
+
+/// Convert a 10-bit wire CV value into its public 1-based representation.
+#[must_use]
+pub(super) const fn cv_from_wire(wire_cv: u16) -> Option<u16> {
+    match wire_cv {
+        0..=1023 => Some(wire_cv + 1),
+        _ => None,
+    }
+}
+
 /// Convert a logical runtime speed (0..=28) into the Z21 wire representation.
 #[must_use]
 pub(super) const fn logical_to_z21_wire(speed: u8) -> Option<u8> {
@@ -201,5 +219,16 @@ mod tests {
         assert_eq!(z21_wire_to_logical(0x02), 1);
         assert_eq!(z21_wire_to_logical(0x18), 14);
         assert_eq!(z21_wire_to_logical(0x1F), 28);
+    }
+
+    #[test]
+    fn test_cv_wire_conversion_is_checked_and_reversible() {
+        assert_eq!(cv_to_wire(0), None);
+        assert_eq!(cv_to_wire(1), Some(0));
+        assert_eq!(cv_to_wire(1024), Some(1023));
+        assert_eq!(cv_to_wire(1025), None);
+        assert_eq!(cv_from_wire(0), Some(1));
+        assert_eq!(cv_from_wire(1023), Some(1024));
+        assert_eq!(cv_from_wire(1024), None);
     }
 }

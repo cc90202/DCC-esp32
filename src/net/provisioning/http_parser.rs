@@ -57,11 +57,27 @@ struct HeaderState {
     count: usize,
 }
 
+struct RequestMetadata<'a> {
+    request_line: RequestLine<'a>,
+    header_state: HeaderState,
+    body_start: usize,
+}
+
 pub(crate) fn parse_request(bytes: &[u8]) -> Result<ParsedRequest, ParseError> {
     if bytes.len() > MAX_REQUEST_BYTES {
         return Err(ParseError::PayloadTooLarge);
     }
 
+    let metadata = parse_request_metadata(bytes)?;
+    match (metadata.request_line.method, metadata.request_line.path) {
+        (Method::Get, "/") => Ok(ParsedRequest::GetRoot),
+        (Method::Get, _) => Err(ParseError::NotFound),
+        (Method::Post, "/save") => parse_save_request(bytes, metadata),
+        (Method::Post, _) => Err(ParseError::NotFound),
+    }
+}
+
+fn parse_request_metadata(bytes: &[u8]) -> Result<RequestMetadata<'_>, ParseError> {
     let header_end = match find_header_end(bytes) {
         Some(header_end) => header_end,
         None if bytes.len() > MAX_HEADER_BYTES => return Err(ParseError::HeaderTooLarge),
@@ -80,31 +96,37 @@ pub(crate) fn parse_request(bytes: &[u8]) -> Result<ParsedRequest, ParseError> {
 
     let request_line = parse_request_line(request_line)?;
     let header_state = parse_headers(header_lines)?;
-    let body_start = header_end + 4;
+    Ok(RequestMetadata {
+        request_line,
+        header_state,
+        body_start: header_end + 4,
+    })
+}
 
-    match (request_line.method, request_line.path) {
-        (Method::Get, "/") => Ok(ParsedRequest::GetRoot),
-        (Method::Get, _) => Err(ParseError::NotFound),
-        (Method::Post, "/save") => {
-            if !header_state.form_content_type {
-                return Err(ParseError::UnsupportedContentType);
-            }
-
-            let content_length = header_state
-                .content_length
-                .ok_or(ParseError::LengthRequired)?;
-            if content_length > MAX_BODY_BYTES || body_start + content_length > MAX_REQUEST_BYTES {
-                return Err(ParseError::PayloadTooLarge);
-            }
-            if bytes.len() < body_start + content_length {
-                return Err(ParseError::EarlyEof);
-            }
-
-            parse_form(&bytes[body_start..body_start + content_length])
-                .map(ParsedRequest::SaveCredentials)
-        }
-        (Method::Post, _) => Err(ParseError::NotFound),
+fn parse_save_request(
+    bytes: &[u8],
+    metadata: RequestMetadata<'_>,
+) -> Result<ParsedRequest, ParseError> {
+    if !metadata.header_state.form_content_type {
+        return Err(ParseError::UnsupportedContentType);
     }
+
+    let content_length = metadata
+        .header_state
+        .content_length
+        .ok_or(ParseError::LengthRequired)?;
+    let body_end = metadata
+        .body_start
+        .checked_add(content_length)
+        .ok_or(ParseError::PayloadTooLarge)?;
+    if content_length > MAX_BODY_BYTES || body_end > MAX_REQUEST_BYTES {
+        return Err(ParseError::PayloadTooLarge);
+    }
+    if bytes.len() < body_end {
+        return Err(ParseError::EarlyEof);
+    }
+
+    parse_form(&bytes[metadata.body_start..body_end]).map(ParsedRequest::SaveCredentials)
 }
 
 fn find_header_end(bytes: &[u8]) -> Option<usize> {

@@ -36,7 +36,10 @@
 //! Add 200Ω current-limiting resistors in series if using >5mA LEDs.
 
 use crate::application::StatusModel;
-use crate::system_status::LedState;
+use crate::runtime_channels::{
+    BootReadySender, DisplaySender, SystemStatusReceiver, announce_ready,
+};
+use crate::system_status::{BootReadyEvent, DisplayEvent, LedState, SystemStatusEvent};
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::gpio::{Level, Output};
 
@@ -94,44 +97,24 @@ fn blink_period_for(state: LedState) -> Option<Duration> {
 fn apply_status_event(
     model: &mut StatusModel,
     prev_state: &mut LedState,
-    event: crate::system_status::SystemStatusEvent,
-    display_sender: &embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::system_status::DisplayEvent,
-        8,
-    >,
+    event: SystemStatusEvent,
+    display_sender: &DisplaySender,
 ) {
     model.apply(event);
     let new_state = model.led_state();
     if new_state != *prev_state {
         *prev_state = new_state;
-        let _ = display_sender.try_send(crate::system_status::DisplayEvent::SystemState(new_state));
+        let _ = display_sender.try_send(DisplayEvent::SystemState(new_state));
     }
 }
 
 #[embassy_executor::task]
 pub async fn status_led_task(
-    status_receiver: embassy_sync::channel::Receiver<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::system_status::SystemStatusEvent,
-        16,
-    >,
+    status_receiver: SystemStatusReceiver,
     mut green_led: Output<'static>,
     mut red_led: Output<'static>,
-    display_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::system_status::DisplayEvent,
-        8,
-    >,
-    ready_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        crate::system_status::BootReadyEvent,
-        9,
-    >,
+    display_sender: DisplaySender,
+    ready_sender: BootReadySender,
 ) -> ! {
     let mut model = StatusModel::new();
     let mut blink_on = true;
@@ -139,9 +122,7 @@ pub async fn status_led_task(
 
     // Both LEDs start off until the first event is processed.
     set_both_off(&mut green_led, &mut red_led);
-    ready_sender
-        .send(crate::system_status::BootReadyEvent::StatusLed)
-        .await;
+    announce_ready(ready_sender, BootReadyEvent::StatusLed).await;
 
     loop {
         let state = model.led_state();

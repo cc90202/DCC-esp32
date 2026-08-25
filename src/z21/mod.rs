@@ -69,6 +69,23 @@ pub struct FrameKind {
     pub xheader: u8,
 }
 
+/// Selector carried by `LAN_RAILCOM_GETDATA`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum RailcomRequestType {
+    Locomotive,
+    Unsupported(u8),
+}
+
+impl From<u8> for RailcomRequestType {
+    fn from(value: u8) -> Self {
+        match value {
+            0x01 => Self::Locomotive,
+            value => Self::Unsupported(value),
+        }
+    }
+}
+
 /// Parsed Z21 command from an incoming UDP frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -128,7 +145,7 @@ pub enum Z21Command {
         address: DccAddress,
     },
     RailcomGetData {
-        request_type: u8,
+        request_type: RailcomRequestType,
         address: Option<DccAddress>,
     },
     /// `LAN_LOCONET_DETECTOR`: LocoNet track occupancy detector query.

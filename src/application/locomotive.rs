@@ -156,7 +156,7 @@ pub(crate) fn resolve_loco_lookup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dcc::{LocoSnapshot, LogicalSpeed};
+    use crate::dcc::{FunctionState, LocoSnapshot, LogicalSpeed};
 
     fn address(value: u8) -> DccAddress {
         DccAddress::new_short(value).unwrap()
@@ -167,7 +167,7 @@ mod tests {
             address: address(value),
             speed: LogicalSpeed::new(speed, SpeedFormat::Speed128).unwrap(),
             direction: Direction::Forward,
-            functions: 0,
+            functions: FunctionState::empty(),
         }
     }
 

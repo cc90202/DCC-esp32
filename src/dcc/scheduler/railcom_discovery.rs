@@ -1,4 +1,4 @@
-use crate::dcc::packet::{BinaryStateAddress, DccPacket, LogonGroup};
+use crate::dcc::packet::{BinaryStateAddress, DccPacket, LogonGroup, LogonSessionId};
 use embassy_time::{Duration, Instant};
 
 use super::railcom_policy::{record_track_logon_sent, record_track_search_sent};
@@ -8,7 +8,7 @@ use super::railcom_policy::{record_track_logon_sent, record_track_search_sent};
 const RAILCOM_TRACK_SEARCH_BIN_ADDR: u8 = 2;
 const RAILCOM_LOGON_GROUP_NOW: u8 = 3;
 const RAILCOM_LOGON_COMMAND_STATION_ID: u16 = 0x0DCC;
-const RAILCOM_LOGON_SESSION_ID: u8 = 1;
+const RAILCOM_LOGON_SESSION_ID: LogonSessionId = LogonSessionId::new(1);
 const RAILCOM_LOGON_ENABLE_STARTUP_REPEATS: u8 = 3;
 const RAILCOM_DISCOVERY_INTERVAL_MS: u64 = 1_000;
 /// ZIMO's reference decoder only answers app:search shortly after signal

@@ -17,7 +17,7 @@ pub(crate) mod track_control;
 
 pub use status::StatusModel;
 
-use crate::dcc::{DccAddress, Direction, LogicalSpeed};
+use crate::dcc::{DccAddress, Direction, FunctionState, LogicalSpeed};
 
 /// Scheduler-confirmed locomotive state exposed to interface adapters.
 ///
@@ -27,8 +27,7 @@ pub struct LocoState {
     pub address: DccAddress,
     pub speed: LogicalSpeed,
     pub direction: Direction,
-    /// F0-F28 bitmask, bit N = F(N), F0=bit0.
-    pub functions: u32,
+    pub functions: FunctionState,
 }
 
 /// Fixed-capacity read projection used by application policies.

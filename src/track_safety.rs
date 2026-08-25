@@ -5,7 +5,9 @@
 //! disabling the DRV8874 bridge, otherwise a normal stop can be misreported as
 //! a real short circuit.
 
-const INTENTIONAL_TRACK_OFF_SHORT_SUPPRESSION_MS: u64 = 250;
+use embassy_time::Duration;
+
+const INTENTIONAL_TRACK_OFF_SHORT_SUPPRESSION: Duration = Duration::from_millis(250);
 
 /// Disable track output immediately for an intentional stop/power-off action.
 ///
@@ -13,6 +15,8 @@ const INTENTIONAL_TRACK_OFF_SHORT_SUPPRESSION_MS: u64 = 250;
 /// `track_output::emergency_disable()` directly so it never masks an actual
 /// fault edge before cutting power.
 pub(crate) fn disable_track_intentionally() {
-    crate::short_detector::suppress_short_edges_for_ms(INTENTIONAL_TRACK_OFF_SHORT_SUPPRESSION_MS);
-    crate::track_output::emergency_disable();
+    crate::short_detector::suppress_short_edges_for(INTENTIONAL_TRACK_OFF_SHORT_SUPPRESSION);
+    if !crate::track_output::emergency_disable() {
+        defmt::warn!("track disable requested before hardware initialization");
+    }
 }

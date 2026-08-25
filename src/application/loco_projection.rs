@@ -2,7 +2,8 @@
 
 use crate::application::{LocoSlots, LocoState};
 use crate::dcc::{
-    DccAddress, Direction, LocoRequestResult, LocoSnapshot, LogicalSpeed, SpeedFormat,
+    DccAddress, Direction, FunctionState, LocoRequestResult, LocoSnapshot, LogicalSpeed,
+    SpeedFormat,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +44,7 @@ pub(crate) fn projected_or_neutral(slots: &LocoSlots, address: DccAddress) -> Lo
             address,
             speed: LogicalSpeed::zero(SpeedFormat::Speed128),
             direction: Direction::Forward,
-            functions: 0,
+            functions: FunctionState::empty(),
         })
 }
 
@@ -105,7 +106,7 @@ impl From<LocoSnapshot> for LocoState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dcc::{Direction, LogicalSpeed, SpeedFormat};
+    use crate::dcc::{Direction, FunctionState, LogicalSpeed, SpeedFormat};
 
     fn address(value: u8) -> DccAddress {
         DccAddress::new_short(value).unwrap()
@@ -116,7 +117,7 @@ mod tests {
             address: address(value),
             speed: LogicalSpeed::new(speed, SpeedFormat::Speed128).unwrap(),
             direction: Direction::Forward,
-            functions: u32::from(value),
+            functions: FunctionState::from_bits(u32::from(value)).unwrap(),
         }
     }
 

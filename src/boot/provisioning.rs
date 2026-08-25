@@ -1,8 +1,6 @@
 //! Persistent WiFi provisioning state and the safe reboot request task.
 
 use defmt::warn;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer};
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_storage::FlashStorage;
@@ -11,6 +9,7 @@ use crate::control_buttons::ProvisioningRequest;
 use crate::net::wifi_config::{
     EspWifiConfigStore, ProvisioningFlagStore, wifi_config_store_from_partition,
 };
+use crate::runtime_channels::{FaultEventSender, RuntimeReceiver};
 use crate::system_status::FaultEvent;
 
 use super::{BootError, CriticalTaskInit, WifiConfigInitError};
@@ -34,8 +33,8 @@ const PROVISIONING_TRACK_DISABLE_GRACE: Duration = Duration::from_millis(100);
 pub(super) async fn provisioning_request_task(
     mut flash: FlashStorage<'static>,
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
-    fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
-    receiver: Receiver<'static, CriticalSectionRawMutex, ProvisioningRequest, 1>,
+    fault_sender: FaultEventSender,
+    receiver: RuntimeReceiver<ProvisioningRequest, 1>,
 ) -> ! {
     loop {
         match receiver.receive().await {

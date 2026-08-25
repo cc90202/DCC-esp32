@@ -7,7 +7,6 @@ version      = "0.1.0"
 
 [features]
 default = []
-dcc-validator = []
 
 [[bin]]
 name = "dcc-esp32"

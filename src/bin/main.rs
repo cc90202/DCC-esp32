@@ -41,7 +41,12 @@ mod firmware {
 
     #[inline(always)]
     fn fail_fast(error: BootError) -> ! {
-        defmt::error!("boot: fatal ({:?}): {}", error.action(), error.message());
+        defmt::error!(
+            "boot: fatal action={:?} error={:?}: {}",
+            error.action(),
+            error,
+            error.message()
+        );
         esp_hal::system::software_reset()
     }
 

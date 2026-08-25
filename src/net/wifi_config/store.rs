@@ -4,6 +4,8 @@
 //! production adapter can use `esp-storage` without a project-specific flash
 //! abstraction.
 
+use core::fmt;
+
 use super::credentials::WifiCredentials;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 
@@ -41,6 +43,19 @@ pub enum StoreError {
     Corrupt,
     MissingCredentials,
     BufferTooSmall,
+}
+
+impl fmt::Display for StoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FlashRead => formatter.write_str("WiFi configuration flash read failed"),
+            Self::FlashErase => formatter.write_str("WiFi configuration flash erase failed"),
+            Self::FlashWrite => formatter.write_str("WiFi configuration flash write failed"),
+            Self::Corrupt => formatter.write_str("WiFi configuration is corrupt"),
+            Self::MissingCredentials => formatter.write_str("WiFi credentials are missing"),
+            Self::BufferTooSmall => formatter.write_str("WiFi configuration buffer is too small"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

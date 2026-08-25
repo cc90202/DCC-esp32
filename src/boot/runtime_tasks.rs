@@ -2,39 +2,38 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Timer};
 use esp_hal::uart::UartRx;
 
 use crate::cutout::RailcomChannel;
-use crate::dcc::{
-    DccFrame, LocoRequestMessage, LocoResponse, SchedulerCommand, packet_scheduler_task,
-};
+use crate::dcc::packet_scheduler_task;
 use crate::dcc_runtime::dcc_engine_task;
 use crate::net::udp_control::{NetTaskChannels, net_task};
 use crate::net::wifi_config::WifiCredentials;
-use crate::railcom::uart_reader::RailcomRxOutput;
-use crate::system_status::{BootReadyEvent, DisplayEvent, FaultEvent};
+use crate::runtime_channels::{
+    BootReadySender, DccFrameReceiver, DccFrameSender, DisplayReceiver, DisplaySender,
+    FaultEventSender, LocoRequestReceiver, LocoResponseSender, RailcomRxOutputSender,
+    RuntimeSender, SchedulerCommandReceiver, SchedulerCommandSender, announce_ready,
+};
+use crate::system_status::BootReadyEvent;
 
 use super::CriticalTaskInit;
-use super::readiness::announce_ready;
 
 pub(super) struct NetTaskWrapperContext {
     pub(super) spawner: Spawner,
     pub(super) wifi: esp_hal::peripherals::WIFI<'static>,
     pub(super) credentials: WifiCredentials,
-    pub(super) scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    pub(super) fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
+    pub(super) scheduler_sender: SchedulerCommandSender,
+    pub(super) fault_sender: FaultEventSender,
     pub(super) channels: NetTaskChannels,
-    pub(super) failure_sender: Sender<'static, CriticalSectionRawMutex, CriticalTaskInit, 4>,
+    pub(super) failure_sender: RuntimeSender<CriticalTaskInit, 4>,
 }
 
 #[embassy_executor::task]
 pub(super) async fn dcc_engine_task_wrapper(
-    receiver: Receiver<'static, CriticalSectionRawMutex, DccFrame, 16>,
-    fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
+    receiver: DccFrameReceiver,
+    fault_sender: FaultEventSender,
+    ready_sender: BootReadySender,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::DccEngine).await;
     dcc_engine_task(receiver, fault_sender).await
@@ -76,7 +75,10 @@ pub(super) async fn net_task_wrapper(context: NetTaskWrapperContext) {
             }
         }
         Err(error) => {
-            defmt::error!("boot: network init failed: {}", error.as_str());
+            defmt::error!(
+                "boot: network init failed: {}",
+                defmt::Display2Format(&error)
+            );
             failure_sender.send(CriticalTaskInit::Net(error)).await;
         }
     }
@@ -85,20 +87,20 @@ pub(super) async fn net_task_wrapper(context: NetTaskWrapperContext) {
 #[embassy_executor::task]
 pub(super) async fn display_task_wrapper(
     i2c: Option<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
-    receiver: Receiver<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
+    receiver: DisplayReceiver,
+    ready_sender: BootReadySender,
 ) -> ! {
     crate::display::display_task(i2c, receiver, ready_sender).await
 }
 
 #[embassy_executor::task]
 pub(super) async fn scheduler_task_wrapper(
-    command_receiver: Receiver<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    loco_request_receiver: Receiver<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
-    loco_response_sender: Sender<'static, CriticalSectionRawMutex, LocoResponse, 1>,
-    sender: Sender<'static, CriticalSectionRawMutex, DccFrame, 16>,
-    display_sender: Sender<'static, CriticalSectionRawMutex, DisplayEvent, 8>,
-    ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
+    command_receiver: SchedulerCommandReceiver,
+    loco_request_receiver: LocoRequestReceiver,
+    loco_response_sender: LocoResponseSender,
+    sender: DccFrameSender,
+    display_sender: DisplaySender,
+    ready_sender: BootReadySender,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::Scheduler).await;
     packet_scheduler_task(
@@ -114,7 +116,7 @@ pub(super) async fn scheduler_task_wrapper(
 #[embassy_executor::task]
 pub(super) async fn railcom_isr_capture_task_wrapper(
     uart_rx: UartRx<'static, esp_hal::Async>,
-    result_sender: Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
+    result_sender: RailcomRxOutputSender,
 ) -> ! {
     crate::railcom_capture::railcom_isr_capture_task(uart_rx, result_sender).await
 }
