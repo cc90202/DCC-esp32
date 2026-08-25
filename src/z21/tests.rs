@@ -766,3 +766,31 @@ fn test_encode_turnout_info_unknown_state() {
     assert_eq!(buf[7], 0x00); // DB2: state unknown
     assert_eq!(buf[8], 0x43 ^ 0x05); // XCS
 }
+
+#[test]
+fn frame_iterator_reports_one_terminal_boundary_error() {
+    let first = frame_header_only(0x0010);
+    let mut datagram = [0u8; 6];
+    datagram[..4].copy_from_slice(&first);
+    datagram[4..].copy_from_slice(&[0x06, 0x00]);
+
+    let mut frames = iter_frames(&datagram);
+    assert_eq!(frames.next(), Some(Ok(first.as_slice())));
+    assert_eq!(
+        frames.next(),
+        Some(Err(FrameBoundaryError::TruncatedHeader { remaining: 2 }))
+    );
+    assert_eq!(frames.next(), None);
+}
+
+#[test]
+fn frame_iterator_rejects_declared_length_past_datagram() {
+    let datagram = [0x08, 0x00, 0x10, 0x00];
+    assert_eq!(
+        iter_frames(&datagram).next(),
+        Some(Err(FrameBoundaryError::InvalidLength {
+            declared: 8,
+            remaining: 4,
+        }))
+    );
+}

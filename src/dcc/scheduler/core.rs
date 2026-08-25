@@ -6,13 +6,17 @@
 
 #[cfg(target_arch = "riscv32")]
 use crate::cutout::CutoutMode;
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(test, target_arch = "riscv32"))]
 use crate::dcc::PomRequestId;
 use crate::dcc::packet::DccPacket;
 
 use super::railcom_policy::PacketClass;
-use super::slot_manager::{SlotManager, allowed_slot_visits_without_function};
-use super::{LocoRequestMessage, LocoRequestResult, LocoResponse, SchedulerCommand};
+use super::slot_manager::{
+    PacketAuthority, ScheduledPacket, SlotManager, allowed_slot_visits_without_function,
+};
+use super::{
+    LocoRequestMessage, LocoRequestResult, LocoResponse, SchedulerCommand, SchedulerRequest,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CommandOutcome {
@@ -83,9 +87,16 @@ impl SchedulerCore {
     }
 
     /// Apply one request against authoritative state and stage its response.
-    pub(super) fn handle_loco_request(&mut self, message: LocoRequestMessage, now_ticks: u64) {
+    pub(super) fn handle_loco_request(
+        &mut self,
+        message: LocoRequestMessage,
+        now_ticks: u64,
+        accepts: impl Fn(crate::authority::LeasePermit) -> bool,
+        accept_epoch: impl FnOnce(crate::authority::LeasePermit) -> bool,
+    ) {
         debug_assert!(self.loco_response_outbox.is_ready());
-        let response = handle_loco_request_message(&mut self.slots, message, now_ticks);
+        let response =
+            handle_loco_request_message(&mut self.slots, message, now_ticks, accepts, accept_epoch);
         self.loco_response_outbox.stage(response);
     }
 
@@ -103,13 +114,50 @@ impl SchedulerCore {
     }
 
     /// Build the next classified packet using the current slot-count budget.
-    pub(super) fn next_packet(&mut self) -> (DccPacket, PacketClass) {
+    pub(super) fn next_packet(&mut self) -> ScheduledPacket {
         let slot_count = self.slots.slot_count();
         self.slots
             .build_next_packet_classified_with_function_budget(
                 allowed_slot_visits_without_function(slot_count.max(1)),
             )
-            .unwrap_or((DccPacket::Idle, PacketClass::Idle))
+            .map(|(packet, class)| ScheduledPacket {
+                packet,
+                class,
+                authority: self.slots.take_dequeued_authority(),
+            })
+            .unwrap_or(ScheduledPacket {
+                packet: DccPacket::Idle,
+                class: PacketClass::Idle,
+                authority: PacketAuthority::None,
+            })
+    }
+
+    pub(super) fn discard_pom(
+        &mut self,
+        request_id: PomRequestId,
+        permit: crate::authority::LeasePermit,
+    ) {
+        self.slots.discard_pom(request_id, permit);
+    }
+
+    #[cfg(target_arch = "riscv32")]
+    pub(super) fn quiesce_for_power_on(&mut self) {
+        self.slots.quiesce_for_power_on();
+    }
+
+    pub(super) fn authorize_for_emission(
+        &mut self,
+        scheduled: ScheduledPacket,
+        accepts: impl FnOnce(crate::authority::LeasePermit) -> bool,
+    ) -> bool {
+        let PacketAuthority::Pom { request_id, permit } = scheduled.authority else {
+            return true;
+        };
+        if accepts(permit) {
+            return true;
+        }
+        self.discard_pom(request_id, permit);
+        false
     }
 
     #[must_use]
@@ -126,11 +174,33 @@ pub(super) fn handle_loco_request_message(
     slot_manager: &mut SlotManager,
     message: LocoRequestMessage,
     now_ticks: u64,
+    accepts: impl Fn(crate::authority::LeasePermit) -> bool,
+    accept_epoch: impl FnOnce(crate::authority::LeasePermit) -> bool,
 ) -> LocoResponse {
     let result = if message.deadline.is_expired_at(now_ticks) {
         LocoRequestResult::Expired
     } else {
-        slot_manager.handle_loco_request(message.request)
+        match message.request {
+            SchedulerRequest::ResetForLease { permit } if accepts(permit) => {
+                if accept_epoch(permit) {
+                    slot_manager.reset_for_lease(permit);
+                    LocoRequestResult::LeaseReset(permit.epoch())
+                } else {
+                    LocoRequestResult::Rejected
+                }
+            }
+            SchedulerRequest::ResetForLease { .. } => LocoRequestResult::Rejected,
+            SchedulerRequest::Loco { request, permit } => {
+                if !request.requires_lease()
+                    || permit
+                        .is_some_and(|permit| accepts(permit) && slot_manager.accepts_lease(permit))
+                {
+                    slot_manager.handle_loco_request(request)
+                } else {
+                    LocoRequestResult::Rejected
+                }
+            }
+        }
     };
     LocoResponse {
         request_id: message.request_id,
@@ -145,6 +215,10 @@ mod tests {
 
     fn address() -> DccAddress {
         DccAddress::new_short(3).expect("valid test address")
+    }
+
+    fn permit() -> crate::authority::LeasePermit {
+        crate::authority::LeasePermit::new(crate::authority::LeaseEpoch::new(1), u64::MAX)
     }
 
     #[test]
@@ -168,10 +242,15 @@ mod tests {
         core.handle_loco_request(
             LocoRequestMessage {
                 request_id: super::super::LocoRequestId::new(41),
-                request: super::super::LocoRequest::GetState { address: address() },
+                request: SchedulerRequest::Loco {
+                    request: super::super::LocoRequest::GetState { address: address() },
+                    permit: Some(permit()),
+                },
                 deadline: super::super::LocoRequestDeadline::from_ticks(101),
             },
             100,
+            |_| true,
+            |_| true,
         );
 
         assert!(!core.flush_loco_response_with(Err));
@@ -195,17 +274,24 @@ mod tests {
     #[test]
     fn accepted_command_mutates_authoritative_slot_state() {
         let mut core = SchedulerCore::new();
+        let permit = permit();
+        core.slots.reset_for_lease(permit);
         core.handle_loco_request(
             LocoRequestMessage {
                 request_id: super::super::LocoRequestId::new(42),
-                request: super::super::LocoRequest::SetSpeed {
-                    address: address(),
-                    speed: LogicalSpeed::new(4, SpeedFormat::Speed128).unwrap(),
-                    direction: Direction::Forward,
+                request: SchedulerRequest::Loco {
+                    request: super::super::LocoRequest::SetSpeed {
+                        address: address(),
+                        speed: LogicalSpeed::new(4, SpeedFormat::Speed128).unwrap(),
+                        direction: Direction::Forward,
+                    },
+                    permit: Some(permit),
                 },
                 deadline: super::super::LocoRequestDeadline::from_ticks(101),
             },
             100,
+            |_| true,
+            |_| true,
         );
         assert_eq!(core.slot_count(), 1);
 
@@ -213,8 +299,34 @@ mod tests {
             core.handle_command(SchedulerCommand::EmergencyStopAll),
             CommandOutcome::Applied
         );
-        let (packet, class) = core.next_packet();
-        assert_eq!(packet, DccPacket::BroadcastStop);
-        assert_eq!(class, PacketClass::Safety);
+        let scheduled = core.next_packet();
+        assert_eq!(scheduled.packet, DccPacket::BroadcastStop);
+        assert_eq!(scheduled.class, PacketClass::Safety);
+    }
+
+    #[test]
+    fn revoked_pom_is_discarded_at_emission_boundary() {
+        let mut core = SchedulerCore::new();
+        let permit = permit();
+        core.slots.reset_for_lease(permit);
+        assert_eq!(
+            core.handle_command(SchedulerCommand::ProgramOnMain {
+                request_id: PomRequestId::new(77),
+                permit,
+                packet: DccPacket::PomReadByte {
+                    address: address(),
+                    cv: crate::dcc::PomCv::new(1).expect("valid CV"),
+                },
+            }),
+            CommandOutcome::Applied
+        );
+
+        let safety = core.next_packet();
+        assert!(core.authorize_for_emission(safety, |_| false));
+
+        let programming = core.next_packet();
+        assert_eq!(programming.class, PacketClass::Programming);
+        assert!(!core.authorize_for_emission(programming, |_| false));
+        assert_ne!(core.next_packet().class, PacketClass::Programming);
     }
 }

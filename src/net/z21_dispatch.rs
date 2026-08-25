@@ -6,6 +6,7 @@
 use defmt::{info, warn};
 
 use crate::application::LocoSlots;
+use crate::application::client_safety::LeaseActivity;
 use crate::application::track_control::TrackPowerRequest;
 use crate::net::z21_context::Z21Ctx;
 use crate::z21::{self as z21_proto, HEADER_XBUS, Z21Command};
@@ -21,6 +22,30 @@ pub(crate) use locomotive::loco_command_rejected_count;
 pub(crate) use railcom::railcom_getdata_no_data_count;
 pub(super) use track::encode_system_state;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LeaseClassification {
+    Activity(LeaseActivity),
+    SafetyCommand,
+    None,
+}
+
+#[must_use]
+pub(super) const fn classify_lease_activity(command: Z21Command) -> LeaseClassification {
+    match command {
+        Z21Command::SetTrackPowerOn
+        | Z21Command::SetLocoDrive { .. }
+        | Z21Command::SetLocoFunction { .. }
+        | Z21Command::CvPomWriteByte { .. }
+        | Z21Command::CvPomReadByte { .. } => LeaseClassification::Activity(LeaseActivity::Acquire),
+        Z21Command::Logoff => LeaseClassification::Activity(LeaseActivity::Logoff),
+        Z21Command::SetTrackPowerOff | Z21Command::SetStop | Z21Command::SetLocoEstop { .. } => {
+            LeaseClassification::SafetyCommand
+        }
+        Z21Command::Unknown => LeaseClassification::None,
+        _ => LeaseClassification::Activity(LeaseActivity::KeepAlive),
+    }
+}
+
 pub(in crate::net) fn encoded_len(result: Option<usize>) -> usize {
     match result {
         Some(len) => len,
@@ -31,23 +56,16 @@ pub(in crate::net) fn encoded_len(result: Option<usize>) -> usize {
     }
 }
 
-/// Parse one incoming Z21 frame, route it, and build any immediate response.
-pub(super) async fn handle_packet(
-    buf: &[u8],
+/// Route one already parsed Z21 command and build any immediate response.
+pub(super) async fn handle_command(
+    command: Z21Command,
+    raw_frame: &[u8],
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
 ) -> usize {
-    let command = match z21_proto::parse_frame(buf) {
-        Ok(command) => command,
-        Err(error) => {
-            warn!("Z21 parse error: {:?}", error);
-            return encoded_len(z21_proto::encode_unknown_command(out));
-        }
-    };
-
     log_command(command);
-    route_command(command, buf, loco_slots, out, ctx).await
+    route_command(command, raw_frame, loco_slots, out, ctx).await
 }
 
 fn log_command(command: Z21Command) {
@@ -80,7 +98,15 @@ async fn route_command(
         }
         Z21Command::GetStatus => track::encode_current_status(ctx.track.status_model, out),
         Z21Command::SetTrackPowerOn => {
-            track::apply_power_request(TrackPowerRequest::Enable, out, &ctx.track).await
+            let Some(permit) = ctx.track.lease_permit else {
+                warn!("Z21 power-on rejected without a controller lease");
+                return 0;
+            };
+            if !crate::track_authority::accepts(permit, embassy_time::Instant::now().as_millis()) {
+                warn!("Z21 power-on rejected with an expired controller lease");
+                return 0;
+            }
+            track::apply_power_request(TrackPowerRequest::Enable(permit), out, &ctx.track).await
         }
         Z21Command::SetTrackPowerOff => {
             track::apply_power_request(TrackPowerRequest::Disable, out, &ctx.track).await

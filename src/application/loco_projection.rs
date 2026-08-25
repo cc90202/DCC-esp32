@@ -29,7 +29,8 @@ pub(crate) fn apply_loco_result(
         LocoRequestResult::Full
         | LocoRequestResult::NotFound
         | LocoRequestResult::Rejected
-        | LocoRequestResult::Expired => Ok(None),
+        | LocoRequestResult::Expired
+        | LocoRequestResult::LeaseReset(_) => Ok(None),
     }
 }
 

@@ -293,11 +293,16 @@ fn record_parsed_items(items: &[RailcomItem]) {
 mod tests {
     use super::*;
     use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE, RailcomDatagram};
+    use std::sync::Mutex;
 
     const TEST_ID0_CODE_0X42: [u8; 2] = [0b1010_1010, 0b1010_1001];
+    static RAILCOM_RX_STATS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_process_rx_window_empty_window() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
         let window = RailcomRxWindow::try_new(7, RailcomChannel::Channel2, &[])
             .expect("empty window must fit");
@@ -313,6 +318,9 @@ mod tests {
 
     #[test]
     fn test_process_rx_window_channel2_parsed() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
         let raw = [ACK_1_CODE, TEST_ID0_CODE_0X42[0], TEST_ID0_CODE_0X42[1]];
         let window = RailcomRxWindow::try_new(11, RailcomChannel::Channel2, &raw)
@@ -337,6 +345,9 @@ mod tests {
 
     #[test]
     fn test_process_rx_window_partial_unsupported_datagram_keeps_prefix() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
         let raw = [ACK_1_CODE, 0b1011_0010, 0b1010_1100];
         let window = RailcomRxWindow::try_new(21, RailcomChannel::Channel2, &raw)
@@ -355,6 +366,9 @@ mod tests {
 
     #[test]
     fn test_pom_delivery_counters_are_independent() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
 
         record_pom_result_forwarded();
@@ -369,6 +383,9 @@ mod tests {
 
     #[test]
     fn test_process_rx_window_channel2_parse_error() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
         let window = RailcomRxWindow::try_new(15, RailcomChannel::Channel2, &[0xff])
             .expect("single-byte window must fit");
@@ -398,6 +415,9 @@ mod tests {
 
     #[test]
     fn test_process_rx_window_channel1_parses_address_datagram() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
         let raw = [0b1001_1001, 0b1100_1001];
         let window = RailcomRxWindow::try_new(19, RailcomChannel::Channel1, &raw)
@@ -420,6 +440,9 @@ mod tests {
 
     #[test]
     fn test_process_rx_window_channel1_accepts_ack() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
         let window = RailcomRxWindow::try_new(19, RailcomChannel::Channel1, &[ACK_2_CODE])
             .expect("single-byte CH1 window must fit");
@@ -453,6 +476,9 @@ mod tests {
 
     #[test]
     fn test_record_oversized_window_updates_aggregate_stats() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
         reset_railcom_rx_stats();
         record_oversized_window();
 

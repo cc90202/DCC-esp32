@@ -7,8 +7,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Instant, with_timeout};
 
+use crate::application::LeasePermit;
+#[cfg(target_arch = "riscv32")]
+use crate::dcc::LocoRequestResult;
 use crate::dcc::{
     LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoResponse,
+    SchedulerRequest,
 };
 
 const LOCO_EXECUTION_TIMEOUT_MS: u64 = 200;
@@ -34,6 +38,7 @@ pub(super) async fn request_loco(
     request_sender: &Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
     response_receiver: &Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
     next_request_id: &Cell<u32>,
+    permit: Option<LeasePermit>,
     request: LocoRequest,
 ) -> Option<LocoResponse> {
     while response_receiver.try_receive().is_ok() {}
@@ -43,7 +48,7 @@ pub(super) async fn request_loco(
     let response_deadline = now + LOCO_RESPONSE_TIMEOUT;
     let message = LocoRequestMessage {
         request_id,
-        request,
+        request: SchedulerRequest::Loco { request, permit },
         deadline: LocoRequestDeadline::from_ticks((now + LOCO_EXECUTION_TIMEOUT).as_ticks()),
     };
 
@@ -63,6 +68,39 @@ pub(super) async fn request_loco(
         };
         if response.request_id == request_id {
             return Some(response);
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+pub(super) async fn reset_for_lease(
+    request_sender: &Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
+    response_receiver: &Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
+    next_request_id: &Cell<u32>,
+    permit: LeasePermit,
+) -> bool {
+    while response_receiver.try_receive().is_ok() {}
+    let request_id = next_loco_request_id(next_request_id);
+    let now = Instant::now();
+    let message = LocoRequestMessage {
+        request_id,
+        request: SchedulerRequest::ResetForLease { permit },
+        deadline: LocoRequestDeadline::from_ticks((now + LOCO_EXECUTION_TIMEOUT).as_ticks()),
+    };
+    if with_timeout(LOCO_RESPONSE_TIMEOUT, request_sender.send(message))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let deadline = now + LOCO_RESPONSE_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let Ok(response) = with_timeout(remaining, response_receiver.receive()).await else {
+            return false;
+        };
+        if response.request_id == request_id {
+            return response.result == LocoRequestResult::LeaseReset(permit.epoch());
         }
     }
 }
@@ -132,6 +170,7 @@ mod tests {
             &REQUESTS.sender(),
             &RESPONSES.receiver(),
             &Cell::new(7),
+            None,
             LocoRequest::GetState { address: address() },
         ));
 
@@ -153,7 +192,10 @@ mod tests {
             .sender()
             .try_send(LocoRequestMessage {
                 request_id: LocoRequestId::new(1),
-                request: LocoRequest::GetState { address: address() },
+                request: SchedulerRequest::Loco {
+                    request: LocoRequest::GetState { address: address() },
+                    permit: None,
+                },
                 deadline: LocoRequestDeadline::from_ticks(u64::MAX),
             })
             .expect("test request channel starts empty");
@@ -163,6 +205,7 @@ mod tests {
             &REQUESTS.sender(),
             &RESPONSES.receiver(),
             &Cell::new(2),
+            None,
             LocoRequest::GetState { address: address() },
         ));
 
@@ -205,6 +248,7 @@ mod tests {
             &REQUESTS.sender(),
             &RESPONSES.receiver(),
             &Cell::new(11),
+            None,
             LocoRequest::GetState { address: address() },
         ));
         if let Some(response) = response {
@@ -236,12 +280,14 @@ mod tests {
             &REQUESTS.sender(),
             &RESPONSES.receiver(),
             &next_request_id,
+            None,
             LocoRequest::GetState { address: address() },
         ));
         let second = block_on(request_loco(
             &REQUESTS.sender(),
             &RESPONSES.receiver(),
             &next_request_id,
+            None,
             LocoRequest::GetState { address: address() },
         ));
 

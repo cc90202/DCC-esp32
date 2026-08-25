@@ -5,6 +5,8 @@
 
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod client_safety;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod lease_registry;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod loco_projection;
 #[cfg(any(test, target_arch = "riscv32"))]
@@ -15,6 +17,7 @@ pub mod status;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod track_control;
 
+pub use crate::authority::{LeaseEpoch, LeasePermit};
 pub use status::StatusModel;
 
 use crate::dcc::{DccAddress, Direction, FunctionState, LogicalSpeed};

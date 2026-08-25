@@ -1,11 +1,12 @@
 //! Framework-independent application policy for track power and status.
 
 use crate::application::StatusModel;
+use crate::authority::LeasePermit;
 use crate::system_status::{FaultEvent, SystemStatusEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrackPowerRequest {
-    Enable,
+    Enable(LeasePermit),
     Disable,
     EmergencyStop,
 }
@@ -26,9 +27,9 @@ pub(crate) struct TrackPowerDecision {
 #[must_use]
 pub(crate) const fn decide_track_power(request: TrackPowerRequest) -> TrackPowerDecision {
     match request {
-        TrackPowerRequest::Enable => TrackPowerDecision {
+        TrackPowerRequest::Enable(permit) => TrackPowerDecision {
             disable_output_immediately: false,
-            fault_event: FaultEvent::ResumeShortPressed,
+            fault_event: FaultEvent::NetworkResume(permit),
             feedback: TrackPowerFeedback::None,
         },
         TrackPowerRequest::Disable => TrackPowerDecision {
@@ -115,10 +116,16 @@ mod tests {
     #[test]
     fn enable_requests_resume_without_touching_output_directly() {
         assert_eq!(
-            decide_track_power(TrackPowerRequest::Enable),
+            decide_track_power(TrackPowerRequest::Enable(LeasePermit::new(
+                crate::authority::LeaseEpoch::new(1),
+                u64::MAX,
+            ))),
             TrackPowerDecision {
                 disable_output_immediately: false,
-                fault_event: FaultEvent::ResumeShortPressed,
+                fault_event: FaultEvent::NetworkResume(LeasePermit::new(
+                    crate::authority::LeaseEpoch::new(1),
+                    u64::MAX,
+                )),
                 feedback: TrackPowerFeedback::None,
             }
         );

@@ -319,6 +319,11 @@ impl TrackOutput {
             }
         });
     }
+
+    #[must_use]
+    pub fn is_track_enabled(&self) -> bool {
+        TRACK_ENABLED.load(Ordering::Acquire)
+    }
 }
 
 /// Immediately disables the track output before asynchronous fault handling.

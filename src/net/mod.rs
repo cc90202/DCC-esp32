@@ -1,5 +1,7 @@
 //! Network infrastructure: WiFi, provisioning, and UDP transport adapters.
 
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod client_watchdog;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod loco_client;
 #[cfg(target_arch = "riscv32")]

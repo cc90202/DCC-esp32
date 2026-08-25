@@ -106,6 +106,8 @@ pub enum CriticalTask {
     ResumeButton,
     /// Track short-circuit detector task.
     ShortDetector,
+    /// Controller lease watchdog task.
+    LeaseWatchdog,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -229,6 +231,9 @@ impl BootError {
             }
             Self::CriticalTaskSpawn(CriticalTask::ShortDetector) => {
                 "failed to spawn short_detector_task"
+            }
+            Self::CriticalTaskSpawn(CriticalTask::LeaseWatchdog) => {
+                "failed to spawn client_watchdog_task"
             }
             Self::CriticalTaskInit(CriticalTaskInit::FaultStateReceiverUnavailable) => {
                 "fault-state watch receiver already taken"

@@ -104,9 +104,9 @@ pub(super) async fn handle_cv_pom_write(
         Err(error) => return reject_admission(out, ctx, address, cv, PomOperation::Write, error),
     };
 
-    ctx.scheduler_sender
-        .send(crate::dcc::SchedulerCommand::SuspendRailcomDiscovery)
-        .await;
+    let Some(permit) = ctx.lease_permit else {
+        return encode_nack(out);
+    };
 
     let reply = classify_reply(
         request_pom(
@@ -115,6 +115,7 @@ pub(super) async fn handle_cv_pom_write(
             ctx.next_request_id,
             |request_id| PomRequest::Write {
                 request_id,
+                permit,
                 address: plan.address,
                 cv: plan.cv,
                 value: plan.value,
@@ -147,10 +148,14 @@ pub(super) async fn handle_cv_pom_read(
         Ok(plan) => plan,
         Err(error) => return reject_admission(out, ctx, address, cv, PomOperation::Read, error),
     };
+    let Some(permit) = ctx.lease_permit else {
+        return encode_nack(out);
+    };
     let refresh = request_loco(
         ctx.loco.request_sender,
         ctx.loco.response_receiver,
         ctx.loco.next_request_id,
+        Some(permit),
         plan.refresh_request,
     )
     .await;
@@ -184,10 +189,6 @@ pub(super) async fn handle_cv_pom_read(
         }
     }
 
-    ctx.scheduler_sender
-        .send(crate::dcc::SchedulerCommand::SuspendRailcomDiscovery)
-        .await;
-
     let reply = classify_reply(
         request_pom(
             ctx.request_sender,
@@ -195,6 +196,7 @@ pub(super) async fn handle_cv_pom_read(
             ctx.next_request_id,
             |request_id| PomRequest::Read {
                 request_id,
+                permit,
                 address: plan.address,
                 cv: plan.cv,
             },

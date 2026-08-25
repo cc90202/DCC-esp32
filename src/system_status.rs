@@ -135,6 +135,7 @@ pub enum BootReadyEvent {
     StopButton,
     ResumeButton,
     ShortDetector,
+    LeaseWatchdog,
 }
 
 // --- Fault manager events ---
@@ -144,6 +145,8 @@ pub enum BootReadyEvent {
 // detector, control buttons, net) that must not depend on `fault_manager`
 // itself, which also depends on `dcc::SchedulerCommand`. Keeping the event
 // type in this pure, dependency-free hub breaks that cycle.
+
+use crate::authority::LeasePermit;
 
 /// External events consumed by the fault state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +160,9 @@ pub enum FaultEvent {
     ResumeShortPressed,
     /// Resume button long-press (≥2 s): force-clears any latched state.
     ResumeLongPressed,
+    /// Network power-on request carrying the lease that must still be current
+    /// when the physical output is enabled.
+    NetworkResume(LeasePermit),
     /// Hardware or service fault detected (e.g. track short, CV error).
     FaultLatched(FaultCause),
     /// Fault condition resolved by automated service logic.

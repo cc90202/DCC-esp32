@@ -55,6 +55,7 @@ pub(super) async fn get_info(
         ctx.request_sender,
         ctx.response_receiver,
         ctx.next_request_id,
+        None,
         LocoRequest::GetState { address },
     )
     .await;
@@ -232,10 +233,15 @@ async fn apply_requested_change(
     command_kind: &str,
 ) -> LocoCommandOutcome {
     let address = request.address();
+    let permit = request
+        .requires_lease()
+        .then_some(ctx.lease_permit)
+        .flatten();
     let response = request_loco(
         ctx.request_sender,
         ctx.response_receiver,
         ctx.next_request_id,
+        permit,
         request,
     )
     .await;

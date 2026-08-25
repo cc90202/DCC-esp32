@@ -98,17 +98,29 @@ pub fn frame_kind(buf: &[u8]) -> FrameKind {
     FrameKind { header, xheader }
 }
 
-/// Return the byte length of the first frame in `buf`, or `None` if the
-/// buffer is too short or contains an invalid length field.
-pub(super) fn frame_len(buf: &[u8]) -> Option<usize> {
+/// Why a concatenated Z21 datagram cannot be split at its next frame boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum FrameBoundaryError {
+    TruncatedHeader { remaining: usize },
+    InvalidLength { declared: usize, remaining: usize },
+}
+
+/// Return the byte length of the first frame in `buf`.
+fn frame_len(buf: &[u8]) -> Result<usize, FrameBoundaryError> {
     if buf.len() < 4 {
-        return None;
+        return Err(FrameBoundaryError::TruncatedHeader {
+            remaining: buf.len(),
+        });
     }
     let len = u16::from_le_bytes([buf[0], buf[1]]) as usize;
     if len < 4 || len > buf.len() {
-        None
+        Err(FrameBoundaryError::InvalidLength {
+            declared: len,
+            remaining: buf.len(),
+        })
     } else {
-        Some(len)
+        Ok(len)
     }
 }
 
@@ -121,12 +133,22 @@ pub struct FrameIter<'a> {
 }
 
 impl<'a> Iterator for FrameIter<'a> {
-    type Item = &'a [u8];
+    type Item = Result<&'a [u8], FrameBoundaryError>;
+
     fn next(&mut self) -> Option<Self::Item> {
-        let len = frame_len(self.buf)?;
+        if self.buf.is_empty() {
+            return None;
+        }
+        let len = match frame_len(self.buf) {
+            Ok(len) => len,
+            Err(error) => {
+                self.buf = &[];
+                return Some(Err(error));
+            }
+        };
         let frame = &self.buf[..len];
         self.buf = &self.buf[len..];
-        Some(frame)
+        Some(Ok(frame))
     }
 }
 

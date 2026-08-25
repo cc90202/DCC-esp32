@@ -4,7 +4,7 @@ use embassy_futures::yield_now;
 use embassy_time::Instant;
 
 use crate::cutout::CutoutMode;
-use crate::dcc::{DccFrame, DccPacket};
+use crate::dcc::{DccFrame, DccPacket, PowerGeneration};
 use crate::runtime_channels::{
     DccFrameSender, DisplaySender, LocoRequestReceiver, LocoResponseSender, RuntimeChannel,
     SchedulerCommandReceiver,
@@ -14,16 +14,18 @@ use crate::system_status::DisplayEvent;
 use super::core::{CommandOutcome, SchedulerCore};
 use super::railcom_discovery::RailcomDiscovery;
 use super::railcom_policy::{PacketClass, RailcomCutoutBudget, record_track_search_throttled};
-use super::slot_manager::scheduler_invariant_recovery_count;
+use super::slot_manager::{PacketAuthority, scheduler_invariant_recovery_count};
 use super::{LocoRequestMessage, LocoResponse, SchedulerCommand};
 
 pub type SchedulerCommandChannel = RuntimeChannel<SchedulerCommand, 32>;
+pub type PowerQuiesceChannel = RuntimeChannel<PowerGeneration, 1>;
 
 pub type LocoRequestChannel = RuntimeChannel<LocoRequestMessage, 1>;
 
 pub type LocoResponseChannel = RuntimeChannel<LocoResponse, 1>;
 
 pub async fn packet_scheduler_task(
+    power_quiesce_receiver: crate::runtime_channels::RuntimeReceiver<PowerGeneration, 1>,
     command_receiver: SchedulerCommandReceiver,
     loco_request_receiver: LocoRequestReceiver,
     loco_response_sender: LocoResponseSender,
@@ -37,8 +39,19 @@ pub async fn packet_scheduler_task(
     let mut observed_invariant_recoveries = scheduler_invariant_recovery_count();
 
     loop {
+        if let Ok(generation) = power_quiesce_receiver.try_receive() {
+            core.quiesce_for_power_on();
+            sender.send(DccFrame::fence(generation)).await;
+        }
+
         // Commands are processed with at most one packet interval (~8 ms) of latency.
         while let Ok(command) = command_receiver.try_receive() {
+            if let SchedulerCommand::ProgramOnMain { permit, .. } = command
+                && !crate::track_authority::accepts_current(permit, Instant::now().as_millis())
+            {
+                defmt::warn!("scheduler rejected expired POM lease");
+                continue;
+            }
             match core.handle_command(command) {
                 CommandOutcome::Applied => {}
                 CommandOutcome::Rejected => defmt::warn!("scheduler command rejected"),
@@ -61,7 +74,14 @@ pub async fn packet_scheduler_task(
         while core.loco_response_ready()
             && let Ok(message) = loco_request_receiver.try_receive()
         {
-            core.handle_loco_request(message, Instant::now().as_ticks());
+            core.handle_loco_request(
+                message,
+                Instant::now().as_ticks(),
+                |permit| {
+                    crate::track_authority::accepts_current(permit, Instant::now().as_millis())
+                },
+                |permit| crate::track_authority::accept_epoch(permit, Instant::now().as_millis()),
+            );
             if !core.flush_loco_response_with(|response| {
                 loco_response_sender
                     .try_send(response)
@@ -85,7 +105,9 @@ pub async fn packet_scheduler_task(
             }
         }
 
-        let (mut packet, class) = core.next_packet();
+        let scheduled = core.next_packet();
+        let mut packet = scheduled.packet;
+        let class = scheduled.class;
         let invariant_recoveries = scheduler_invariant_recovery_count();
         if invariant_recoveries != observed_invariant_recoveries {
             defmt::error!(
@@ -118,6 +140,12 @@ pub async fn packet_scheduler_task(
             (true, _, _) => CutoutMode::Telemetry,
             (false, _, _) => CutoutMode::None,
         };
+        if !core.authorize_for_emission(scheduled, |permit| {
+            crate::track_authority::accepts(permit, Instant::now().as_millis())
+        }) {
+            defmt::warn!("scheduler: discarded stale POM before emission");
+            continue;
+        }
         let pom_context = cutout_allowed
             .then(|| core.pom_context_for_packet(packet))
             .flatten();
@@ -127,8 +155,27 @@ pub async fn packet_scheduler_task(
             frame = frame.with_pom_request_id(request_id);
         }
 
-        // Channel backpressure paces the scheduler to the DCC engine transmission rate.
-        sender.send(frame).await;
+        // POM authority is rechecked on every retry while waiting for engine capacity.
+        let emitted = match scheduled.authority {
+            PacketAuthority::None => {
+                sender.send(frame).await;
+                true
+            }
+            PacketAuthority::Pom { request_id, permit } => loop {
+                if !crate::track_authority::accepts(permit, Instant::now().as_millis()) {
+                    core.discard_pom(request_id, permit);
+                    break false;
+                }
+                match sender.try_send(frame) {
+                    Ok(()) => break true,
+                    Err(embassy_sync::channel::TrySendError::Full(_)) => yield_now().await,
+                }
+            },
+        };
+        if !emitted {
+            defmt::warn!("scheduler: POM authority expired while awaiting engine capacity");
+            continue;
+        }
         yield_now().await;
     }
 }

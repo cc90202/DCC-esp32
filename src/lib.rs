@@ -18,6 +18,7 @@
 #![deny(clippy::mem_forget)]
 
 pub mod application;
+mod authority;
 #[cfg(target_arch = "riscv32")]
 pub mod boot;
 #[cfg(target_arch = "riscv32")]
@@ -52,6 +53,8 @@ pub(crate) mod short_detector;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod status_led;
 pub mod system_status;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod track_authority;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod track_output;
 #[cfg(target_arch = "riscv32")]

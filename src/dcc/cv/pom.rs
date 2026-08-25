@@ -23,7 +23,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::channel::{Receiver, Sender};
 #[cfg(target_arch = "riscv32")]
-use embassy_time::{Duration, with_timeout};
+use embassy_time::{Duration, Instant, with_timeout};
 
 diagnostic_counters! {
     #[cfg(target_arch = "riscv32")]
@@ -97,11 +97,13 @@ impl PomRequestId {
 pub enum PomRequest {
     Read {
         request_id: PomRequestId,
+        permit: crate::authority::LeasePermit,
         address: DccAddress,
         cv: PomCv,
     },
     Write {
         request_id: PomRequestId,
+        permit: crate::authority::LeasePermit,
         address: DccAddress,
         cv: PomCv,
         value: u8,
@@ -121,6 +123,13 @@ impl PomRequest {
     pub const fn address(self) -> DccAddress {
         match self {
             Self::Read { address, .. } | Self::Write { address, .. } => address,
+        }
+    }
+
+    #[must_use]
+    pub const fn permit(self) -> crate::authority::LeasePermit {
+        match self {
+            Self::Read { permit, .. } | Self::Write { permit, .. } => permit,
         }
     }
 }
@@ -339,6 +348,7 @@ async fn run_pom_attempt(
         scheduler_sender
             .send(SchedulerCommand::ProgramOnMain {
                 request_id: request.request_id(),
+                permit: request.permit(),
                 packet,
             })
             .await;
@@ -396,6 +406,10 @@ pub async fn pom_actor_task(
                 request_id
             }
         };
+        if !crate::track_authority::accepts(request.permit(), Instant::now().as_millis()) {
+            response_sender.send(PomResponse::Nack { request_id }).await;
+            continue;
+        }
         let final_response = match run_pom_attempt(
             request,
             &tx_started_receiver,
@@ -461,6 +475,10 @@ pub fn pom_result_from_railcom_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn permit() -> crate::authority::LeasePermit {
+        crate::authority::LeasePermit::new(crate::authority::LeaseEpoch::new(1), u64::MAX)
+    }
 
     fn pom_cv(cv: u16) -> PomCv {
         PomCv::new(cv).expect("test POM CV must be valid")
@@ -562,6 +580,7 @@ mod tests {
     fn test_pom_read_accepts_followup_packet_value() {
         let request = PomRequest::Read {
             request_id: pom_id(7),
+            permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
         };
@@ -587,6 +606,7 @@ mod tests {
     fn test_pom_write_accepts_matching_ack() {
         let request = PomRequest::Write {
             request_id: pom_id(11),
+            permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(29),
             value: 6,
@@ -612,6 +632,7 @@ mod tests {
     fn test_pom_read_rejects_result_from_previous_request() {
         let request = PomRequest::Read {
             request_id: pom_id(7),
+            permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
         };
@@ -631,6 +652,7 @@ mod tests {
     fn test_pom_read_rejects_followup_packet_from_other_loco() {
         let request = PomRequest::Read {
             request_id: pom_id(7),
+            permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
         };
@@ -650,6 +672,7 @@ mod tests {
     fn test_pom_rejects_delayed_previous_value_in_first_new_request_window() {
         let request = PomRequest::Read {
             request_id: pom_id(8),
+            permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(9),
         };
@@ -672,6 +695,7 @@ mod tests {
     fn test_pom_sequence_gate_accepts_response_after_u32_wrap() {
         let request = PomRequest::Read {
             request_id: pom_id(9),
+            permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(10),
         };
