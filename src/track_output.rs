@@ -786,9 +786,12 @@ fn cutout_timer_interrupt() {
             let channel2_end_deadline =
                 PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
             wait_until_cutout_offset(channel2_end_deadline);
+            // Re-enable the DCC drive first: the RMT padding ends at this very
+            // instant and the next preamble bit is already on the wire, so any
+            // bookkeeping done before the flip truncates its first half.
+            cutout_off_fast(hw);
             record_deadline_lateness(channel2_end_deadline);
             close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
-            cutout_off_fast(hw);
             CUTOUT.cutout_ended_count.fetch_add(1, Ordering::Relaxed);
             store_cutout_state(CutoutState::Idle);
         }
