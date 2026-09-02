@@ -98,6 +98,11 @@ static CUTOUT_EVENT_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 // scheduler cadence that is on the order of seconds of slack, which is ample
 // for an Embassy task woken by a channel notification rather than polling.
 const RAILCOM_PACKET_META_CAPACITY: usize = 64;
+
+/// How early the cutout-start timer fires so the handler can absorb
+/// interrupt-entry jitter (observed up to 29 µs under WiFi critical sections)
+/// by spin-waiting to the exact deadline.
+const CUTOUT_ARM_GUARD_US: u32 = 40;
 static RAILCOM_PACKET_META_SLOTS: [SeqSlot<3>; RAILCOM_PACKET_META_CAPACITY] =
     [const { SeqSlot::new() }; RAILCOM_PACKET_META_CAPACITY];
 
@@ -123,7 +128,7 @@ static PENDING_CUTOUT_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_METADATA: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_POM_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
 static CUTOUT_TIMER_ORIGIN_US: AtomicU32 = AtomicU32::new(0);
-static PENDING_PACKET_END_OFFSET_US: AtomicU32 = AtomicU32::new(0);
+static PENDING_REFERENCE_EDGE_OFFSET_US: AtomicU32 = AtomicU32::new(0);
 
 // `RAILCOM_WINDOW_PACKET_SEQUENCE`/`RAILCOM_WINDOW_CHANNEL` are a functional
 // guard, not telemetry: `close_realtime_window_from_isr` uses them to confirm
@@ -262,6 +267,11 @@ impl TrackOutput {
         timer0: timg::Timer<'static>,
     ) -> Self {
         let mut cutout_timer = OneShotTimer::new(timer0);
+        // Same priority as the RMT ISR: the two handlers must not preempt each
+        // other (both reach TrackOutputHw). Interrupt-entry jitter (observed up
+        // to 29 µs under WiFi critical sections) is absorbed instead by arming
+        // deadlines CUTOUT_ARM_GUARD_US early and spin-waiting to the exact
+        // microsecond in the handler.
         cutout_timer.set_interrupt_handler(InterruptHandler::new(
             cutout_timer_interrupt.handler().aligned_ptr(),
             Priority::Priority3,
@@ -597,11 +607,16 @@ pub fn request_cutout_from_isr(request: CutoutRequest) -> bool {
     PENDING_CUTOUT_POM_REQUEST_ID.store(pom_request_id_raw, Ordering::Release);
     record_railcom_packet_metadata_from_isr(packet_sequence, metadata_raw, pom_request_id_raw);
 
-    let packet_end_offset_us =
-        CutoutTimeline::new(dcc_packet_duration_us).packet_end_from_packet_start_us();
-    PENDING_PACKET_END_OFFSET_US.store(packet_end_offset_us, Ordering::Release);
-    let cutout_start_deadline = packet_end_offset_us + CUTOUT_CONTROL_START_US;
-    if schedule_cutout_deadline_fast(hw, cutout_start_deadline) {
+    let reference_edge_offset_us =
+        CutoutTimeline::new(dcc_packet_duration_us).reference_edge_from_packet_start_us();
+    PENDING_REFERENCE_EDGE_OFFSET_US.store(reference_edge_offset_us, Ordering::Release);
+    // Arm the timer early: interrupt entry can be held off for tens of µs by
+    // global critical sections (WiFi driver), far beyond the 6 µs RCN-217
+    // tolerance. The handler then spin-waits the residual time and flips GPIO4
+    // on the exact microsecond.
+    let cutout_start_deadline = reference_edge_offset_us + CUTOUT_CONTROL_START_US;
+    let armed_deadline = cutout_start_deadline.saturating_sub(CUTOUT_ARM_GUARD_US);
+    if schedule_cutout_deadline_fast(hw, armed_deadline) {
         true
     } else {
         cutout_off_fast(hw);
@@ -690,12 +705,19 @@ fn cutout_timer_interrupt() {
     let raw_state = CUTOUT_STATE.load(Ordering::Acquire);
     match CutoutState::from_u8(raw_state) {
         Some(CutoutState::WaitingToOpen) => {
+            // The timer fired CUTOUT_ARM_GUARD_US early; spin until the exact
+            // cutout-start instant so interrupt-entry jitter cannot push the
+            // short outside the RCN-217 26-32 µs window, then flip GPIO4.
             let cutout_start_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + CUTOUT_CONTROL_START_US;
-            record_deadline_lateness(cutout_start_deadline);
+                PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + CUTOUT_CONTROL_START_US;
+            let origin_us = CUTOUT_TIMER_ORIGIN_US.load(Ordering::Acquire);
+            while now_us().wrapping_sub(origin_us) < cutout_start_deadline {
+                core::hint::spin_loop();
+            }
             cutout_on_fast(hw);
+            record_deadline_lateness(cutout_start_deadline);
             let capture_start_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
+                PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
             if schedule_cutout_deadline_fast(hw, capture_start_deadline) {
                 store_cutout_state(CutoutState::WaitingCh1Open);
             } else {
@@ -710,10 +732,10 @@ fn cutout_timer_interrupt() {
             let packet_sequence =
                 PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
             let capture_start_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
+                PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
             record_deadline_lateness(capture_start_deadline);
             let split_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
+                PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
             if schedule_cutout_deadline_guarded_fast(hw, split_deadline) {
                 store_cutout_state(CutoutState::Ch1Open);
                 open_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
@@ -740,11 +762,11 @@ fn cutout_timer_interrupt() {
             let packet_sequence =
                 PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
             let split_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
+                PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
             wait_until_cutout_offset(split_deadline);
             record_deadline_lateness(split_deadline);
             let channel2_end_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
+                PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
             if schedule_cutout_deadline_guarded_fast(hw, channel2_end_deadline) {
                 store_cutout_state(CutoutState::Ch2Open);
                 close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
@@ -762,7 +784,7 @@ fn cutout_timer_interrupt() {
             let packet_sequence =
                 PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
             let channel2_end_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
+                PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
             wait_until_cutout_offset(channel2_end_deadline);
             record_deadline_lateness(channel2_end_deadline);
             close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);

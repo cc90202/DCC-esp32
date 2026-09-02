@@ -102,10 +102,26 @@ impl From<PacketSequence> for u32 {
 }
 
 /// Hardware timing contract for one DCC packet followed by a RailCom cutout.
+///
+/// RCN-217 §2.4 references every cutout timestamp to the zero crossing of the
+/// last edge of the packet end bit: the transition that closes the fully
+/// emitted end bit and opens the first preamble bit of the following packet.
+/// The stream must actually EMIT that reference transition: after the end bit
+/// it drives the first preamble half for [`timing::PREAMBLE_STUB_US`] before
+/// the brake shorts the track at `CUTOUT_CONTROL_START_US`. In this design
+/// the cutout window is padding between packets — the following packet then
+/// starts with its full untouched 20-bit preamble, comfortably above the 12
+/// post-cutout sync bits RCN-211 requires.
 pub mod timing {
-    /// GPIO4 falls at the earliest permitted cutout-start timestamp.
-    pub const CUTOUT_CONTROL_START_US: u32 = 26;
-    /// GPIO4 rises when RailCom channel 2 ends.
+    /// Driven first-preamble-half stub emitted after the end bit so the
+    /// decoder sees the RCN-217 reference edge. The brake overrides the rail
+    /// from `CUTOUT_CONTROL_START_US`, so the stub only needs to outlast it.
+    pub const PREAMBLE_STUB_US: u32 = 32;
+    /// GPIO4 falls at the cutout-start timestamp (RCN-217 Tcs, 26-32 µs
+    /// after the reference edge; mid-window for decoder margin).
+    pub const CUTOUT_CONTROL_START_US: u32 = 28;
+    /// GPIO4 rises when RailCom channel 2 ends (454-488 µs after the
+    /// reference edge).
     pub const CUTOUT_CONTROL_END_US: u32 = 454;
     /// Duration of the active-low GPIO4 control pulse.
     pub const GPIO4_LOW_DURATION_US: u32 = CUTOUT_CONTROL_END_US - CUTOUT_CONTROL_START_US;
@@ -122,7 +138,9 @@ pub mod timing {
 
     const _: () = assert!(CUTOUT_CONTROL_START_US >= 26 && CUTOUT_CONTROL_START_US <= 32);
     const _: () = assert!(CUTOUT_CONTROL_END_US >= 454 && CUTOUT_CONTROL_END_US <= 488);
-    const _: () = assert!(GPIO4_LOW_DURATION_US == 428);
+    const _: () = assert!(GPIO4_LOW_DURATION_US == 426);
+    const _: () = assert!(PREAMBLE_STUB_US >= CUTOUT_CONTROL_START_US);
+    const _: () = assert!(PREAMBLE_STUB_US < CUTOUT_CONTROL_END_US);
     const _: () = assert!(CHANNEL1_START_US >= 75);
     const _: () = assert!(CHANNEL1_START_US < CHANNEL1_END_US);
     const _: () = assert!(CHANNEL1_END_US < CHANNEL2_START_US);
@@ -149,17 +167,19 @@ pub mod timing {
 
         #[must_use]
         pub const fn control_start_from_packet_start_us(self) -> u32 {
-            self.dcc_packet_duration_us + CUTOUT_CONTROL_START_US
+            self.reference_edge_from_packet_start_us() + CUTOUT_CONTROL_START_US
         }
 
+        /// RCN-217 reference: the zero crossing that closes the fully emitted
+        /// end bit and opens the driven preamble stub.
         #[must_use]
-        pub const fn packet_end_from_packet_start_us(self) -> u32 {
+        pub const fn reference_edge_from_packet_start_us(self) -> u32 {
             self.dcc_packet_duration_us
         }
 
         #[must_use]
         pub const fn cycle_duration_us(self) -> u32 {
-            self.dcc_packet_duration_us + CUTOUT_CONTROL_END_US
+            self.reference_edge_from_packet_start_us() + CUTOUT_CONTROL_END_US
         }
     }
 
@@ -168,9 +188,10 @@ pub mod timing {
         use super::*;
 
         #[test]
-        fn rcn217_timestamps_share_one_packet_origin() {
+        fn rcn217_timestamps_anchor_on_the_end_bit_reference_edge() {
             let timeline = CutoutTimeline::new(5_000);
-            assert_eq!(timeline.control_start_from_packet_start_us(), 5_026);
+            assert_eq!(timeline.reference_edge_from_packet_start_us(), 5_000);
+            assert_eq!(timeline.control_start_from_packet_start_us(), 5_028);
             assert_eq!(timeline.cycle_duration_us(), 5_454);
             assert_eq!(CHANNEL1_START_US, 80);
             assert_eq!(CHANNEL1_END_US, 177);
