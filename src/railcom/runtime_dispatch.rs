@@ -8,6 +8,7 @@ use defmt::{info, warn};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
+use crate::cutout::CutoutMode;
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
 use crate::railcom::loco_tracker::RailcomLocoSighting;
 use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
@@ -139,12 +140,14 @@ fn forward_pom_result(
     complete_items: &[RailcomItem],
     pom_result_sender: Sender<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
 ) {
-    let Some(pom_result) = evaluate_pom_window(
+    let pom_result = evaluate_pom_window(
         result.window.packet_sequence,
         result.window.channel,
         packet_metadata,
         complete_items,
-    ) else {
+    );
+    log_pom_window(result, packet_metadata, complete_items, pom_result.as_ref());
+    let Some(pom_result) = pom_result else {
         return;
     };
 
@@ -153,6 +156,43 @@ fn forward_pom_result(
     } else {
         record_pom_result_dropped();
     }
+}
+
+/// Bench diagnostic: every channel-2 window of a POM cutout, with what the
+/// parser made of it and what reached the POM actor. The periodic raw dump
+/// samples one window in a hundred, which never shows the windows of a
+/// read that times out.
+fn log_pom_window(
+    result: &RailcomRxResult,
+    packet_metadata: Option<RailcomPacketMetadata>,
+    complete_items: &[RailcomItem],
+    pom_result: Option<&PomRailcomResult>,
+) {
+    let Some(metadata) = packet_metadata else {
+        return;
+    };
+    if result.window.channel != RailcomChannel::Channel2
+        || !matches!(metadata.cutout, CutoutMode::PomRead | CutoutMode::PomWrite)
+    {
+        return;
+    }
+    let (value, ack, nack) = match pom_result {
+        Some(PomRailcomResult::Window {
+            value, ack, nack, ..
+        }) => (*value, *ack, *nack),
+        _ => (None, false, false),
+    };
+    info!(
+        "railcom pom ch2 seq={} req={:?} raw={=[u8]:#04x} outcome={:?} items={} value={:?} ack={} nack={}",
+        result.window.packet_sequence.value(),
+        metadata.pom_request_id,
+        result.window.raw_slice(),
+        result.outcome,
+        complete_items.len(),
+        value,
+        ack,
+        nack
+    );
 }
 
 fn dispatch_processed_window(

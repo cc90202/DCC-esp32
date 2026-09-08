@@ -72,6 +72,8 @@ impl RailcomIsrCaptureUart {
     }
 }
 
+/// GPIO matrix input signal index of U1RXD on the ESP32-C6.
+const U1RXD_SIGNAL: usize = 9;
 #[inline(always)]
 fn uart1_rx_fifo_count() -> Option<u16> {
     if !CAPTURE_READY.load(Ordering::Acquire) {
@@ -216,10 +218,29 @@ fn take_captured_window(next_read: &mut u32) -> Option<CapturedWindow> {
     None
 }
 
+static RAW_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Bench diagnostic: log the raw bytes of the first windows after boot and
+/// then one window every 100, so the byte layout per channel can be checked
+/// against the scope without flooding the log.
+fn log_raw_window(window: &CapturedWindow) {
+    let count = RAW_DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count < 60 || count % 100 == 0 {
+        defmt::info!(
+            "railcom raw seq={} ch={} len={} bytes={=[u8]:#04x}",
+            window.packet_sequence.value(),
+            u8::from(window.channel),
+            window.len,
+            &window.bytes[..window.len.min(MAX_RAILCOM_WINDOW_BYTES)]
+        );
+    }
+}
+
 async fn send_captured_window(
     sender: &Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
     window: CapturedWindow,
 ) {
+    log_raw_window(&window);
     if window.len > MAX_RAILCOM_WINDOW_BYTES {
         record_rx_overflows(1);
         record_oversized_window();
@@ -284,5 +305,55 @@ pub async fn railcom_isr_capture_task(
         while let Some(window) = take_captured_window(&mut next_read) {
             send_captured_window(&result_sender, window).await;
         }
+    }
+}
+
+/// Raw UART1/GPIO5 register snapshot for bench diagnostics.
+///
+/// Read-only: touches no control bit, so it is safe to call from a task while
+/// the cutout ISR owns the FIFO data path.
+#[derive(Debug, Clone, Copy, defmt::Format)]
+pub struct Uart1RawDiag {
+    pub rxfifo_cnt: u16,
+    pub rxd_level: bool,
+    pub rxd_edge_cnt: u16,
+    pub int_raw: u32,
+    pub st_urx_out: u8,
+    pub conf0_rxfifo_rst: bool,
+    pub u1rxd_in_sel: u8,
+    pub gpio5_high_samples: u32,
+    pub uart_rxd_high_samples: u32,
+    pub samples: u32,
+}
+
+#[must_use]
+pub fn uart1_raw_diag() -> Uart1RawDiag {
+    // SAFETY: read-only register access; see the ownership note on
+    // `uart1_rx_fifo_count`. The GPIO `in` register is a pure status read.
+    let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
+    let gpio = unsafe { &*esp_hal::peripherals::GPIO::ptr() };
+    const SAMPLES: u32 = 40_000;
+    let mut gpio5_high_samples = 0u32;
+    let mut uart_rxd_high_samples = 0u32;
+    for _ in 0..SAMPLES {
+        if gpio.in_().read().data_next().bits() & (1 << 5) != 0 {
+            gpio5_high_samples += 1;
+        }
+        if regs.status().read().rxd().bit_is_set() {
+            uart_rxd_high_samples += 1;
+        }
+    }
+    let status = regs.status().read();
+    Uart1RawDiag {
+        rxfifo_cnt: status.rxfifo_cnt().bits() as u16,
+        rxd_level: status.rxd().bit_is_set(),
+        rxd_edge_cnt: regs.rxd_cnt().read().rxd_edge_cnt().bits() as u16,
+        int_raw: regs.int_raw().read().bits(),
+        st_urx_out: regs.fsm_status().read().st_urx_out().bits(),
+        conf0_rxfifo_rst: regs.conf0().read().rxfifo_rst().bit_is_set(),
+        u1rxd_in_sel: gpio.func_in_sel_cfg(U1RXD_SIGNAL).read().in_sel().bits(),
+        gpio5_high_samples,
+        uart_rxd_high_samples,
+        samples: SAMPLES,
     }
 }
