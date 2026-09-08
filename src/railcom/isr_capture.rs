@@ -103,8 +103,25 @@ fn uart1_reset_rx_fifo() {
     }
     // SAFETY: same UART1 ownership invariant as `uart1_rx_fifo_count`.
     let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
+    // On the ESP32-C6 `conf0` is a synchronised register: a write only
+    // reaches the UART core after `reg_update` is pulsed. Mirror esp-idf's
+    // `uart_ll_rxfifo_rst` (set, update, clear, update); without the updates
+    // the reset never happens and the FIFO keeps accumulating.
     regs.conf0().modify(|_, w| w.rxfifo_rst().set_bit());
+    uart1_reg_update();
     regs.conf0().modify(|_, w| w.rxfifo_rst().clear_bit());
+    uart1_reg_update();
+}
+
+#[inline(always)]
+fn uart1_reg_update() {
+    // SAFETY: same UART1 ownership invariant as `uart1_rx_fifo_count`;
+    // `reg_update` only commits the pending synchronised writes.
+    let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
+    regs.reg_update().modify(|_, w| w.reg_update().set_bit());
+    while regs.reg_update().read().reg_update().bit_is_set() {
+        core::hint::spin_loop();
+    }
 }
 
 #[inline(always)]

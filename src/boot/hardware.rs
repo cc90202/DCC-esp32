@@ -76,14 +76,16 @@ pub(super) fn initialize_railcom_receiver(
     uart1: esp_hal::peripherals::UART1<'static>,
     rx_pin: esp_hal::peripherals::GPIO5<'static>,
 ) -> Result<UartRx<'static, esp_hal::Async>, BootError> {
-    // The planned single 74HC14 gate drives GPIO5 LOW while RailCom is idle.
-    // Keep that physical idle level deterministic while the detector is
-    // disconnected; the input inverter then presents the UART with its normal
-    // logical HIGH idle. Configure the pull before freezing the Flex as a
-    // peripheral input, otherwise `UartRx::with_rx` cannot change it.
+    // The LM339 front end is open-collector with a 1 k pull-up to 3.3 V: the
+    // line idles HIGH and is pulled LOW while the decoder sinks current, which
+    // is RailCom's logical 0. That is already the UART's native polarity, so
+    // no input inverter. Keep the idle level deterministic with the detector
+    // disconnected via the internal pull-up. Configure the pull before
+    // freezing the Flex as a peripheral input, otherwise `UartRx::with_rx`
+    // cannot change it.
     let mut rx_pin = Flex::new(rx_pin);
-    rx_pin.apply_input_config(&InputConfig::default().with_pull(Pull::Down));
-    let rx_pin = rx_pin.peripheral_input().with_input_inverter(true);
+    rx_pin.apply_input_config(&InputConfig::default().with_pull(Pull::Up));
+    let rx_pin = rx_pin.peripheral_input();
     UartRx::new(uart1, railcom_uart_rx_config())
         .map_err(|error| {
             defmt::error!("boot: RailCom UART configuration failed: {:?}", error);
