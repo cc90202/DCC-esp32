@@ -103,12 +103,22 @@ pub async fn dcc_engine_task(
                 last_heartbeat = heartbeat;
                 last_progress = Instant::now();
             } else if !rmt_driver::is_consumed() {
+                // Cut bridge power before logging, channel delivery or reset
+                // grace time. A full fault queue must not keep the track live.
+                if !crate::track_output::emergency_disable() {
+                    defmt::error!("RMT watchdog: track output hardware unavailable");
+                }
                 defmt::error!(
                     "RMT ISR heartbeat stalled: heartbeat={}, idle_timeout_ms={}",
                     heartbeat,
                     ISR_WATCHDOG_TIMEOUT.as_millis()
                 );
-                let _ = fault_sender.try_send(FaultEvent::FaultLatched(FaultCause::Internal));
+                if fault_sender
+                    .try_send(FaultEvent::FaultLatched(FaultCause::Internal))
+                    .is_err()
+                {
+                    defmt::error!("RMT watchdog: fault queue full; track disabled, resetting");
+                }
                 Timer::after(ISR_RESET_GRACE_PERIOD).await;
                 esp_hal::system::software_reset();
             }

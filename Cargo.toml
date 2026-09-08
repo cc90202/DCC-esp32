@@ -58,6 +58,7 @@ embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 [dev-dependencies]
 # For running tests on host platform
 heapless = "0.9"
+embassy-futures = "0.1.2"
 embassy-sync = "0.7.2"
 embassy-time = { version = "0.5.0", features = ["std", "generic-queue-8"] }
 

@@ -24,14 +24,14 @@
 
 mod policy;
 #[cfg(any(test, target_arch = "riscv32"))]
+mod power_fence;
+#[cfg(any(test, target_arch = "riscv32"))]
 mod relay;
 
 pub use policy::FaultManagerState;
 #[cfg(target_arch = "riscv32")]
 pub(crate) use relay::{FaultEffectsSignal, FaultEffectsTaskContext, fault_effects_task};
 
-#[cfg(target_arch = "riscv32")]
-use embassy_futures::select::{Either, select};
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::watch;
 #[cfg(target_arch = "riscv32")]
@@ -114,22 +114,19 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             track_output.set_track_enabled(false);
             let generation = PowerGeneration::new(next_power_generation);
             next_power_generation = next_power_generation.wrapping_add(1).max(1);
-            power_quiesce_sender.send(generation).await;
-            match with_timeout(Duration::from_millis(500), async {
-                select(receiver.receive(), power_fence_ack_receiver.receive()).await
-            })
+            match with_timeout(
+                Duration::from_millis(500),
+                power_fence::request_and_wait(
+                    generation,
+                    &receiver,
+                    &power_quiesce_sender,
+                    &power_fence_ack_receiver,
+                ),
+            )
             .await
             {
-                Ok(Either::Second(ack)) if ack == generation => true,
-                Ok(Either::Second(stale_ack)) => {
-                    defmt::warn!(
-                        "fault_manager: ignored stale power fence ack={} expected={}",
-                        stale_ack.get(),
-                        generation.get()
-                    );
-                    false
-                }
-                Ok(Either::First(interrupting_event)) => {
+                Ok(Ok(())) => true,
+                Ok(Err(interrupting_event)) => {
                     // A concurrent stop or fault takes precedence over a
                     // pending power-on. Keep the bridge low and process it
                     // before accepting another transition.
@@ -158,7 +155,7 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             _ => false,
         };
         if !enabled {
-            defmt::warn!("fault_manager: rejected stale network power-on request");
+            defmt::warn!("fault_manager: power transition interrupted, timed out or unauthorized");
             continue;
         }
         policy = candidate_policy;
