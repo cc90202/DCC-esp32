@@ -77,7 +77,6 @@ const SIX_TO_4_8: [u8; 64] = [
 
 pub(crate) const ACK_1_CODE: u8 = 0b0000_1111;
 pub(crate) const ACK_2_CODE: u8 = 0b1111_0000;
-const ACK_2_EDGE_JITTER_CODE: u8 = 0b1111_1000;
 pub(crate) const NACK_CODE: u8 = 0b0011_1100;
 
 const fn build_reverse_4_of_8() -> [u8; 256] {
@@ -114,6 +113,7 @@ pub enum ParseError {
     Invalid4Of8Code(u8),
     Reserved4Of8Code(u8),
     ControlSymbolNotAllowed(u8),
+    DatagramAfterControl,
     TruncatedDatagram {
         id: u8,
         needed_symbols: usize,
@@ -175,27 +175,14 @@ pub fn decode_4_of_8(code: u8) -> DecodedSymbol {
     }
 }
 
-#[must_use]
-fn decode_channel2_symbol(code: u8, window_len: usize) -> DecodedSymbol {
-    // On the breadboard RailCom detector the ACK_2 pulse is sometimes sampled
-    // one bit late/long as 0xF8. Accept it only as a complete one-byte CH2
-    // window so invalid data bytes inside datagrams still fail closed.
-    if window_len == 1 && code == ACK_2_EDGE_JITTER_CODE {
-        return DecodedSymbol::Ack;
-    }
-
-    decode_4_of_8(code)
-}
-
 /// Decodes a raw 4/8-coded byte window into symbols, capped at `N` symbols.
 ///
-/// `N` is the only difference between the CH1 (2 symbols) and CH2 (6 symbols)
-/// windows; the decode loop itself is shared via [`items_from_symbols`].
+/// Channel-specific packet rules are checked by the callers. RCN-217 §2.5
+/// requires strict 4-of-8 validation, including for single-byte responses.
 fn decode_symbols<const N: usize>(raw_bytes: &[u8]) -> Result<Vec<DecodedSymbol, N>, ParseError> {
     let mut symbols = Vec::<DecodedSymbol, N>::new();
-    let window_len = raw_bytes.len();
     for &byte in raw_bytes {
-        let decoded = decode_channel2_symbol(byte, window_len);
+        let decoded = decode_4_of_8(byte);
         match decoded {
             DecodedSymbol::Invalid(code) => return Err(ParseError::Invalid4Of8Code(code)),
             DecodedSymbol::Reserved(code) => return Err(ParseError::Reserved4Of8Code(code)),
@@ -305,11 +292,53 @@ fn items_from_symbols(symbols: &[DecodedSymbol]) -> Result<RailcomParseResult, P
 }
 
 pub fn parse_channel2(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
-    items_from_symbols(&decode_symbols::<6>(raw_bytes)?)
+    let symbols = decode_symbols::<6>(raw_bytes)?;
+    // RCN-217 §3: a response starting with ACK/NACK may contain further
+    // ACK/NACK, but no datagrams. Datagrams followed by ACK padding are valid.
+    if matches!(
+        symbols.first(),
+        Some(DecodedSymbol::Ack | DecodedSymbol::Nack)
+    ) && symbols
+        .iter()
+        .any(|symbol| matches!(symbol, DecodedSymbol::Data6(_)))
+    {
+        return Err(ParseError::DatagramAfterControl);
+    }
+    items_from_symbols(&symbols)
+}
+
+/// Number of bytes a channel-1 window can legitimately hold (one 12-bit
+/// datagram). A third byte is only ever the UART's break-frame tail.
+const CHANNEL1_MAX_BYTES: usize = 2;
+
+/// Strips the break-frame tail the UART deposits ahead of channel 1.
+///
+/// Outside the cutout the detector line sits LOW while the traction current
+/// crosses the sense resistor, and it stays LOW until ~49 µs after the
+/// reference edge (bench, 2026-09-07). The UART keeps assembling break
+/// frames on it; the one in flight when the capture opens completes just
+/// before the decoder's first byte and shows up as a leading `0xff`, `0xfe`,
+/// `0xfc` (or, with comparator chatter, `0xfd`, `0xec`, ...). None of those
+/// is a 4-of-8 code, so dropping a non-code first byte from a three-byte
+/// window can never discard decoder data: a three-byte window was invalid
+/// for channel 1 anyway.
+fn strip_channel1_break_tail(raw_bytes: &[u8]) -> &[u8] {
+    match raw_bytes {
+        [first, rest @ ..] if rest.len() == CHANNEL1_MAX_BYTES && first.count_ones() != 4 => rest,
+        _ => raw_bytes,
+    }
 }
 
 pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
-    items_from_symbols(&decode_symbols::<2>(raw_bytes)?)
+    let raw_bytes = strip_channel1_break_tail(raw_bytes);
+    let symbols = decode_symbols::<2>(raw_bytes)?;
+    // RCN-217 §3 prohibits ACK/NACK in CH1. Preserve the raw code in errors.
+    for (symbol, &raw) in symbols.iter().zip(raw_bytes) {
+        if matches!(symbol, DecodedSymbol::Ack | DecodedSymbol::Nack) {
+            return Err(ParseError::ControlSymbolNotAllowed(raw));
+        }
+    }
+    items_from_symbols(&symbols)
 }
 
 pub fn parse_logon_response_48(
@@ -500,17 +529,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_channel2_accepts_single_byte_ack2_edge_jitter() {
-        let parsed =
-            parse_channel2(&[ACK_2_EDGE_JITTER_CODE]).expect("jittered ack parse must succeed");
-        assert_eq!(parsed.items.as_slice(), &[RailcomItem::Ack]);
+    fn test_channels_reject_every_non_4_of_8_byte() {
+        for code in 0u8..=255 {
+            if code.count_ones() != 4 {
+                assert_eq!(
+                    parse_channel1(&[code]),
+                    Err(ParseError::Invalid4Of8Code(code))
+                );
+                assert_eq!(
+                    parse_channel2(&[code]),
+                    Err(ParseError::Invalid4Of8Code(code))
+                );
+            }
+        }
     }
 
     #[test]
     fn test_parse_channel2_rejects_jittered_ack_inside_longer_window() {
-        let err = parse_channel2(&[ACK_1_CODE, ACK_2_EDGE_JITTER_CODE])
-            .expect_err("jittered ack must only be accepted as a complete one-byte window");
-        assert_eq!(err, ParseError::Invalid4Of8Code(ACK_2_EDGE_JITTER_CODE));
+        let err =
+            parse_channel2(&[ACK_1_CODE, 0xf8]).expect_err("invalid symbol must not become an ACK");
+        assert_eq!(err, ParseError::Invalid4Of8Code(0xf8));
     }
 
     #[test]
@@ -550,16 +588,53 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_channel1_accepts_ack() {
-        let parsed = parse_channel1(&[ACK_2_CODE]).expect("channel1 ack parse must succeed");
-        assert_eq!(parsed.items.as_slice(), &[RailcomItem::Ack]);
+    fn test_parse_channel1_drops_break_tail_byte_before_datagram() {
+        // Bench 2026-09-07: the UART chews on the LOW detector line before the
+        // cutout and the break frame in flight lands just before the decoder's
+        // first byte. Every such byte has more or fewer than four ones.
+        let data = encode_12_bit_for_test(1, 0x2a);
+        for glitch in [0xffu8, 0xfe, 0xfc, 0xfd, 0xfb, 0xec, 0x6d] {
+            let parsed = parse_channel1(&[glitch, data[0], data[1]])
+                .expect("leading break-tail byte must be dropped");
+            assert_eq!(parsed.status, RailcomParseStatus::Complete);
+            assert_eq!(
+                parsed.items.as_slice(),
+                &[RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x2a))]
+            );
+        }
     }
 
     #[test]
-    fn test_parse_channel1_accepts_single_byte_ack2_edge_jitter() {
-        let parsed =
-            parse_channel1(&[ACK_2_EDGE_JITTER_CODE]).expect("jittered ack parse must succeed");
-        assert_eq!(parsed.items.as_slice(), &[RailcomItem::Ack]);
+    fn test_parse_channel1_keeps_rejecting_three_valid_codes() {
+        // A valid 4-of-8 code in first position is not a glitch: the window
+        // is still oversized for channel 1 and must fail as before.
+        let data = encode_12_bit_for_test(1, 0x2a);
+        assert!(parse_channel1(&[SIX_TO_4_8[0], data[0], data[1]]).is_err());
+    }
+
+    #[test]
+    fn test_parse_channel1_rejects_controls_in_either_position() {
+        for code in [ACK_1_CODE, ACK_2_CODE, NACK_CODE] {
+            for raw in [
+                &[code][..],
+                &[code, SIX_TO_4_8[0]][..],
+                &[SIX_TO_4_8[0], code][..],
+            ] {
+                assert_eq!(
+                    parse_channel1(raw),
+                    Err(ParseError::ControlSymbolNotAllowed(code))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_channel2_preserves_ack_then_nack() {
+        let parsed = parse_channel2(&[ACK_2_CODE, NACK_CODE]).unwrap();
+        assert_eq!(
+            parsed.items.as_slice(),
+            &[RailcomItem::Ack, RailcomItem::Nack]
+        );
     }
 
     #[test]
@@ -683,22 +758,35 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_channel2_mixed_ack_and_datagram() {
+    fn test_parse_channel2_datagram_with_ack_padding() {
         let mut raw = Vec::<u8, 3>::new();
-        raw.push(ACK_1_CODE).unwrap();
         for byte in encode_12_bit_for_test(0, 0x42) {
             raw.push(byte).unwrap();
         }
+        raw.push(ACK_1_CODE).unwrap();
 
         let parsed = parse_channel2(raw.as_slice()).expect("mixed parse must succeed");
         assert_eq!(parsed.status, RailcomParseStatus::Complete);
         assert_eq!(
             parsed.items.as_slice(),
             &[
-                RailcomItem::Ack,
                 RailcomItem::Datagram(RailcomDatagram::CvData(0x42)),
+                RailcomItem::Ack,
             ]
         );
+    }
+
+    #[test]
+    fn test_channel2_rejects_datagrams_after_initial_control() {
+        for control in [ACK_1_CODE, ACK_2_CODE, NACK_CODE] {
+            for id in [0, 4] {
+                let data = encode_12_bit_for_test(id, 0x42);
+                assert_eq!(
+                    parse_channel2(&[control, data[0], data[1]]),
+                    Err(ParseError::DatagramAfterControl)
+                );
+            }
+        }
     }
 
     #[test]
@@ -721,7 +809,9 @@ mod tests {
     #[test]
     fn test_parse_channel2_keeps_prefix_before_unsupported_id() {
         let mut raw = Vec::<u8, 4>::new();
-        raw.push(ACK_1_CODE).unwrap();
+        for byte in encode_12_bit_for_test(0, 0x42) {
+            raw.push(byte).unwrap();
+        }
         for byte in encode_12_bit_for_test(4, 0x00) {
             raw.push(byte).unwrap();
         }
@@ -732,6 +822,9 @@ mod tests {
             parsed.status,
             RailcomParseStatus::PartialUnsupportedDatagram(4)
         );
-        assert_eq!(parsed.items.as_slice(), &[RailcomItem::Ack]);
+        assert_eq!(
+            parsed.items.as_slice(),
+            &[RailcomItem::Datagram(RailcomDatagram::CvData(0x42))]
+        );
     }
 }

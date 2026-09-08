@@ -267,10 +267,12 @@ fn match_pom_result(
             }
         }
         PomRequest::Write { request_id, .. } => {
-            if ack {
-                Some(PomResponse::Ack { request_id })
-            } else if nack {
+            // RCN-217 §§2.5, 5.2: an unsupported CV is reported as ACK
+            // followed by NACK in the same CH2 response. NACK must win.
+            if nack {
                 Some(PomResponse::Nack { request_id })
+            } else if ack {
+                Some(PomResponse::Ack { request_id })
             } else {
                 None
             }
@@ -495,8 +497,8 @@ mod tests {
     #[test]
     fn test_pom_result_prefers_value_when_ack_and_cv_data_are_both_present() {
         let items = [
-            RailcomItem::Ack,
             RailcomItem::Datagram(RailcomDatagram::CvData(0x42)),
+            RailcomItem::Ack,
         ];
 
         assert_eq!(
@@ -600,6 +602,34 @@ mod tests {
                 value: 151,
             })
         );
+    }
+
+    #[test]
+    fn test_pom_write_wire_ack_nack_reports_unsupported_cv() {
+        let request = PomRequest::Write {
+            request_id: pom_id(11),
+            permit: permit(),
+            address: DccAddress::new_short(3).unwrap(),
+            cv: pom_cv(29),
+            value: 6,
+        };
+        for ack in [0x0f, 0xf0] {
+            let parsed = crate::railcom::parser::parse_channel2(&[ack, 0x3c]).unwrap();
+            let result = pom_result_from_railcom_items(
+                pom_id(11),
+                seq(50),
+                DccAddress::new_short(3),
+                true,
+                &parsed.items,
+            )
+            .unwrap();
+            assert_eq!(
+                match_pom_result(request, seq(50), result),
+                Some(PomResponse::Nack {
+                    request_id: pom_id(11)
+                })
+            );
+        }
     }
 
     #[test]
