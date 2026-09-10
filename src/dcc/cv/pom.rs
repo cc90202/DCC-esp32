@@ -57,6 +57,15 @@ const POM_TX_START_TIMEOUT: Duration = Duration::from_millis(500);
 const POM_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
 #[cfg(target_arch = "riscv32")]
 const POM_READ_PACKET_REPETITIONS: u8 = 4;
+// Some decoders (bench 2026-09-10, Roco locomotive at address 3) answer a
+// POM read with ACK in the first cutout and deliver the CV value only in a
+// cutout that follows a *later* read packet, once the value is ready. One
+// burst is over within ~30 ms, before that happens, and the cyclic refresh
+// packets do not solicit the answer. The burst is therefore re-sent at this
+// interval until a value arrives or `POM_RESPONSE_TIMEOUT` expires. ESU
+// decoders answer the first burst, so for them nothing changes.
+#[cfg(target_arch = "riscv32")]
+const POM_READ_BURST_RESEND_INTERVAL: Duration = Duration::from_millis(150);
 #[cfg(target_arch = "riscv32")]
 const POM_MINIMUM_TX_STARTS: u8 = 2;
 // All repetitions are enqueued in one burst (see `run_pom_attempt`) so they
@@ -346,15 +355,7 @@ async fn run_pom_attempt(
         // reference command station emits two. Keep that minimum.
         PomRequest::Write { .. } => 2,
     };
-    for _ in 0..repetitions {
-        scheduler_sender
-            .send(SchedulerCommand::ProgramOnMain {
-                request_id: request.request_id(),
-                permit: request.permit(),
-                packet,
-            })
-            .await;
-    }
+    enqueue_pom_burst(scheduler_sender, request, packet, repetitions).await;
 
     // Accept feedback only from the second matching cutout onward. The first
     // window can still carry a delayed response to the previous request from
@@ -378,14 +379,54 @@ async fn run_pom_attempt(
         Err(_) => return PomAttemptOutcome::TxTimeout,
     };
 
-    match with_timeout(
-        POM_RESPONSE_TIMEOUT,
-        await_matching_pom_result(request, earliest_response_sequence, railcom_result_receiver),
-    )
-    .await
-    {
-        Ok(response) => PomAttemptOutcome::Response(response),
-        Err(_) => PomAttemptOutcome::ResponseTimeout,
+    let is_read = matches!(request, PomRequest::Read { .. });
+    let deadline = Instant::now() + POM_RESPONSE_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.as_ticks() == 0 {
+            return PomAttemptOutcome::ResponseTimeout;
+        }
+        let wait = if is_read {
+            remaining.min(POM_READ_BURST_RESEND_INTERVAL)
+        } else {
+            remaining
+        };
+        if let Ok(response) = with_timeout(
+            wait,
+            await_matching_pom_result(request, earliest_response_sequence, railcom_result_receiver),
+        )
+        .await
+        {
+            return PomAttemptOutcome::Response(response);
+        }
+        if !is_read {
+            return PomAttemptOutcome::ResponseTimeout;
+        }
+        // The tx-start notifications of the previous burst are of no further
+        // use: the response gate is already set. Drain them so the channel
+        // does not overflow on the next burst.
+        drain_channel(tx_started_receiver);
+        enqueue_pom_burst(scheduler_sender, request, packet, repetitions).await;
+    }
+}
+
+/// Enqueues `repetitions` identical copies of `packet` so they leave the
+/// scheduler back-to-back (see the comment in `run_pom_attempt`).
+#[cfg(target_arch = "riscv32")]
+async fn enqueue_pom_burst(
+    scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+    request: PomRequest,
+    packet: DccPacket,
+    repetitions: u8,
+) {
+    for _ in 0..repetitions {
+        scheduler_sender
+            .send(SchedulerCommand::ProgramOnMain {
+                request_id: request.request_id(),
+                permit: request.permit(),
+                packet,
+            })
+            .await;
     }
 }
 
@@ -449,7 +490,14 @@ pub fn pom_result_from_railcom_items(
     include_ack: bool,
     items: &[RailcomItem],
 ) -> Option<PomRailcomResult> {
-    let mut value = None;
+    // RCN-217 §5.2: the app:pom answer is the first datagram of channel 2.
+    // A CV datagram anywhere else is almost always a misaligned tail of a
+    // longer datagram after a lost byte (bench, 2026-09-10: a dynamic-data
+    // window missing one symbol decoded as "CV1 = 0"), so it is not trusted.
+    let value = match items.first() {
+        Some(RailcomItem::Datagram(RailcomDatagram::CvData(cv_value))) => Some(*cv_value),
+        _ => None,
+    };
     let mut ack = false;
     let mut nack = false;
 
@@ -457,9 +505,6 @@ pub fn pom_result_from_railcom_items(
         match item {
             RailcomItem::Ack => ack = include_ack,
             RailcomItem::Nack => nack = true,
-            RailcomItem::Datagram(RailcomDatagram::CvData(cv_value)) => {
-                value.get_or_insert(*cv_value);
-            }
             RailcomItem::Datagram(_) => {}
         }
     }
@@ -517,6 +562,27 @@ mod tests {
                 ack: true,
                 nack: false,
             })
+        );
+    }
+
+    #[test]
+    fn test_pom_result_ignores_cv_data_that_does_not_open_the_window() {
+        // A dynamic-data window that lost one symbol re-aligns into a bogus
+        // trailing CV datagram; it must not become a value.
+        let items = [
+            RailcomItem::Datagram(RailcomDatagram::Dyn { value: 0, sub_index: 0 }),
+            RailcomItem::Datagram(RailcomDatagram::CvData(0x00)),
+        ];
+
+        assert_eq!(
+            pom_result_from_railcom_items(
+                pom_id(1),
+                seq(17),
+                DccAddress::new_short(3),
+                true,
+                &items,
+            ),
+            None
         );
     }
 
