@@ -30,7 +30,10 @@ pub(super) struct DriveCommand {
     pub format: SpeedFormat,
 }
 
-#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "read only by the optional bench diagnostics task")
+)]
 #[must_use]
 pub(crate) fn loco_command_rejected_count() -> u32 {
     LOCO_COMMAND_REJECTED_COUNT.load(Ordering::Acquire)
@@ -232,7 +235,7 @@ fn loco_info(state: LocoState) -> z21_proto::LocoInfo {
         address: state.address,
         speed: state.speed,
         direction: state.direction,
-        functions: state.functions.bits(),
+        functions: state.functions,
     }
 }
 

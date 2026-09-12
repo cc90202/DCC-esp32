@@ -23,6 +23,8 @@
 //! - Service Mode CV range: 1-256 (Direct Mode addressing)
 //! - POM CV range: 1-1024 (Long Form CV access)
 
+use core::fmt;
+
 use heapless::Vec;
 
 use crate::dcc::speed28::encode_nmra_instruction_speed_bits;
@@ -33,6 +35,18 @@ use crate::dcc::speed28::encode_nmra_instruction_speed_bits;
 pub enum PacketEncodeError {
     InvalidSpeed28 { speed: u8 },
 }
+
+impl fmt::Display for PacketEncodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSpeed28 { speed } => {
+                write!(formatter, "invalid 28-step DCC speed {speed}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for PacketEncodeError {}
 
 /// DCC decoder address (opaque type enforcing NMRA address validation)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,12 +232,10 @@ impl DccAddress {
     /// same short/long split NMRA uses.
     #[must_use]
     pub fn from_magnitude(addr: u16) -> Option<Self> {
-        if addr == 0 {
-            None
-        } else if addr <= 127 {
-            Self::new_short(addr as u8)
-        } else {
-            Self::new_long(addr)
+        match addr {
+            short @ 1..=127 => Self::new_short(short as u8),
+            long @ 128..=10_239 => Self::new_long(long),
+            _ => None,
         }
     }
 

@@ -53,6 +53,9 @@ pub(crate) use slot_manager::PENDING_POM_CAPACITY;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub use slot_manager::SlotManager;
 
+/// Maximum number of locomotive slots maintained by the command station.
+pub const LOCO_SLOT_CAPACITY: usize = 12;
+
 /// Speed format for a locomotive slot
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -78,9 +81,6 @@ pub struct LogicalSpeed {
 }
 
 impl LogicalSpeed {
-    /// Backward-compatible Speed28 stop value for internal scheduler tests.
-    pub const ZERO: Self = Self::zero(SpeedFormat::Speed28);
-
     /// Validate `value` as a logical speed for `format`.
     #[must_use]
     pub fn new(value: u8, format: SpeedFormat) -> Option<Self> {
@@ -128,6 +128,14 @@ pub struct FunctionIndex(u8);
 /// Error returned when function index is out of range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidFunctionIndex;
+
+impl ::core::fmt::Display for InvalidFunctionIndex {
+    fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        formatter.write_str("function index must be in the F0..=F28 range")
+    }
+}
+
+impl ::core::error::Error for InvalidFunctionIndex {}
 
 impl FunctionIndex {
     /// Create a validated function index in range 0..=28.

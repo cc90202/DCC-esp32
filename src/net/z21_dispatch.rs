@@ -78,7 +78,13 @@ pub(super) async fn handle_command(
 /// held down produces a steady stream of commands, and each defmt line holds a
 /// critical section that delays the DCC waveform and cutout interrupts.
 /// Rejections and errors are logged unconditionally elsewhere.
-#[cfg_attr(not(feature = "bench-diag"), allow(unused_variables))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its argument when bench diagnostics are disabled"
+    )
+)]
 fn log_command(command: Z21Command) {
     bench_diag! {
         if !matches!(command, Z21Command::GetSystemState | Z21Command::GetStatus) {

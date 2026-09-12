@@ -13,7 +13,10 @@ use super::encoded_len;
 
 static RAILCOM_GETDATA_NO_DATA_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "read only by the optional bench diagnostics task")
+)]
 #[must_use]
 pub(crate) fn railcom_getdata_no_data_count() -> u32 {
     RAILCOM_GETDATA_NO_DATA_COUNT.load(Ordering::Acquire)

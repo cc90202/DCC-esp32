@@ -99,6 +99,8 @@
 //! bit (0), the address byte, one or more data bytes, the error detection byte,
 //! and a final end bit (1).
 
+use core::fmt;
+
 use crate::dcc::timing::{DCC_ONE_HIGH_US, DCC_ZERO_HIGH_US};
 use crate::dcc::{DccPacket, encoder::PulseCode};
 
@@ -140,13 +142,48 @@ pub enum ValidationError {
     EncodingError,
 }
 
+impl fmt::Display for ValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TimingOutOfRange {
+                expected_us,
+                actual_us,
+            } => write!(
+                formatter,
+                "DCC pulse timing {actual_us}us is outside the range around {expected_us}us"
+            ),
+            Self::InsufficientPreamble { found } => {
+                write!(
+                    formatter,
+                    "DCC preamble has {found} bits; at least 14 are required"
+                )
+            }
+            Self::InvalidChecksum { expected, actual } => write!(
+                formatter,
+                "invalid DCC checksum: expected {expected:#04x}, received {actual:#04x}"
+            ),
+            Self::InvalidAddress => formatter.write_str("invalid DCC address"),
+            Self::MissingStartBit => formatter.write_str("DCC packet start bit is missing"),
+            Self::PacketTooShort { min, actual } => write!(
+                formatter,
+                "DCC packet has {actual} pulses; at least {min} are required"
+            ),
+            Self::InvalidStructure => formatter.write_str("invalid DCC packet bit structure"),
+            Self::EncodingError => formatter.write_str("DCC packet encoding failed"),
+        }
+    }
+}
+
+impl core::error::Error for ValidationError {}
+
 /// Validates pulse timing against NMRA S-9.1
 ///
 /// NMRA acceptable ranges:
 /// - "1" bit: 55-61μs high, 55-61μs low
 /// - "0" bit: 95-9900μs (min 95, max for stretching)
 ///
-/// V1: Rejects pulses in the gap range (62-94μs) that are neither valid "1" nor "0".
+/// Pulses in the 62-94μs gap are rejected because they represent neither a
+/// valid "1" nor a valid "0".
 pub fn validate_timing(pulses: &[PulseCode]) -> Result<(), ValidationError> {
     for pulse in pulses {
         classify_pulse(pulse)?;

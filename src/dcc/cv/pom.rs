@@ -5,25 +5,22 @@
 
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::cutout::PacketSequence;
-#[cfg(target_arch = "riscv32")]
-use crate::dcc::packet::DccPacket;
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::dcc::packet::{DccAddress, PomCv};
-#[cfg(target_arch = "riscv32")]
-use crate::dcc::scheduler::SchedulerCommand;
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
 use crate::diagnostics::diagnostic_counters;
 
 #[cfg(target_arch = "riscv32")]
-use core::sync::atomic::Ordering;
-#[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::{Receiver, Sender};
+use embassy_sync::channel::Receiver;
+
 #[cfg(target_arch = "riscv32")]
-use embassy_time::{Duration, Instant, with_timeout};
+mod actor;
+#[cfg(target_arch = "riscv32")]
+pub use actor::pom_actor_task;
 
 diagnostic_counters! {
     #[cfg(target_arch = "riscv32")]
@@ -44,39 +41,6 @@ pub fn pom_runtime_stats() -> PomRuntimeStats {
     POM.snapshot()
 }
 
-#[cfg(target_arch = "riscv32")]
-// The scheduler-to-engine path is naturally backpressured by a small frame
-// queue. Under app traffic the POM command can be accepted immediately but its
-// RailCom cutout event may be observed after more than one queued DCC frame.
-const POM_TX_START_TIMEOUT: Duration = Duration::from_millis(500);
-#[cfg(target_arch = "riscv32")]
-// Keep one app:pom attribution window open long enough for decoders that emit
-// the RailCom CV data on a later same-address packet. Returning NACK too early
-// lets the Z21 app send the next CV request, which can clear the decoder's
-// pending app:pom response.
-const POM_RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_500);
-#[cfg(target_arch = "riscv32")]
-const POM_READ_PACKET_REPETITIONS: u8 = 4;
-// Some decoders (bench 2026-09-10, Roco locomotive at address 3) answer a
-// POM read with ACK in the first cutout and deliver the CV value only in a
-// cutout that follows a *later* read packet, once the value is ready. One
-// burst is over within ~30 ms, before that happens, and the cyclic refresh
-// packets do not solicit the answer. The burst is therefore re-sent at this
-// interval until a value arrives or `POM_RESPONSE_TIMEOUT` expires. ESU
-// decoders answer the first burst, so for them nothing changes.
-#[cfg(target_arch = "riscv32")]
-const POM_READ_BURST_RESEND_INTERVAL: Duration = Duration::from_millis(150);
-#[cfg(target_arch = "riscv32")]
-const POM_MINIMUM_TX_STARTS: u8 = 2;
-// All repetitions are enqueued in one burst (see `run_pom_attempt`) so they
-// reach the wire consecutively per NMRA S-9.2.1. The scheduler's
-// `pending_pom` queue must be large enough to hold the full burst, otherwise
-// the tail packets get dropped silently.
-#[cfg(target_arch = "riscv32")]
-const _: () = assert!(
-    POM_READ_PACKET_REPETITIONS as usize <= crate::dcc::scheduler::PENDING_POM_CAPACITY,
-    "POM_READ_PACKET_REPETITIONS must fit in scheduler::pending_pom"
-);
 /// Identifies one POM request/response round-trip on the single-slot request
 /// and response channels between the Z21 network task and the POM actor.
 ///
@@ -209,16 +173,6 @@ pub type PomTxStartedChannel =
 pub type PomRailcomResultChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRailcomResult, 4>;
 
-#[cfg(target_arch = "riscv32")]
-fn pom_packet_from_request(request: PomRequest) -> DccPacket {
-    match request {
-        PomRequest::Read { address, cv, .. } => DccPacket::PomReadByte { address, cv },
-        PomRequest::Write {
-            address, cv, value, ..
-        } => DccPacket::PomWriteByte { address, cv, value },
-    }
-}
-
 /// Drain any pending items from a `Receiver` without awaiting.
 ///
 /// Used before dispatching a new request on a single-slot channel to make sure
@@ -286,199 +240,6 @@ fn match_pom_result(
                 None
             }
         }
-    }
-}
-
-#[cfg(target_arch = "riscv32")]
-async fn await_matching_pom_result(
-    request: PomRequest,
-    earliest_sequence: PacketSequence,
-    railcom_results: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
-) -> PomResponse {
-    loop {
-        let result = railcom_results.receive().await;
-        if result.request_id() != request.request_id()
-            || !result.packet_sequence().is_at_or_after(earliest_sequence)
-        {
-            POM.stale_result_count.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        if result.target_address() != Some(request.address()) {
-            POM.wrong_target_result_count
-                .fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        if let Some(response) = match_pom_result(request, earliest_sequence, result) {
-            return response;
-        }
-    }
-}
-
-#[cfg(target_arch = "riscv32")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PomAttemptOutcome {
-    Response(PomResponse),
-    TxTimeout,
-    ResponseTimeout,
-}
-
-#[cfg(target_arch = "riscv32")]
-async fn run_pom_attempt(
-    request: PomRequest,
-    tx_started_receiver: &Receiver<'static, CriticalSectionRawMutex, PomTxStarted, 4>,
-    railcom_result_receiver: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
-    scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-) -> PomAttemptOutcome {
-    drain_channel(tx_started_receiver);
-    drain_channel(railcom_result_receiver);
-
-    let packet = pom_packet_from_request(request);
-
-    // Burst-enqueue all CV-access repetitions before awaiting any tx-start.
-    //
-    // NMRA S-9.2.1 §3.5.1 requires CV access instructions to be sent as a
-    // sequence of identical packets so the decoder commits the access only
-    // after seeing the same instruction repeated back-to-back. Awaiting the
-    // first cutout between sends would let the scheduler interleave cyclic
-    // refresh packets (the RMT feeder queue holds ~16 frames), pushing the
-    // repetitions ~150 ms apart and breaking the consecutive-pair rule,
-    // observed in practice with ESU/Trix/Roco decoders that then never
-    // emit `app:pom` on CH2.
-    //
-    // `pending_pom` capacity is `POM_READ_PACKET_REPETITIONS`, so the burst
-    // fits without dropping. The scheduler serves `pending_pom` ahead of any
-    // refresh (priority `Programming`), keeping the packets consecutive on
-    // the wire.
-    let repetitions = match request {
-        PomRequest::Read { .. } => POM_READ_PACKET_REPETITIONS,
-        // NMRA S-9.2.1 §3.5.1 also calls for repeated write packets; ZIMO's
-        // reference command station emits two. Keep that minimum.
-        PomRequest::Write { .. } => 2,
-    };
-    enqueue_pom_burst(scheduler_sender, request, packet, repetitions).await;
-
-    // Accept feedback only from the second matching cutout onward. The first
-    // window can still carry a delayed response to the previous request from
-    // the same decoder. Later tx-start notifications are harmless and are
-    // drained before the next attempt.
-    let earliest_response_sequence = match with_timeout(POM_TX_START_TIMEOUT, async {
-        let mut matching_starts = 0u8;
-        loop {
-            let started = tx_started_receiver.receive().await;
-            if started.request_id == request.request_id() {
-                matching_starts += 1;
-                if matching_starts == POM_MINIMUM_TX_STARTS {
-                    return started.packet_sequence;
-                }
-            }
-        }
-    })
-    .await
-    {
-        Ok(sequence) => sequence,
-        Err(_) => return PomAttemptOutcome::TxTimeout,
-    };
-
-    let is_read = matches!(request, PomRequest::Read { .. });
-    let deadline = Instant::now() + POM_RESPONSE_TIMEOUT;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.as_ticks() == 0 {
-            return PomAttemptOutcome::ResponseTimeout;
-        }
-        let wait = if is_read {
-            remaining.min(POM_READ_BURST_RESEND_INTERVAL)
-        } else {
-            remaining
-        };
-        if let Ok(response) = with_timeout(
-            wait,
-            await_matching_pom_result(request, earliest_response_sequence, railcom_result_receiver),
-        )
-        .await
-        {
-            return PomAttemptOutcome::Response(response);
-        }
-        if !is_read {
-            return PomAttemptOutcome::ResponseTimeout;
-        }
-        // The tx-start notifications of the previous burst are of no further
-        // use: the response gate is already set. Drain them so the channel
-        // does not overflow on the next burst.
-        drain_channel(tx_started_receiver);
-        enqueue_pom_burst(scheduler_sender, request, packet, repetitions).await;
-    }
-}
-
-/// Enqueues `repetitions` identical copies of `packet` so they leave the
-/// scheduler back-to-back (see the comment in `run_pom_attempt`).
-#[cfg(target_arch = "riscv32")]
-async fn enqueue_pom_burst(
-    scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-    request: PomRequest,
-    packet: DccPacket,
-    repetitions: u8,
-) {
-    for _ in 0..repetitions {
-        scheduler_sender
-            .send(SchedulerCommand::ProgramOnMain {
-                request_id: request.request_id(),
-                permit: request.permit(),
-                packet,
-            })
-            .await;
-    }
-}
-
-/// Single-flight POM actor.
-///
-/// This actor keeps retry/timeout orchestration outside the scheduler and RMT path.
-#[cfg(target_arch = "riscv32")]
-#[embassy_executor::task]
-pub async fn pom_actor_task(
-    request_receiver: Receiver<'static, CriticalSectionRawMutex, PomRequest, 1>,
-    response_sender: Sender<'static, CriticalSectionRawMutex, PomResponse, 1>,
-    tx_started_receiver: Receiver<'static, CriticalSectionRawMutex, PomTxStarted, 4>,
-    railcom_result_receiver: Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
-    scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
-) -> ! {
-    loop {
-        let request = request_receiver.receive().await;
-        let request_id = match request {
-            PomRequest::Read { request_id, .. } | PomRequest::Write { request_id, .. } => {
-                request_id
-            }
-        };
-        if !crate::track_authority::accepts(request.permit(), Instant::now().as_millis()) {
-            response_sender.send(PomResponse::Nack { request_id }).await;
-            continue;
-        }
-        let final_response = match run_pom_attempt(
-            request,
-            &tx_started_receiver,
-            &railcom_result_receiver,
-            &scheduler_sender,
-        )
-        .await
-        {
-            PomAttemptOutcome::Response(response) => response,
-            PomAttemptOutcome::TxTimeout => {
-                POM.tx_start_timeout_count.fetch_add(1, Ordering::Relaxed);
-                defmt::warn!("POM request timed out before tx-start");
-                PomResponse::Nack { request_id }
-            }
-            PomAttemptOutcome::ResponseTimeout => {
-                POM.response_timeout_count.fetch_add(1, Ordering::Relaxed);
-                defmt::warn!("POM request timed out waiting for RailCom CV data");
-                PomResponse::Nack { request_id }
-            }
-        };
-
-        scheduler_sender
-            .send(SchedulerCommand::CloseProgramOnMain { request_id })
-            .await;
-
-        response_sender.send(final_response).await;
     }
 }
 

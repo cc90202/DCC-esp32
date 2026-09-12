@@ -1,6 +1,6 @@
 use super::wire::*;
 use super::*;
-use crate::dcc::LogicalSpeed;
+use crate::dcc::{FunctionState, LogicalSpeed};
 
 fn addr_short(n: u8) -> DccAddress {
     DccAddress::new_short(n).unwrap()
@@ -147,6 +147,34 @@ fn test_parse_set_loco_drive_28_short_addr() {
     assert_eq!(direction, Direction::Forward);
     assert_eq!(format, SpeedFormat::Speed28);
     assert_eq!(speed, 14);
+}
+
+#[test]
+fn short_loco_address_ignores_both_high_flag_bits() {
+    for high in [0x00, 0x40, 0x80, 0xc0] {
+        let frame = xbus_frame(0xE4, &[0x13, high, 0x03, 0x82]);
+
+        assert!(matches!(
+            parse_frame(&frame),
+            Ok(Z21Command::SetLocoDrive { address, .. }) if address == addr_short(3)
+        ));
+    }
+}
+
+#[test]
+fn long_loco_address_requires_both_high_flag_bits() {
+    let frame = xbus_frame(0xE4, &[0x13, 0x01, 0x03, 0x82]);
+
+    assert_eq!(parse_frame(&frame), Err(ParseError::InvalidAddress));
+}
+
+#[test]
+fn loco_address_rejects_zero_and_values_above_protocol_limit() {
+    for [high, low] in [[0xc0, 0x00], [0xe8, 0x00], [0xff, 0xff]] {
+        let frame = xbus_frame(0xE4, &[0x13, high, low, 0x82]);
+
+        assert_eq!(parse_frame(&frame), Err(ParseError::InvalidAddress));
+    }
 }
 
 #[test]
@@ -356,7 +384,7 @@ fn test_encode_loco_info_checksum() {
         address: addr_short(3),
         speed: LogicalSpeed::new(14, SpeedFormat::Speed28).unwrap(),
         direction: Direction::Forward,
-        functions: 0,
+        functions: FunctionState::empty(),
     };
     let mut buf = [0u8; 32];
     let n = encode_loco_info(&state, &mut buf);
@@ -406,12 +434,12 @@ fn test_encode_railcom_data() {
 fn test_encode_loco_info_function_layout() {
     // F0=1, F1=1, F4=1
     // functions bitmask: bit0=F0=1, bit1=F1=1, bit4=F4=1
-    let funcs: u32 = (1 << 0) | (1 << 1) | (1 << 4);
+    let functions = FunctionState::from_bits((1 << 0) | (1 << 1) | (1 << 4)).unwrap();
     let state = LocoInfo {
         address: addr_short(3),
         speed: LogicalSpeed::zero(SpeedFormat::Speed128),
         direction: Direction::Forward,
-        functions: funcs,
+        functions,
     };
     let mut buf = [0u8; 32];
     encode_loco_info(&state, &mut buf).expect("test response buffer must fit");
@@ -452,7 +480,7 @@ fn test_encode_loco_info_speed28() {
         address: addr_short(3),
         speed: LogicalSpeed::new(14, SpeedFormat::Speed28).unwrap(),
         direction: Direction::Forward,
-        functions: 0,
+        functions: FunctionState::empty(),
     };
     let mut buf = [0u8; 32];
     encode_loco_info(&state, &mut buf).expect("test response buffer must fit");
@@ -565,7 +593,7 @@ fn test_all_encoders_reject_short_output_buffers() {
         address: addr_short(3),
         speed: LogicalSpeed::zero(SpeedFormat::Speed128),
         direction: Direction::Forward,
-        functions: 0,
+        functions: FunctionState::empty(),
     };
     let mut empty = [];
 
@@ -693,7 +721,7 @@ fn test_function_bitmask_f0_f28() {
         address: addr_short(1),
         speed: LogicalSpeed::zero(SpeedFormat::Speed128),
         direction: Direction::Forward,
-        functions: (1 << 0) | (1 << 28), // F0 and F28
+        functions: FunctionState::from_bits((1 << 0) | (1 << 28)).unwrap(), // F0 and F28
     };
     let mut buf = [0u8; 32];
     encode_loco_info(&state, &mut buf).expect("test response buffer must fit");
@@ -709,7 +737,7 @@ fn test_encode_loco_info_speed128_avoids_wire_estop_value() {
         address: addr_short(3),
         speed: LogicalSpeed::new(1, SpeedFormat::Speed128).unwrap(),
         direction: Direction::Forward,
-        functions: 0,
+        functions: FunctionState::empty(),
     };
     let mut buf = [0u8; 32];
     encode_loco_info(&state, &mut buf).expect("test response buffer must fit");

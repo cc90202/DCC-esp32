@@ -55,6 +55,8 @@
 //! capacity (should not occur with valid input). Public packet constructors use
 //! validated newtypes for address, speed, and CV ranges.
 
+use core::fmt;
+
 use crate::dcc::packet::DccPacket;
 use crate::dcc::timing::{
     DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
@@ -77,6 +79,24 @@ pub enum EncodeError {
 impl From<crate::dcc::packet::PacketEncodeError> for EncodeError {
     fn from(value: crate::dcc::packet::PacketEncodeError) -> Self {
         Self::Packet(value)
+    }
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Packet(error) => write!(formatter, "DCC packet encoding failed: {error}"),
+            Self::PulseBufferOverflow => formatter.write_str("DCC pulse buffer capacity exceeded"),
+        }
+    }
+}
+
+impl core::error::Error for EncodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Packet(error) => Some(error),
+            Self::PulseBufferOverflow => None,
+        }
     }
 }
 

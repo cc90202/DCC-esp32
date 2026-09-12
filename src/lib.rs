@@ -24,7 +24,7 @@ pub mod boot;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod control_buttons;
 pub mod control_logic;
-pub mod cutout;
+pub(crate) mod cutout;
 pub mod dcc;
 // ESP runtime adapters live beside their DCC/RailCom feature code on disk, but
 // are mounted at the crate root to keep hardware and tasking out of the pure
@@ -42,7 +42,7 @@ pub mod railcom;
 #[cfg(target_arch = "riscv32")]
 #[path = "railcom/isr_capture.rs"]
 pub(crate) mod railcom_capture;
-pub mod railcom_data;
+mod railcom_data;
 #[cfg(target_arch = "riscv32")]
 #[path = "dcc/rmt_driver.rs"]
 pub(crate) mod rmt_dcc;

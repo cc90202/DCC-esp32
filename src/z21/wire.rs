@@ -90,17 +90,15 @@ pub(super) fn xbus_checksum(data: &[u8]) -> u8 {
 
 /// Decode a Z21 wire address (2-byte format: high byte, low byte).
 ///
-/// - Short address: high byte = 0x00, low byte = 1-127
-/// - Long address:  high byte has bit7..bit6 = 0b11, range 128-10239
+/// The address magnitude always uses the low six bits of `high`. For values
+/// below 128 the two flag bits are ignored, as required by the Z21 protocol.
+/// Values from 128 through 10239 are accepted only when both flag bits are set.
 pub(super) fn parse_loco_address(high: u8, low: u8) -> Option<DccAddress> {
-    if (high & 0xC0) == 0xC0 {
-        // Long address: strip top 2 bits from high, combine with low
-        let addr = (((high & 0x3F) as u16) << 8) | (low as u16);
-        DccAddress::new_long(addr)
-    } else {
-        // Short address
-        let addr = low;
-        DccAddress::new_short(addr)
+    let magnitude = (u16::from(high & 0x3f) << 8) | u16::from(low);
+    match magnitude {
+        1..=127 => DccAddress::new_short(magnitude as u8),
+        128..=10239 if high & 0xc0 == 0xc0 => DccAddress::new_long(magnitude),
+        _ => None,
     }
 }
 
