@@ -52,7 +52,7 @@ logic is pure and covered by host-side tests; the rest runs on the target.
 
 Read this before wiring or powering anything:
 
-- [Current breadboard circuit](docs/hardware/current-circuit.md) — what is wired today
+- [Breadboard wiring](docs/hardware/wiring.md) — what is connected to what, and why
 - [Components inventory](docs/hardware/components-inventory.md) — mounted, in the drawer, left the design, to buy
 
 The bench circuit is built around a Pololu DRV8874 carrier (#4035) driving the
@@ -180,12 +180,14 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 ## Project layout
 
 - `src/bin/main.rs`: firmware entrypoint
-- `src/boot/`: composition root, hardware setup and task spawning
-- `src/application/`: framework-independent use cases and read projections
-- `src/dcc/`: DCC packet, encoder, timing, scheduler, validator, CV logic, ISR-driven RMT backend
-- `src/net/`: Z21-compatible network protocol, UDP control, WiFi, and provisioning
-- `src/railcom/`: RailCom capture, parsing, runtime dispatch, and POM integration
-- `src/z21/`: pure Z21 protocol contract, independent of transport
+- `src/boot.rs` and `src/boot/`: composition root, hardware setup, readiness, and task spawning
+- `src/application/`: framework-independent use cases, safety policies, and read projections
+- `src/dcc/`: DCC domain types, packet encoding, timing, scheduling, and CV/POM actors
+- `src/net/`: WiFi, provisioning, UDP transport, and Z21 interface adapters
+- `src/railcom.rs` and `src/railcom/`: RailCom capture, parsing, attribution, and runtime dispatch
+- `src/z21/`: pure Z21 wire protocol, independent of transport
+- `src/fault_manager.rs` and `src/fault_manager/`: track-safety policy, power fence, and effect relay
+- `src/track_*.rs`: physical output, authorization, and safety boundaries
 - `docs/specs/`: protocol and standards references
 - `docs/hardware/`: the breadboard as it is wired today, inventory and assembly notes
 

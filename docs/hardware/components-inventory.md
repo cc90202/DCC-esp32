@@ -1,8 +1,8 @@
 # Components inventory
 
 Updated on 8 September 2026. It separates what is mounted on the breadboard
-today, what sits in the drawer and what has left the design. The mounted
-circuit is described in `current-circuit.md`.
+today, what sits in the drawer, what has left the design and what still has to
+be bought. The mounted circuit is described in `wiring.md`.
 
 ## Mounted on the breadboard
 
