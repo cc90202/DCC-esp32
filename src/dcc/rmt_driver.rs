@@ -137,6 +137,7 @@ pub enum InitError {
 /// service time, not the hardware-generated DCC or GPIO4 waveform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 pub(crate) struct RmtTimingStats {
     pub max_isr_duration_us: u32,
     pub max_cutout_request_latency_us: u32,
@@ -155,6 +156,7 @@ static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_m
 static RMT_TX_KEEPALIVE: StaticCell<ManuallyDrop<ContinuousTxTransaction<'static>>> =
     StaticCell::new();
 
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 #[must_use]
 pub(crate) fn timing_stats() -> RmtTimingStats {
     RmtTimingStats {

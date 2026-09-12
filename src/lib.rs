@@ -36,6 +36,7 @@ pub(crate) mod diagnostics;
 pub mod display;
 pub mod fault_manager;
 pub(crate) mod logon;
+mod macros;
 pub mod net;
 pub mod railcom;
 #[cfg(target_arch = "riscv32")]

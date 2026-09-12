@@ -570,7 +570,10 @@ mod tests {
         // A dynamic-data window that lost one symbol re-aligns into a bogus
         // trailing CV datagram; it must not become a value.
         let items = [
-            RailcomItem::Datagram(RailcomDatagram::Dyn { value: 0, sub_index: 0 }),
+            RailcomItem::Datagram(RailcomDatagram::Dyn {
+                value: 0,
+                sub_index: 0,
+            }),
             RailcomItem::Datagram(RailcomDatagram::CvData(0x00)),
         ];
 

@@ -19,6 +19,7 @@ use embassy_sync::channel::{Receiver, Sender};
 use esp_hal::Async;
 use esp_hal::uart::UartRx;
 
+use crate::macros::bench_diag;
 use crate::railcom::pipeline::{
     MAX_RAILCOM_WINDOW_BYTES, PacketSequence, RailcomChannel, RailcomRxWindow,
     RailcomRxWindowError, process_rx_window, record_oversized_window, record_rx_overflows,
@@ -73,6 +74,7 @@ impl RailcomIsrCaptureUart {
 }
 
 /// GPIO matrix input signal index of U1RXD on the ESP32-C6.
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 const U1RXD_SIGNAL: usize = 9;
 #[inline(always)]
 fn uart1_rx_fifo_count() -> Option<u16> {
@@ -218,21 +220,28 @@ fn take_captured_window(next_read: &mut u32) -> Option<CapturedWindow> {
     None
 }
 
+#[cfg(feature = "bench-diag")]
 static RAW_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Bench diagnostic: log the raw bytes of the first windows after boot and
 /// then one window every 100, so the byte layout per channel can be checked
 /// against the scope without flooding the log.
+///
+/// Compiled out unless `bench-diag` is enabled: this runs once per captured
+/// window, and a defmt line holds a critical section for its whole duration.
+#[cfg_attr(not(feature = "bench-diag"), allow(unused_variables))]
 fn log_raw_window(window: &CapturedWindow) {
-    let count = RAW_DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
-    if count < 60 || count % 100 == 0 {
-        defmt::info!(
-            "railcom raw seq={} ch={} len={} bytes={=[u8]:#04x}",
-            window.packet_sequence.value(),
-            u8::from(window.channel),
-            window.len,
-            &window.bytes[..window.len.min(MAX_RAILCOM_WINDOW_BYTES)]
-        );
+    bench_diag! {
+        let count = RAW_DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count < 60 || count.is_multiple_of(100) {
+            defmt::info!(
+                "railcom raw seq={} ch={} len={} bytes={=[u8]:#04x}",
+                window.packet_sequence.value(),
+                u8::from(window.channel),
+                window.len,
+                &window.bytes[..window.len.min(MAX_RAILCOM_WINDOW_BYTES)]
+            );
+        }
     }
 }
 
@@ -313,6 +322,7 @@ pub async fn railcom_isr_capture_task(
 /// Read-only: touches no control bit, so it is safe to call from a task while
 /// the cutout ISR owns the FIFO data path.
 #[derive(Debug, Clone, Copy, defmt::Format)]
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 pub struct Uart1RawDiag {
     pub rxfifo_cnt: u16,
     pub rxd_level: bool,
@@ -326,6 +336,7 @@ pub struct Uart1RawDiag {
     pub samples: u32,
 }
 
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 #[must_use]
 pub fn uart1_raw_diag() -> Uart1RawDiag {
     // SAFETY: read-only register access; see the ownership note on
@@ -345,9 +356,9 @@ pub fn uart1_raw_diag() -> Uart1RawDiag {
     }
     let status = regs.status().read();
     Uart1RawDiag {
-        rxfifo_cnt: status.rxfifo_cnt().bits() as u16,
+        rxfifo_cnt: u16::from(status.rxfifo_cnt().bits()),
         rxd_level: status.rxd().bit_is_set(),
-        rxd_edge_cnt: regs.rxd_cnt().read().rxd_edge_cnt().bits() as u16,
+        rxd_edge_cnt: regs.rxd_cnt().read().rxd_edge_cnt().bits(),
         int_raw: regs.int_raw().read().bits(),
         st_urx_out: regs.fsm_status().read().st_urx_out().bits(),
         conf0_rxfifo_rst: regs.conf0().read().rxfifo_rst().bit_is_set(),

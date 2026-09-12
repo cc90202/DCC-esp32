@@ -45,8 +45,11 @@ pub use encoding::{
     encode_turnout_info, encode_unknown_command, encode_xbus_version,
 };
 pub use parsing::{FrameBoundaryError, FrameIter, frame_kind, iter_frames, parse_frame};
+// Read only by the bench diagnostics datagram log; see `bench-diag`.
+#[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+pub(crate) use wire::HEADER_SYSTEMSTATE_GETDATA;
 #[cfg(target_arch = "riscv32")]
-pub(crate) use wire::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
+pub(crate) use wire::HEADER_XBUS;
 
 /// Locomotive state required to encode a `LAN_X_LOCO_INFO` frame.
 ///

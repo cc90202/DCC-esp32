@@ -23,12 +23,15 @@ pub mod wifi_config;
 mod z21_context;
 #[cfg(target_arch = "riscv32")]
 mod z21_dispatch;
-#[cfg(target_arch = "riscv32")]
-pub(crate) use loco_client::loco_response_timeout_count;
-#[cfg(target_arch = "riscv32")]
-pub(crate) use udp_control::{status_broadcast_send_failure_count, udp_receive_failure_count};
-#[cfg(target_arch = "riscv32")]
-pub(crate) use z21_dispatch::{loco_command_rejected_count, railcom_getdata_no_data_count};
+// Counter readers for the bench diagnostics dump; see the `bench-diag`
+// feature in Cargo.toml. Both conditions are needed: the modules themselves
+// only exist on the firmware target.
+#[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+pub(crate) use {
+    loco_client::loco_response_timeout_count,
+    udp_control::{status_broadcast_send_failure_count, udp_receive_failure_count},
+    z21_dispatch::{loco_command_rejected_count, railcom_getdata_no_data_count},
+};
 // Compatibility alias for callers using the former protocol path.
 pub use crate::z21 as z21_proto;
 

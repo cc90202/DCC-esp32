@@ -23,9 +23,11 @@ use hardware::{
 };
 use provisioning::{open_wifi_config_store, provisioning_request_task};
 use readiness::wait_for_runtime_ready;
+#[cfg(feature = "bench-diag")]
+use runtime_tasks::railcom_diag_task;
 use runtime_tasks::{
     NetTaskWrapperContext, dcc_engine_task_wrapper, display_task_wrapper, net_task_wrapper,
-    railcom_diag_task, railcom_isr_capture_task_wrapper, scheduler_task_wrapper,
+    railcom_isr_capture_task_wrapper, scheduler_task_wrapper,
 };
 use self_check::verify_boot_packet_encoding;
 use startup_sequence::{send_decoder_reset_sequence, send_power_on_idle_burst};
@@ -282,8 +284,11 @@ async fn start_dcc_core(
     )?;
     info!("boot: scheduler task spawned");
 
-    spawn_critical(spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
-    info!("boot: RailCom diagnostics task spawned");
+    #[cfg(feature = "bench-diag")]
+    {
+        spawn_critical(spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
+        info!("boot: RailCom diagnostics task spawned");
+    }
 
     spawn_critical(
         spawner,

@@ -26,6 +26,7 @@ use crate::application::client_safety::{
     LeaseActivity, LeaseDecision, LeaseEpoch, LeasePermit, LeaseRequest,
 };
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::macros::bench_diag;
 use crate::net::client_watchdog::LeaseTripNotification;
 use crate::net::loco_client::reset_for_lease;
 use crate::net::wifi_config::WifiCredentials;
@@ -38,7 +39,9 @@ use crate::runtime_channels::{
     NetStatusReceiver, PomRequestSender, PomResponseReceiver, SystemStatusSender, announce_ready,
 };
 use crate::system_status::{BootReadyEvent, DisplayEvent};
-use crate::z21::{self as z21_proto, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
+use crate::z21 as z21_proto;
+#[cfg(feature = "bench-diag")]
+use crate::z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 
 pub use super::wifi::NetInitError;
 use super::{radio, wifi};
@@ -54,11 +57,13 @@ static NET_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 static STATUS_BROADCAST_SEND_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 static UDP_RECEIVE_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 #[must_use]
 pub(crate) fn status_broadcast_send_failure_count() -> u32 {
     STATUS_BROADCAST_SEND_FAILURE_COUNT.load(Ordering::Relaxed)
 }
 
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 #[must_use]
 pub(crate) fn udp_receive_failure_count() -> u32 {
     UDP_RECEIVE_FAILURE_COUNT.load(Ordering::Relaxed)
@@ -168,6 +173,29 @@ fn bind_z21_socket(stack: Stack<'static>) -> Result<UdpSocket<'static>, NetInitE
     Ok(socket)
 }
 
+/// Bench diagnostic: one line per received Z21 datagram that is not a poll.
+///
+/// Compiled out unless `bench-diag` is enabled. A throttle in motion sends a
+/// steady stream of datagrams, and each defmt line holds a critical section
+/// that delays the DCC waveform and cutout interrupts. Parse errors, rejected
+/// commands and send failures are logged unconditionally elsewhere.
+#[cfg_attr(not(feature = "bench-diag"), allow(unused_variables))]
+fn log_datagram(datagram: &[u8], endpoint: IpEndpoint) {
+    bench_diag! {
+        let kind = z21_proto::frame_kind(datagram);
+        let is_polling = kind.header == HEADER_SYSTEMSTATE_GETDATA || kind.header == HEADER_XBUS;
+        if !is_polling {
+            info!(
+                "UDP rx {} bytes from {}: header=0x{:04X} xheader=0x{:02X}",
+                datagram.len(),
+                defmt::Display2Format(&endpoint),
+                kind.header,
+                kind.xheader
+            );
+        }
+    }
+}
+
 async fn handle_udp_datagram(
     socket: &mut UdpSocket<'_>,
     datagram: &[u8],
@@ -177,17 +205,7 @@ async fn handle_udp_datagram(
     io: &Z21LoopIo,
 ) {
     let observed_at_ms = Instant::now().as_millis();
-    let kind = z21_proto::frame_kind(datagram);
-    let is_polling = kind.header == HEADER_SYSTEMSTATE_GETDATA || kind.header == HEADER_XBUS;
-    if !is_polling {
-        info!(
-            "UDP rx {} bytes from {}: header=0x{:04X} xheader=0x{:02X}",
-            datagram.len(),
-            defmt::Display2Format(&endpoint),
-            kind.header,
-            kind.xheader
-        );
-    }
+    log_datagram(datagram, endpoint);
 
     for (frame_index, boundary) in z21_proto::iter_frames(datagram).enumerate() {
         if frame_index == MAX_FRAMES_PER_DATAGRAM {

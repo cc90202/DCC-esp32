@@ -8,8 +8,10 @@ use defmt::{info, warn};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
+#[cfg(feature = "bench-diag")]
 use crate::cutout::CutoutMode;
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
+use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::RailcomLocoSighting;
 use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
 use crate::railcom::pipeline::{
@@ -162,37 +164,44 @@ fn forward_pom_result(
 /// parser made of it and what reached the POM actor. The periodic raw dump
 /// samples one window in a hundred, which never shows the windows of a
 /// read that times out.
+///
+/// Compiled out unless `bench-diag` is enabled. This one is unthrottled and
+/// fires during the very reads whose cutout timing we measure, and a defmt
+/// line holds a critical section for its whole duration.
+#[cfg_attr(not(feature = "bench-diag"), allow(unused_variables))]
 fn log_pom_window(
     result: &RailcomRxResult,
     packet_metadata: Option<RailcomPacketMetadata>,
     complete_items: &[RailcomItem],
     pom_result: Option<&PomRailcomResult>,
 ) {
-    let Some(metadata) = packet_metadata else {
-        return;
-    };
-    if result.window.channel != RailcomChannel::Channel2
-        || !matches!(metadata.cutout, CutoutMode::PomRead | CutoutMode::PomWrite)
-    {
-        return;
+    bench_diag! {
+        let Some(metadata) = packet_metadata else {
+            return;
+        };
+        if result.window.channel != RailcomChannel::Channel2
+            || !matches!(metadata.cutout, CutoutMode::PomRead | CutoutMode::PomWrite)
+        {
+            return;
+        }
+        let (value, ack, nack) = match pom_result {
+            Some(PomRailcomResult::Window {
+                value, ack, nack, ..
+            }) => (*value, *ack, *nack),
+            _ => (None, false, false),
+        };
+        info!(
+            "railcom pom ch2 seq={} req={:?} raw={=[u8]:#04x} outcome={:?} items={} value={:?} ack={} nack={}",
+            result.window.packet_sequence.value(),
+            metadata.pom_request_id,
+            result.window.raw_slice(),
+            result.outcome,
+            complete_items.len(),
+            value,
+            ack,
+            nack
+        );
     }
-    let (value, ack, nack) = match pom_result {
-        Some(PomRailcomResult::Window {
-            value, ack, nack, ..
-        }) => (*value, *ack, *nack),
-        _ => (None, false, false),
-    };
-    info!(
-        "railcom pom ch2 seq={} req={:?} raw={=[u8]:#04x} outcome={:?} items={} value={:?} ack={} nack={}",
-        result.window.packet_sequence.value(),
-        metadata.pom_request_id,
-        result.window.raw_slice(),
-        result.outcome,
-        complete_items.len(),
-        value,
-        ack,
-        nack
-    );
 }
 
 fn dispatch_processed_window(

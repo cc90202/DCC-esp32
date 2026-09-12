@@ -1,11 +1,16 @@
 //! Thin Embassy task adapters used by the boot composition root.
 
-use defmt::info;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
 use esp_hal::uart::UartRx;
 
-use crate::cutout::RailcomChannel;
+// Used only by the bench diagnostics dump task below.
+#[cfg(feature = "bench-diag")]
+use {
+    crate::cutout::RailcomChannel,
+    defmt::info,
+    embassy_time::{Duration, Timer},
+};
+
 use crate::dcc::{PowerGeneration, packet_scheduler_task};
 use crate::dcc_runtime::dcc_engine_task;
 use crate::net::udp_control::{NetTaskChannels, net_task};
@@ -113,6 +118,14 @@ pub(super) async fn railcom_isr_capture_task_wrapper(
     crate::railcom_capture::railcom_isr_capture_task(uart_rx, result_sender).await
 }
 
+/// Bench diagnostic: periodic dump of the RailCom, POM and network counters.
+///
+/// Compiled out unless `bench-diag` is enabled. The line carries ~50 fields,
+/// far more than the 64-byte USB-serial FIFO, and defmt writes the whole frame
+/// inside one critical section: when the FIFO fills, the writer spins with
+/// interrupts disabled until the host drains it. The counters themselves are
+/// always maintained; only this dump is gated.
+#[cfg(feature = "bench-diag")]
 #[embassy_executor::task]
 pub(super) async fn railcom_diag_task() -> ! {
     loop {

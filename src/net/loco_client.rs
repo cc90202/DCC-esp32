@@ -23,6 +23,7 @@ const LOCO_RESPONSE_TIMEOUT: Duration = Duration::from_millis(LOCO_RESPONSE_TIME
 
 static LOCO_RESPONSE_TIMEOUT_COUNT: AtomicU32 = AtomicU32::new(0);
 
+#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
 #[must_use]
 pub(crate) fn loco_response_timeout_count() -> u32 {
     LOCO_RESPONSE_TIMEOUT_COUNT.load(Ordering::Relaxed)
