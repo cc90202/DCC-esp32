@@ -25,13 +25,47 @@ enum ConnectionState {
     Connected,
 }
 
+/// Preserved embassy-net failure returned while binding the Z21 UDP socket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct UdpBindError(embassy_net::udp::BindError);
+
+impl From<embassy_net::udp::BindError> for UdpBindError {
+    fn from(error: embassy_net::udp::BindError) -> Self {
+        Self(error)
+    }
+}
+
+impl fmt::Display for UdpBindError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "embassy-net UDP bind error: {:?}", self.0)
+    }
+}
+
+impl core::error::Error for UdpBindError {}
+
+impl defmt::Format for UdpBindError {
+    fn format(&self, formatter: defmt::Formatter) {
+        defmt::write!(formatter, "{:?}", defmt::Debug2Format(&self.0));
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum NetInitError {
     WifiBringup(WifiBringupError),
     WifiRunnerSpawn,
     ConnectionSpawn,
-    UdpBind,
+    UdpBind(UdpBindError),
+}
+
+impl defmt::Format for NetInitError {
+    fn format(&self, formatter: defmt::Formatter) {
+        match self {
+            Self::WifiBringup(error) => defmt::write!(formatter, "{:?}", error),
+            Self::WifiRunnerSpawn => defmt::write!(formatter, "wifi runner spawn failed"),
+            Self::ConnectionSpawn => defmt::write!(formatter, "WiFi connection spawn failed"),
+            Self::UdpBind(error) => defmt::write!(formatter, "UDP bind failed: {:?}", error),
+        }
+    }
 }
 
 impl fmt::Display for NetInitError {
@@ -40,7 +74,17 @@ impl fmt::Display for NetInitError {
             Self::WifiBringup(error) => write!(formatter, "{error}"),
             Self::WifiRunnerSpawn => formatter.write_str("failed to spawn wifi_runner_task"),
             Self::ConnectionSpawn => formatter.write_str("failed to spawn connection_task"),
-            Self::UdpBind => formatter.write_str("UDP bind on Z21 port failed"),
+            Self::UdpBind(error) => write!(formatter, "UDP bind on Z21 port failed: {error:?}"),
+        }
+    }
+}
+
+impl core::error::Error for NetInitError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::WifiBringup(error) => Some(error),
+            Self::UdpBind(error) => Some(error),
+            Self::WifiRunnerSpawn | Self::ConnectionSpawn => None,
         }
     }
 }

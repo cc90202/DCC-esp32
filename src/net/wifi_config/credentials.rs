@@ -30,6 +30,8 @@ impl fmt::Display for CredentialError {
     }
 }
 
+impl core::error::Error for CredentialError {}
+
 /// Validated WPA/WPA2 station credentials.
 #[derive(PartialEq, Eq)]
 pub struct WifiCredentials {

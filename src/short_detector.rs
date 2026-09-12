@@ -1,12 +1,13 @@
-//! Track short-circuit detector using an active-low conditioned GPIO signal.
+//! Track short-circuit detector using an active-low GPIO signal.
 //!
-//! The external current/fault detector conditions the track-driver signal into
-//! a clean 3.3V digital output for GPIO3.
+//! GPIO3 is wired to the FAULT pin of the DRV8874 carrier. That pin is open
+//! drain and can only pull down, so the line is held up by the pull-up inside
+//! the ESP32-C6, enabled here.
 //!
 //! - Normal operation: GPIO3 = HIGH (3.3V)
 //! - Short circuit:    GPIO3 = LOW  (0V)  → falling edge triggers fault
 //!
-//! Monitors GPIO3 (digital input from 74HC14 Schmitt trigger) for track short-circuit detection.
+//! Monitors GPIO3 for track short-circuit detection.
 //! The signal is active-low: GPIO3=LOW means short detected. A falling-edge interrupt opens a
 //! qualification window: the pin is sampled every millisecond and the fault latches only when
 //! the line stays LOW for most of the window (15 of 20 samples), mirroring commercial command
@@ -196,7 +197,7 @@ pub async fn short_detector_task(
     mut fault_state_receiver: watch::Receiver<
         'static,
         CriticalSectionRawMutex,
-        crate::fault_manager::FaultManagerState,
+        crate::system_status::FaultManagerState,
         1,
     >,
     ready_sender: BootReadySender,
@@ -222,7 +223,7 @@ pub async fn short_detector_task(
     let mut fault_state = fault_state_receiver.get().await;
 
     loop {
-        while !matches!(fault_state, crate::fault_manager::FaultManagerState::Normal) {
+        while !matches!(fault_state, crate::system_status::FaultManagerState::Normal) {
             fault_state = fault_state_receiver.changed().await;
         }
 

@@ -11,8 +11,8 @@ use crate::{
     system_status::{DisplayEvent, FaultCause, SystemStatusEvent},
 };
 
-use super::FaultManagerState;
 use super::policy::{FaultDecision, SchedulerEffect, StatusEffect};
+use crate::system_status::FaultManagerState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SchedulerMode {

@@ -1,7 +1,9 @@
+use core::fmt;
+
 use heapless::Vec;
 
 use crate::dcc::DccAddress;
-pub use crate::railcom_data::{RailcomDatagram, RailcomItem};
+use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
 const SYMBOL_NACK: u8 = 0xfc;
 const SYMBOL_ACK: u8 = 0xfd;
@@ -127,6 +129,47 @@ pub enum ParseError {
     UnsupportedDatagramId(u8),
     TooManyItems,
 }
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid4Of8Code(value) => {
+                write!(formatter, "invalid RailCom 4-of-8 code {value:#04x}")
+            }
+            Self::Reserved4Of8Code(value) => {
+                write!(formatter, "reserved RailCom 4-of-8 code {value:#04x}")
+            }
+            Self::ControlSymbolNotAllowed(value) => write!(
+                formatter,
+                "RailCom control symbol {value:#04x} is not allowed here"
+            ),
+            Self::DatagramAfterControl => {
+                formatter.write_str("RailCom datagram follows a terminal control symbol")
+            }
+            Self::TruncatedDatagram {
+                id,
+                needed_symbols,
+                available_symbols,
+            } => write!(
+                formatter,
+                "truncated RailCom datagram {id}: needs {needed_symbols} symbols, has {available_symbols}"
+            ),
+            Self::InvalidLogonCrc { expected, actual } => write!(
+                formatter,
+                "invalid RailCom logon CRC: expected {expected:#04x}, received {actual:#04x}"
+            ),
+            Self::InvalidLogonAddress(address) => {
+                write!(formatter, "invalid RailCom logon address {address}")
+            }
+            Self::UnsupportedDatagramId(id) => {
+                write!(formatter, "unsupported RailCom datagram identifier {id}")
+            }
+            Self::TooManyItems => formatter.write_str("RailCom decoded-item capacity exceeded"),
+        }
+    }
+}
+
+impl core::error::Error for ParseError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]

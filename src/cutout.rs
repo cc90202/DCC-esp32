@@ -152,11 +152,13 @@ pub mod timing {
     const _: () = assert!(RX_CHANNEL_SPLIT_US < CHANNEL2_START_US);
 
     /// Timeline for one DCC packet followed by a RailCom cutout.
+    #[cfg(any(test, target_arch = "riscv32"))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CutoutTimeline {
         dcc_packet_duration_us: u32,
     }
 
+    #[cfg(any(test, target_arch = "riscv32"))]
     impl CutoutTimeline {
         #[must_use]
         pub const fn new(dcc_packet_duration_us: u32) -> Self {
@@ -166,6 +168,7 @@ pub mod timing {
         }
 
         #[must_use]
+        #[cfg(test)]
         pub const fn control_start_from_packet_start_us(self) -> u32 {
             self.reference_edge_from_packet_start_us() + CUTOUT_CONTROL_START_US
         }
@@ -178,6 +181,7 @@ pub mod timing {
         }
 
         #[must_use]
+        #[cfg(test)]
         pub const fn cycle_duration_us(self) -> u32 {
             self.reference_edge_from_packet_start_us() + CUTOUT_CONTROL_END_US
         }

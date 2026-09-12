@@ -19,9 +19,12 @@ use super::store::{ProvisioningFlagStore, StoreError, WifiCredentialsStore};
 pub fn load_wifi_credentials_and_decision<S>(
     store: &mut S,
     button_override: bool,
-) -> Result<(ProvisioningDecision, Option<WifiCredentials>), StoreError>
+) -> Result<
+    (ProvisioningDecision, Option<WifiCredentials>),
+    StoreError<<S as WifiCredentialsStore>::Error>,
+>
 where
-    S: WifiCredentialsStore + ProvisioningFlagStore,
+    S: WifiCredentialsStore + ProvisioningFlagStore<Error = <S as WifiCredentialsStore>::Error>,
 {
     let (stored_state, credentials) = match store.load() {
         Ok(Some(credentials)) => (StoredCredentialsState::Present, Some(credentials)),
@@ -48,18 +51,21 @@ where
 mod tests {
     use super::*;
     use crate::net::wifi_config::ProvisioningReason;
+    use embedded_storage::nor_flash::NorFlashErrorKind;
 
     #[derive(Default)]
     struct FakeStore {
         stored: Option<(&'static str, &'static str)>,
-        load_error: Option<StoreError>,
+        load_error: Option<StoreError<NorFlashErrorKind>>,
         flag: bool,
-        flag_error: Option<StoreError>,
+        flag_error: Option<StoreError<NorFlashErrorKind>>,
         flag_clears: u8,
     }
 
     impl WifiCredentialsStore for FakeStore {
-        fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError> {
+        type Error = NorFlashErrorKind;
+
+        fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError<Self::Error>> {
             match self.load_error {
                 Some(error) => Err(error),
                 None => Ok(self
@@ -68,28 +74,30 @@ mod tests {
             }
         }
 
-        fn save(&mut self, _credentials: &WifiCredentials) -> Result<(), StoreError> {
+        fn save(&mut self, _credentials: &WifiCredentials) -> Result<(), StoreError<Self::Error>> {
             unimplemented!("not exercised by the boot decision")
         }
 
-        fn clear(&mut self) -> Result<(), StoreError> {
+        fn clear(&mut self) -> Result<(), StoreError<Self::Error>> {
             unimplemented!("not exercised by the boot decision")
         }
     }
 
     impl ProvisioningFlagStore for FakeStore {
-        fn force_on_next_boot(&mut self) -> Result<bool, StoreError> {
+        type Error = NorFlashErrorKind;
+
+        fn force_on_next_boot(&mut self) -> Result<bool, StoreError<Self::Error>> {
             match self.flag_error {
                 Some(error) => Err(error),
                 None => Ok(self.flag),
             }
         }
 
-        fn set_force_on_next_boot(&mut self) -> Result<(), StoreError> {
+        fn set_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>> {
             unimplemented!("not exercised by the boot decision")
         }
 
-        fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError> {
+        fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>> {
             self.flag = false;
             self.flag_clears += 1;
             Ok(())
@@ -196,13 +204,13 @@ mod tests {
     #[test]
     fn non_corrupt_load_error_propagates() {
         let mut store = FakeStore {
-            load_error: Some(StoreError::FlashRead),
+            load_error: Some(StoreError::FlashRead(NorFlashErrorKind::Other)),
             ..FakeStore::default()
         };
 
         assert_eq!(
             load_wifi_credentials_and_decision(&mut store, false),
-            Err(StoreError::FlashRead)
+            Err(StoreError::FlashRead(NorFlashErrorKind::Other))
         );
     }
 }

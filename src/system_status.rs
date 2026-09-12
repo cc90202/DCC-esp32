@@ -120,6 +120,19 @@ pub enum OptionalPeripheralInit {
     DisplayUnavailable,
 }
 
+impl core::fmt::Display for OptionalPeripheralInit {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let message = match self {
+            Self::DisplayI2c => "display I2C initialization failed",
+            Self::DisplayInit => "display controller initialization failed",
+            Self::DisplayUnavailable => "display is unavailable",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl core::error::Error for OptionalPeripheralInit {}
+
 /// Readiness acknowledgement sent by a task once it has finished its own
 /// startup sequence and is ready to participate in normal runtime operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

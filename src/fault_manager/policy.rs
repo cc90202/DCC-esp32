@@ -7,7 +7,8 @@
 use crate::system_status::FaultCause;
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::system_status::FaultEvent;
-pub use crate::system_status::FaultManagerState;
+#[cfg(any(test, target_arch = "riscv32"))]
+use crate::system_status::FaultManagerState;
 
 #[cfg(any(test, target_arch = "riscv32"))]
 const MAX_SCHEDULER_EFFECTS: usize = 2;

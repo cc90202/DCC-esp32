@@ -35,6 +35,17 @@ pub enum IdleWaveformBuildError {
     BufferOverflow,
 }
 
+impl core::fmt::Display for IdleWaveformBuildError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::PacketEncoding => formatter.write_str("idle DCC packet encoding failed"),
+            Self::BufferOverflow => formatter.write_str("idle RMT waveform buffer overflow"),
+        }
+    }
+}
+
+impl core::error::Error for IdleWaveformBuildError {}
+
 /// Errors while converting one DCC packet into the RMT data buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -131,7 +142,7 @@ pub async fn dcc_engine_task(
             fence_ack_sender.send(generation).await;
             continue;
         }
-        let next_rmt = match encode_packet_to_rmt_data(&frame.packet) {
+        let next_rmt = match encode_packet_to_rmt_data(&frame.packet()) {
             Ok(buf) => buf,
             Err(error) => {
                 defmt::warn!("packet encoding failed, skipping: {:?}", error);
@@ -140,15 +151,15 @@ pub async fn dcc_engine_task(
         };
 
         let cutout = frame.effective_cutout();
-        if cutout != frame.cutout {
+        if cutout != frame.cutout() {
             defmt::warn!("POM frame missing request id; transmitting without RailCom cutout");
         }
         rmt_driver::submit_packet(
             next_rmt.data.as_slice(),
             next_rmt.dcc_duration_us,
             cutout,
-            frame.railcom_target_address,
-            frame.pom_request_id,
+            frame.railcom_target_address(),
+            frame.pom_request_id(),
         );
     }
 }

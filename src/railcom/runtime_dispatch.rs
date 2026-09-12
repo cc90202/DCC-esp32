@@ -15,12 +15,11 @@ use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::RailcomLocoSighting;
 use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
 use crate::railcom::pipeline::{
-    PacketSequence, RailcomChannel, RailcomRxResult, record_pom_result_dropped,
-    record_pom_result_forwarded,
+    RailcomRxResult, record_pom_result_dropped, record_pom_result_forwarded,
 };
 use crate::railcom::pom_dispatch::evaluate_pom_window;
 use crate::railcom::uart_reader::RailcomRxOutput;
-use crate::railcom_data::RailcomItem;
+use crate::railcom::{PacketSequence, RailcomChannel, RailcomItem};
 use crate::track_output::RailcomPacketMetadata;
 
 #[derive(Default)]
@@ -168,7 +167,13 @@ fn forward_pom_result(
 /// Compiled out unless `bench-diag` is enabled. This one is unthrottled and
 /// fires during the very reads whose cutout timing we measure, and a defmt
 /// line holds a critical section for its whole duration.
-#[cfg_attr(not(feature = "bench-diag"), allow(unused_variables))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its arguments when bench diagnostics are disabled"
+    )
+)]
 fn log_pom_window(
     result: &RailcomRxResult,
     packet_metadata: Option<RailcomPacketMetadata>,

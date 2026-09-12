@@ -13,14 +13,14 @@ pub(crate) mod loco_projection;
 pub(crate) mod locomotive;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod pom;
-pub mod status;
+mod status;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod track_control;
 
 pub use crate::authority::{LeaseEpoch, LeasePermit};
 pub use status::StatusModel;
 
-use crate::dcc::{DccAddress, Direction, FunctionState, LogicalSpeed};
+use crate::dcc::{DccAddress, Direction, FunctionState, LOCO_SLOT_CAPACITY, LogicalSpeed};
 
 /// Scheduler-confirmed locomotive state exposed to interface adapters.
 ///
@@ -34,4 +34,4 @@ pub struct LocoState {
 }
 
 /// Fixed-capacity read projection used by application policies.
-pub type LocoSlots = [Option<LocoState>; 12];
+pub type LocoSlots = [Option<LocoState>; LOCO_SLOT_CAPACITY];

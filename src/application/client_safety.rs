@@ -55,9 +55,14 @@ pub(crate) enum LeaseDecision<Client> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveLease<Client> {
+    client: Client,
+    permit: LeasePermit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ClientSafetyPolicy<Client> {
-    active_client: Option<Client>,
-    permit: Option<LeasePermit>,
+    active: Option<ActiveLease<Client>>,
     timeout_ms: u64,
     next_epoch: u32,
 }
@@ -66,8 +71,7 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
     #[must_use]
     pub(crate) const fn new(timeout_ms: u64) -> Self {
         Self {
-            active_client: None,
-            permit: None,
+            active: None,
             timeout_ms,
             next_epoch: 1,
         }
@@ -76,13 +80,16 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
     #[must_use]
     #[cfg(test)]
     pub(crate) const fn active_client(self) -> Option<Client> {
-        self.active_client
+        match self.active {
+            Some(active) => Some(active.client),
+            None => None,
+        }
     }
 
     #[must_use]
     pub(crate) const fn next_deadline_ms(self) -> Option<u64> {
-        match self.permit {
-            Some(permit) => Some(permit.expires_at_ms()),
+        match self.active {
+            Some(active) => Some(active.permit.expires_at_ms()),
             None => None,
         }
     }
@@ -97,8 +104,7 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
         request: LeaseRequest<Client>,
         now_ms: u64,
     ) -> LeaseDecision<Client> {
-        if self.is_expired_at(request.observed_at_ms) {
-            let client = self.disarm().expect("expired lease has an owner");
+        if let Some(client) = self.take_expired(request.observed_at_ms) {
             return LeaseDecision::Trip {
                 client,
                 reason: TripReason::Timeout,
@@ -110,21 +116,21 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
             LeaseActivity::KeepAlive => {
                 self.keep_alive(request.client, request.observed_at_ms, now_ms)
             }
-            LeaseActivity::Logoff => {
-                if self.active_client == Some(request.client) {
-                    let client = self.disarm().expect("matching owner is active");
+            LeaseActivity::Logoff => match self.active {
+                Some(active) if active.client == request.client => {
+                    self.active = None;
                     LeaseDecision::Trip {
-                        client,
+                        client: active.client,
                         reason: TripReason::OwnerLogoff,
                     }
-                } else {
-                    LeaseDecision::Rejected(LeaseRejection::NoActiveLease)
                 }
-            }
+                _ => LeaseDecision::Rejected(LeaseRejection::NoActiveLease),
+            },
         };
 
-        if !matches!(decision, LeaseDecision::Trip { .. }) && self.is_expired_at(now_ms) {
-            let client = self.disarm().expect("expired lease has an owner");
+        if !matches!(decision, LeaseDecision::Trip { .. })
+            && let Some(client) = self.take_expired(now_ms)
+        {
             return LeaseDecision::Trip {
                 client,
                 reason: TripReason::Timeout,
@@ -134,11 +140,7 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
     }
 
     pub(crate) fn on_timer(&mut self, now_ms: u64) -> Option<LeaseDecision<Client>> {
-        if !self.is_expired_at(now_ms) {
-            return None;
-        }
-        let client = self.disarm().expect("expired lease has an owner");
-        Some(LeaseDecision::Trip {
+        self.take_expired(now_ms).map(|client| LeaseDecision::Trip {
             client,
             reason: TripReason::Timeout,
         })
@@ -150,8 +152,8 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
         observed_at_ms: u64,
         now_ms: u64,
     ) -> LeaseDecision<Client> {
-        match self.active_client {
-            Some(owner) if owner != client => {
+        match self.active {
+            Some(active) if active.client != client => {
                 LeaseDecision::Rejected(LeaseRejection::OwnedByAnotherClient)
             }
             Some(_) => self.renew(observed_at_ms, now_ms, true),
@@ -163,8 +165,7 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
                 if !permit.is_valid_at(now_ms) {
                     return LeaseDecision::Rejected(LeaseRejection::ObservationExpired);
                 }
-                self.active_client = Some(client);
-                self.permit = Some(permit);
+                self.active = Some(ActiveLease { client, permit });
                 LeaseDecision::Acquired(permit)
             }
         }
@@ -176,24 +177,31 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
         observed_at_ms: u64,
         now_ms: u64,
     ) -> LeaseDecision<Client> {
-        match self.active_client {
-            Some(owner) if owner == client => self.renew(observed_at_ms, now_ms, false),
+        match self.active {
+            Some(active) if active.client == client => self.renew(observed_at_ms, now_ms, false),
             Some(_) => LeaseDecision::Rejected(LeaseRejection::OwnedByAnotherClient),
             None => LeaseDecision::Rejected(LeaseRejection::NoActiveLease),
         }
     }
 
     fn renew(&mut self, observed_at_ms: u64, now_ms: u64, grant: bool) -> LeaseDecision<Client> {
-        let mut permit = self.permit.expect("active owner has a permit");
-        permit = permit.with_expiry(observed_at_ms.saturating_add(self.timeout_ms));
+        let Some(active) = self.active else {
+            return LeaseDecision::Rejected(LeaseRejection::NoActiveLease);
+        };
+        let permit = active
+            .permit
+            .with_expiry(observed_at_ms.saturating_add(self.timeout_ms));
         if !permit.is_valid_at(now_ms) {
-            let client = self.disarm().expect("renewed lease has an owner");
+            self.active = None;
             return LeaseDecision::Trip {
-                client,
+                client: active.client,
                 reason: TripReason::Timeout,
             };
         }
-        self.permit = Some(permit);
+        self.active = Some(ActiveLease {
+            client: active.client,
+            permit,
+        });
         if grant {
             LeaseDecision::Renewed(permit)
         } else {
@@ -201,13 +209,15 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
         }
     }
 
-    fn is_expired_at(&self, at_ms: u64) -> bool {
-        self.permit.is_some_and(|permit| !permit.is_valid_at(at_ms))
-    }
-
-    fn disarm(&mut self) -> Option<Client> {
-        self.permit = None;
-        self.active_client.take()
+    fn take_expired(&mut self, at_ms: u64) -> Option<Client> {
+        if self
+            .active
+            .is_some_and(|active| !active.permit.is_valid_at(at_ms))
+        {
+            self.active.take().map(|active| active.client)
+        } else {
+            None
+        }
     }
 
     fn take_epoch(&mut self) -> u32 {

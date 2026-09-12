@@ -7,7 +7,7 @@
 use core::fmt;
 
 use super::credentials::WifiCredentials;
-use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
+use embedded_storage::nor_flash::{NorFlash, NorFlashError, ReadNorFlash};
 
 const MAGIC: &[u8; 7] = b"DCCWIFI";
 const VERSION: u8 = 1;
@@ -36,25 +36,55 @@ const _: () = assert!(RECORD_LEN <= SECTOR_SIZE);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum StoreError {
-    FlashRead,
-    FlashErase,
-    FlashWrite,
+pub enum StoreError<E> {
+    FlashRead(E),
+    FlashErase(E),
+    FlashWrite(E),
     Corrupt,
     MissingCredentials,
-    BufferTooSmall,
 }
 
-impl fmt::Display for StoreError {
+impl<E> StoreError<E> {
+    /// Return the original storage backend error, when this failure came from I/O.
+    #[must_use]
+    pub const fn backend_error(&self) -> Option<&E> {
+        match self {
+            Self::FlashRead(error) | Self::FlashErase(error) | Self::FlashWrite(error) => {
+                Some(error)
+            }
+            Self::Corrupt | Self::MissingCredentials => None,
+        }
+    }
+}
+
+impl<E: fmt::Debug> fmt::Display for StoreError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FlashRead => formatter.write_str("WiFi configuration flash read failed"),
-            Self::FlashErase => formatter.write_str("WiFi configuration flash erase failed"),
-            Self::FlashWrite => formatter.write_str("WiFi configuration flash write failed"),
+            Self::FlashRead(error) => {
+                write!(formatter, "WiFi configuration flash read failed: {error:?}")
+            }
+            Self::FlashErase(error) => {
+                write!(
+                    formatter,
+                    "WiFi configuration flash erase failed: {error:?}"
+                )
+            }
+            Self::FlashWrite(error) => {
+                write!(
+                    formatter,
+                    "WiFi configuration flash write failed: {error:?}"
+                )
+            }
             Self::Corrupt => formatter.write_str("WiFi configuration is corrupt"),
             Self::MissingCredentials => formatter.write_str("WiFi credentials are missing"),
-            Self::BufferTooSmall => formatter.write_str("WiFi configuration buffer is too small"),
         }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for StoreError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        self.backend_error()
+            .map(|error| error as &(dyn core::error::Error + 'static))
     }
 }
 
@@ -74,15 +104,19 @@ impl ConfigSlot {
 }
 
 pub trait WifiCredentialsStore {
-    fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError>;
-    fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError>;
-    fn clear(&mut self) -> Result<(), StoreError>;
+    type Error: NorFlashError;
+
+    fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError<Self::Error>>;
+    fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError<Self::Error>>;
+    fn clear(&mut self) -> Result<(), StoreError<Self::Error>>;
 }
 
 pub trait ProvisioningFlagStore {
-    fn force_on_next_boot(&mut self) -> Result<bool, StoreError>;
-    fn set_force_on_next_boot(&mut self) -> Result<(), StoreError>;
-    fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError>;
+    type Error: NorFlashError;
+
+    fn force_on_next_boot(&mut self) -> Result<bool, StoreError<Self::Error>>;
+    fn set_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>>;
+    fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>>;
 }
 
 pub struct WifiConfigStore<F> {
@@ -123,7 +157,9 @@ impl<F> WifiCredentialsStore for WifiConfigStore<F>
 where
     F: ReadNorFlash + NorFlash,
 {
-    fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError> {
+    type Error = F::Error;
+
+    fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError<Self::Error>> {
         match self.load_latest()? {
             LatestRecord::Missing => Ok(None),
             LatestRecord::Valid { record, .. } => Ok(Some(record.credentials)),
@@ -131,7 +167,7 @@ where
         }
     }
 
-    fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError> {
+    fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError<Self::Error>> {
         let latest = self.load_latest()?;
         let (slot, generation) = match latest {
             LatestRecord::Missing | LatestRecord::Corrupt => (ConfigSlot::A, 1),
@@ -145,12 +181,12 @@ where
         self.write_slot(slot, credentials, generation, false)
     }
 
-    fn clear(&mut self) -> Result<(), StoreError> {
+    fn clear(&mut self) -> Result<(), StoreError<Self::Error>> {
         // Erase the inactive (older) slot first so a power loss between the
         // two erases cannot resurrect a stale record.
-        let first = match self.load_latest() {
-            Ok(LatestRecord::Valid { slot, .. }) => slot.inactive_after(),
-            _ => ConfigSlot::A,
+        let first = match self.load_latest()? {
+            LatestRecord::Valid { slot, .. } => slot.inactive_after(),
+            LatestRecord::Missing | LatestRecord::Corrupt => ConfigSlot::A,
         };
         self.erase_slot(first)?;
         self.erase_slot(first.inactive_after())?;
@@ -162,7 +198,9 @@ impl<F> ProvisioningFlagStore for WifiConfigStore<F>
 where
     F: ReadNorFlash + NorFlash,
 {
-    fn force_on_next_boot(&mut self) -> Result<bool, StoreError> {
+    type Error = F::Error;
+
+    fn force_on_next_boot(&mut self) -> Result<bool, StoreError<Self::Error>> {
         match self.load_latest()? {
             LatestRecord::Missing => Ok(false),
             LatestRecord::Valid { record, .. } => Ok(record.force_provisioning),
@@ -170,11 +208,11 @@ where
         }
     }
 
-    fn set_force_on_next_boot(&mut self) -> Result<(), StoreError> {
+    fn set_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>> {
         self.update_force_flag(true)
     }
 
-    fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError> {
+    fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>> {
         match self.update_force_flag(false) {
             // Clearing with no stored record is a no-op, not an error.
             Err(StoreError::MissingCredentials) => Ok(()),
@@ -187,7 +225,7 @@ impl<F> WifiConfigStore<F>
 where
     F: ReadNorFlash + NorFlash,
 {
-    fn update_force_flag(&mut self, force_provisioning: bool) -> Result<(), StoreError> {
+    fn update_force_flag(&mut self, force_provisioning: bool) -> Result<(), StoreError<F::Error>> {
         match self.load_latest()? {
             LatestRecord::Missing => Err(StoreError::MissingCredentials),
             LatestRecord::Valid { slot, record } => {
@@ -209,33 +247,33 @@ where
         credentials: &WifiCredentials,
         generation: u32,
         force_provisioning: bool,
-    ) -> Result<(), StoreError> {
-        let record = encode_record(credentials, generation, force_provisioning)?;
+    ) -> Result<(), StoreError<F::Error>> {
+        let record = encode_record(credentials, generation, force_provisioning);
         self.erase_slot(slot)?;
         self.flash
             .write(slot_offset(slot), &record)
-            .map_err(|_| StoreError::FlashWrite)
+            .map_err(StoreError::FlashWrite)
     }
 
-    fn load_latest(&mut self) -> Result<LatestRecord, StoreError> {
+    fn load_latest(&mut self) -> Result<LatestRecord, StoreError<F::Error>> {
         let a = self.read_slot(ConfigSlot::A)?;
         let b = self.read_slot(ConfigSlot::B)?;
         Ok(select_latest(a, b))
     }
 
-    fn read_slot(&mut self, slot: ConfigSlot) -> Result<SlotState, StoreError> {
+    fn read_slot(&mut self, slot: ConfigSlot) -> Result<SlotState, StoreError<F::Error>> {
         let mut record = [0xff; RECORD_LEN];
         self.flash
             .read(slot_offset(slot), &mut record)
-            .map_err(|_| StoreError::FlashRead)?;
+            .map_err(StoreError::FlashRead)?;
         Ok(decode_slot(&record))
     }
 
-    fn erase_slot(&mut self, slot: ConfigSlot) -> Result<(), StoreError> {
+    fn erase_slot(&mut self, slot: ConfigSlot) -> Result<(), StoreError<F::Error>> {
         let from = slot_offset(slot);
         self.flash
             .erase(from, from + SECTOR_SIZE as u32)
-            .map_err(|_| StoreError::FlashErase)
+            .map_err(StoreError::FlashErase)
     }
 }
 
@@ -304,12 +342,11 @@ fn encode_record(
     credentials: &WifiCredentials,
     generation: u32,
     force_provisioning: bool,
-) -> Result<[u8; RECORD_LEN], StoreError> {
+) -> [u8; RECORD_LEN] {
     let ssid = credentials.ssid().as_bytes();
     let password = credentials.password().as_bytes();
-    if ssid.len() > SSID_MAX_LEN || password.len() > PASSWORD_MAX_LEN {
-        return Err(StoreError::BufferTooSmall);
-    }
+    debug_assert!(ssid.len() <= SSID_MAX_LEN);
+    debug_assert!(password.len() <= PASSWORD_MAX_LEN);
 
     let mut record = [0u8; RECORD_LEN];
     record[..MAGIC.len()].copy_from_slice(MAGIC);
@@ -323,7 +360,7 @@ fn encode_record(
 
     let checksum = checksum(&record[..CHECKSUM_OFFSET]);
     record[CHECKSUM_OFFSET..].copy_from_slice(&checksum.to_le_bytes());
-    Ok(record)
+    record
 }
 
 fn decode_record(record: &[u8]) -> Option<StoredRecord> {
@@ -382,7 +419,20 @@ mod tests {
     use embedded_storage::nor_flash::{ErrorType, NorFlashError, NorFlashErrorKind};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct MockFlashError;
+    enum MockFlashError {
+        Read,
+        Erase,
+        Write,
+        Bounds,
+    }
+
+    impl fmt::Display for MockFlashError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "{self:?}")
+        }
+    }
+
+    impl core::error::Error for MockFlashError {}
 
     impl NorFlashError for MockFlashError {
         fn kind(&self) -> NorFlashErrorKind {
@@ -395,6 +445,7 @@ mod tests {
         sectors: [[u8; SECTOR_SIZE]; 2],
         /// `Some(n)`: the erase after `n` successful ones fails once.
         erases_before_failure: Option<u8>,
+        fail_next_read: bool,
         fail_next_write: bool,
     }
 
@@ -403,6 +454,7 @@ mod tests {
             Self {
                 sectors: [[0xff; SECTOR_SIZE]; 2],
                 erases_before_failure: None,
+                fail_next_read: false,
                 fail_next_write: false,
             }
         }
@@ -411,7 +463,7 @@ mod tests {
             match offset {
                 0 => Ok(0),
                 x if x == SECTOR_SIZE as u32 => Ok(1),
-                _ => Err(MockFlashError),
+                _ => Err(MockFlashError::Bounds),
             }
         }
     }
@@ -424,9 +476,13 @@ mod tests {
         const READ_SIZE: usize = 1;
 
         fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Self::Error> {
+            if self.fail_next_read {
+                self.fail_next_read = false;
+                return Err(MockFlashError::Read);
+            }
             let sector = Self::sector_index(offset)?;
             if bytes.len() > SECTOR_SIZE {
-                return Err(MockFlashError);
+                return Err(MockFlashError::Bounds);
             }
             bytes.copy_from_slice(&self.sectors[sector][..bytes.len()]);
             Ok(())
@@ -445,13 +501,13 @@ mod tests {
             match self.erases_before_failure {
                 Some(0) => {
                     self.erases_before_failure = None;
-                    return Err(MockFlashError);
+                    return Err(MockFlashError::Erase);
                 }
                 Some(remaining) => self.erases_before_failure = Some(remaining - 1),
                 None => {}
             }
             if to != from + SECTOR_SIZE as u32 {
-                return Err(MockFlashError);
+                return Err(MockFlashError::Bounds);
             }
             let sector = Self::sector_index(from)?;
             self.sectors[sector] = [0xff; SECTOR_SIZE];
@@ -461,7 +517,7 @@ mod tests {
         fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
             if self.fail_next_write {
                 self.fail_next_write = false;
-                return Err(MockFlashError);
+                return Err(MockFlashError::Write);
             }
             let sector = Self::sector_index(offset)?;
             self.sectors[sector][..bytes.len()].copy_from_slice(bytes);
@@ -507,7 +563,7 @@ mod tests {
     #[test]
     fn corrupt_checksum_is_rejected() {
         let credentials = credentials("DCC-Lab", "password123");
-        let mut record = encode_record(&credentials, 1, false).unwrap();
+        let mut record = encode_record(&credentials, 1, false);
         record[20] ^= 0x55;
         let mut flash = MockFlash::erased();
         flash.sectors[0][..record.len()].copy_from_slice(&record);
@@ -580,7 +636,10 @@ mod tests {
 
         assert_eq!(store.save(&old), Ok(()));
         store.flash.fail_next_write = true;
-        assert_eq!(store.save(&new), Err(StoreError::FlashWrite));
+        assert_eq!(
+            store.save(&new),
+            Err(StoreError::FlashWrite(MockFlashError::Write))
+        );
 
         let loaded = store.load().unwrap().unwrap();
         assert_eq!(loaded.ssid(), "DCC-Old");
@@ -595,7 +654,10 @@ mod tests {
 
         assert_eq!(store.save(&old), Ok(()));
         store.flash.erases_before_failure = Some(0);
-        assert_eq!(store.save(&new), Err(StoreError::FlashErase));
+        assert_eq!(
+            store.save(&new),
+            Err(StoreError::FlashErase(MockFlashError::Erase))
+        );
 
         let loaded = store.load().unwrap().unwrap();
         assert_eq!(loaded.ssid(), "DCC-Old");
@@ -623,8 +685,8 @@ mod tests {
 
     #[test]
     fn wrapped_generation_selects_newer_slot() {
-        let older = encode_record(&credentials("DCC-Old", "password123"), u32::MAX, false).unwrap();
-        let newer = encode_record(&credentials("DCC-New", "password456"), 0, false).unwrap();
+        let older = encode_record(&credentials("DCC-Old", "password123"), u32::MAX, false);
+        let newer = encode_record(&credentials("DCC-New", "password456"), 0, false);
         let mut flash = MockFlash::erased();
         flash.sectors[0][..older.len()].copy_from_slice(&older);
         flash.sectors[1][..newer.len()].copy_from_slice(&newer);
@@ -646,6 +708,34 @@ mod tests {
     }
 
     #[test]
+    fn backend_error_is_preserved_and_exposed() {
+        let mut flash = MockFlash::erased();
+        flash.fail_next_read = true;
+        let mut store = WifiConfigStore::new(flash);
+
+        let error = store.load().unwrap_err();
+
+        assert_eq!(error.backend_error(), Some(&MockFlashError::Read));
+        assert_eq!(
+            core::error::Error::source(&error).map(ToString::to_string),
+            Some("Read".to_owned())
+        );
+        assert_eq!(error, StoreError::FlashRead(MockFlashError::Read));
+    }
+
+    #[test]
+    fn clear_does_not_erase_when_the_active_slot_cannot_be_determined() {
+        let mut flash = MockFlash::erased();
+        flash.fail_next_read = true;
+        let mut store = WifiConfigStore::new(flash);
+
+        assert_eq!(
+            store.clear(),
+            Err(StoreError::FlashRead(MockFlashError::Read))
+        );
+    }
+
+    #[test]
     fn clear_erases_the_inactive_slot_first() {
         let mut store = WifiConfigStore::new(MockFlash::erased());
         let old = credentials("DCC-Old", "password123");
@@ -663,7 +753,10 @@ mod tests {
         // order the active slot A would be erased first and DCC-Old would
         // resurrect.
         store.flash.erases_before_failure = Some(1);
-        assert_eq!(store.clear(), Err(StoreError::FlashErase));
+        assert_eq!(
+            store.clear(),
+            Err(StoreError::FlashErase(MockFlashError::Erase))
+        );
         let survivor = store.load().unwrap().unwrap();
         assert_eq!(survivor.ssid(), "DCC-New");
     }

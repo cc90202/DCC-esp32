@@ -1,9 +1,11 @@
+use core::fmt;
 #[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_arch = "riscv32")]
 use esp_hal::uart::{Config, Parity, RxConfig, StopBits};
 
-use crate::railcom::pipeline::{PacketSequence, RailcomChannel, RailcomRxResult};
+use crate::railcom::pipeline::RailcomRxResult;
+use crate::railcom::{PacketSequence, RailcomChannel};
 
 /// RailCom UART baud rate mandated by the protocol.
 pub const RAILCOM_UART_BAUDRATE: u32 = 250_000;
@@ -25,6 +27,24 @@ pub enum RailcomUartWindowError {
         max_len: usize,
     },
 }
+
+impl fmt::Display for RailcomUartWindowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WindowTooLong {
+                packet_sequence,
+                channel,
+                provided_len,
+                max_len,
+            } => write!(
+                formatter,
+                "RailCom window {packet_sequence:?}/{channel:?} has {provided_len} bytes; maximum is {max_len}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for RailcomUartWindowError {}
 
 #[cfg(target_arch = "riscv32")]
 pub type RailcomUartRuntimeResultChannel =

@@ -6,7 +6,7 @@ use esp_hal::uart::UartRx;
 // Used only by the bench diagnostics dump task below.
 #[cfg(feature = "bench-diag")]
 use {
-    crate::cutout::RailcomChannel,
+    crate::railcom::RailcomChannel,
     defmt::info,
     embassy_time::{Duration, Timer},
 };

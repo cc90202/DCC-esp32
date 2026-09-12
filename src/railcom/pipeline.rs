@@ -1,10 +1,11 @@
+use core::fmt;
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
 
 use crate::diagnostics::diagnostic_counters;
 
-pub use crate::cutout::{PacketSequence, RailcomChannel};
+use crate::cutout::{PacketSequence, RailcomChannel};
 
 use crate::railcom::parser::{
     ParseError, RailcomParseResult, RailcomParseStatus, parse_channel1, parse_channel2,
@@ -62,6 +63,22 @@ pub(crate) const MAX_RAILCOM_WINDOW_BYTES: usize = 6;
 pub enum RailcomRxWindowError {
     WindowTooLong { provided_len: usize, max_len: usize },
 }
+
+impl fmt::Display for RailcomRxWindowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WindowTooLong {
+                provided_len,
+                max_len,
+            } => write!(
+                formatter,
+                "RailCom window has {provided_len} bytes; maximum is {max_len}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for RailcomRxWindowError {}
 
 /// One logical RailCom receive window.
 ///
@@ -166,7 +183,7 @@ pub fn railcom_rx_stats() -> RailcomRxStats {
     RAILCOM_RX.snapshot()
 }
 
-/// Per-channel receive counters, indexed by [`RailcomChannel::index`].
+/// Per-channel receive counters, ordered as channel 1 followed by channel 2.
 #[must_use]
 pub fn railcom_rx_channel_stats() -> [RailcomChannelStats; RAILCOM_CHANNEL_COUNT] {
     core::array::from_fn(|index| RX_CHANNEL[index].snapshot())
@@ -292,7 +309,8 @@ fn record_parsed_items(items: &[RailcomItem]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE, RailcomDatagram};
+    use crate::railcom::RailcomDatagram;
+    use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE};
     use std::sync::Mutex;
 
     const TEST_ID0_CODE_0X42: [u8; 2] = [0b1010_1010, 0b1010_1001];

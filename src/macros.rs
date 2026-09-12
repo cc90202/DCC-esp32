@@ -20,10 +20,16 @@
 ///   width and layout inside the block are the author's responsibility.
 ///   `clippy` does descend and still applies.
 ///
-/// A function whose whole body is one of these blocks needs
-/// `#[cfg_attr(not(feature = "bench-diag"), allow(unused_variables))]`, since
-/// its parameters go unread once the block is compiled out.
-#[cfg_attr(not(target_arch = "riscv32"), allow(unused_macros))]
+/// A function whose whole body is one of these blocks needs a conditional
+/// `#[expect(unused_variables, reason = "...")]`, since its parameters go
+/// unread once the block is compiled out.
+#[cfg_attr(
+    not(target_arch = "riscv32"),
+    expect(
+        unused_macros,
+        reason = "all bench diagnostic call sites belong to firmware-only modules"
+    )
+)]
 macro_rules! bench_diag {
     ($($body:tt)*) => {
         #[cfg(feature = "bench-diag")]

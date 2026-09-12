@@ -100,11 +100,16 @@ mod tests {
         let finished = AtomicBool::new(false);
         let observed = AtomicUsize::new(0);
         let start = Barrier::new(3);
+        let first_publication = Barrier::new(2);
+        let first_observation = Barrier::new(2);
 
         thread::scope(|scope| {
             let writer = scope.spawn(|| {
                 start.wait();
-                for iteration in 0..ITERATIONS {
+                slot.publish([1; 3]);
+                first_publication.wait();
+                first_observation.wait();
+                for iteration in 1..ITERATIONS {
                     let marker = (iteration & 1) as u32 + 1;
                     slot.publish([marker; 3]);
                     if iteration.is_multiple_of(256) {
@@ -115,6 +120,13 @@ mod tests {
             });
             let reader = scope.spawn(|| {
                 start.wait();
+                first_publication.wait();
+                let words = slot
+                    .snapshot()
+                    .expect("writer published before reader proceeds");
+                assert!(words == [1; 3] || words == [2; 3]);
+                observed.fetch_add(1, Ordering::Relaxed);
+                first_observation.wait();
                 while !finished.load(Ordering::Acquire) {
                     if let Some(words) = slot.snapshot() {
                         assert!(words == [1; 3] || words == [2; 3]);

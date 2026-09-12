@@ -1,10 +1,12 @@
 //! Boot failures and their externally visible recovery policy.
 
+use core::fmt;
+
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
+use crate::net::NetInitError;
 use crate::net::provisioning::ProvisioningApError;
-use crate::net::udp_control::NetInitError;
-use crate::net::wifi_config::{EspFlashStoreError, StoreError};
+use crate::net::wifi_config::{EspFlashStoreError, EspWifiConfigStoreError};
 use crate::rmt_dcc::InitError as RmtInitError;
 use crate::system_status::OptionalPeripheralInit;
 
@@ -133,7 +135,7 @@ pub enum WifiConfigInitError {
     /// The flash partition backing the store could not be opened.
     Partition(EspFlashStoreError),
     /// The configuration store could not be read.
-    Store(StoreError),
+    Store(EspWifiConfigStoreError),
 }
 
 /// Channel used by critical tasks to report asynchronous initialization failures.
@@ -248,6 +250,110 @@ impl BootError {
             Self::CriticalTaskInit(CriticalTaskInit::ReadinessTimeout) => {
                 "critical task readiness timeout"
             }
+        }
+    }
+}
+
+impl fmt::Display for BootError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl core::error::Error for BootError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::OptionalPeripheralInit(error) => Some(error),
+            Self::DccSelfCheck(error) => Some(error),
+            Self::CriticalHardwareInit(error) => Some(error),
+            Self::CriticalTaskSpawn(error) => Some(error),
+            Self::CriticalTaskInit(error) => Some(error),
+        }
+    }
+}
+
+impl fmt::Display for DccSelfCheckError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(BootError::DccSelfCheck(*self).message())
+    }
+}
+
+impl core::error::Error for DccSelfCheckError {}
+
+impl fmt::Display for CriticalHardwareInit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RmtDriver(error) => write!(formatter, "RMT ISR driver init failed: {error}"),
+            _ => formatter.write_str(BootError::CriticalHardwareInit(*self).message()),
+        }
+    }
+}
+
+impl core::error::Error for CriticalHardwareInit {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::RmtDriver(error) => Some(error),
+            Self::Rmt | Self::RmtChannel0 | Self::RailcomUart => None,
+        }
+    }
+}
+
+impl fmt::Display for CriticalTask {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(BootError::CriticalTaskSpawn(*self).message())
+    }
+}
+
+impl core::error::Error for CriticalTask {}
+
+impl fmt::Display for CriticalTaskInit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Net(error) => write!(formatter, "network initialization failed: {error}"),
+            Self::ProvisioningAp(error) => {
+                write!(
+                    formatter,
+                    "provisioning access point initialization failed: {error}"
+                )
+            }
+            Self::WifiConfig(error) => {
+                write!(
+                    formatter,
+                    "WiFi configuration initialization failed: {error}"
+                )
+            }
+            Self::FaultStateReceiverUnavailable | Self::ReadinessTimeout => {
+                formatter.write_str(BootError::CriticalTaskInit(*self).message())
+            }
+        }
+    }
+}
+
+impl core::error::Error for CriticalTaskInit {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Net(error) => Some(error),
+            Self::ProvisioningAp(error) => Some(error),
+            Self::WifiConfig(error) => Some(error),
+            Self::FaultStateReceiverUnavailable | Self::ReadinessTimeout => None,
+        }
+    }
+}
+
+impl fmt::Display for WifiConfigInitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Partition(error) => write!(formatter, "WiFi flash partition failed: {error}"),
+            Self::Store(error) => write!(formatter, "WiFi configuration store failed: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for WifiConfigInitError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Partition(error) => Some(error),
+            Self::Store(error) => Some(error),
         }
     }
 }

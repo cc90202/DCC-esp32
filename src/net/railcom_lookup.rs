@@ -4,8 +4,8 @@
 //! `net` module declaration.
 
 use crate::dcc::DccAddress;
+use crate::railcom::PacketSequence;
 use crate::railcom::loco_tracker::RailcomLocoSighting;
-use crate::railcom::pipeline::PacketSequence;
 
 pub(super) fn railcom_sighting_for_address(address: DccAddress) -> Option<RailcomLocoSighting> {
     let stats = crate::railcom::loco_tracker::railcom_loco_tracker_stats();

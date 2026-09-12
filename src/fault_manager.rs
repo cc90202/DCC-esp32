@@ -18,9 +18,10 @@
 //! a fault is latched is deliberately ignored, so an operator cannot clear a
 //! hardware fault by reflex.
 //!
-//! The runtime state is exposed as [`FaultManagerState`] for observers. State
-//! transitions and their required effects remain private to the pure policy so
-//! callers cannot bypass the fault manager's application rules.
+//! The runtime state is exposed as [`crate::system_status::FaultManagerState`]
+//! for observers. State transitions and their required effects remain private
+//! to the pure policy so callers cannot bypass the fault manager's application
+//! rules.
 
 mod policy;
 #[cfg(any(test, target_arch = "riscv32"))]
@@ -28,7 +29,6 @@ mod power_fence;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod relay;
 
-pub use policy::FaultManagerState;
 #[cfg(target_arch = "riscv32")]
 pub(crate) use relay::{FaultEffectsSignal, FaultEffectsTaskContext, fault_effects_task};
 
@@ -44,7 +44,7 @@ use crate::runtime_channels::{
     BootReadySender, FaultEventReceiver, RuntimeReceiver, RuntimeSender, announce_ready,
 };
 #[cfg(target_arch = "riscv32")]
-use crate::system_status::{BootReadyEvent, FaultEvent};
+use crate::system_status::{BootReadyEvent, FaultEvent, FaultManagerState};
 #[cfg(target_arch = "riscv32")]
 use crate::track_output::TrackOutput;
 #[cfg(target_arch = "riscv32")]

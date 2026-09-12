@@ -21,10 +21,11 @@ use esp_hal::uart::UartRx;
 
 use crate::macros::bench_diag;
 use crate::railcom::pipeline::{
-    MAX_RAILCOM_WINDOW_BYTES, PacketSequence, RailcomChannel, RailcomRxWindow,
-    RailcomRxWindowError, process_rx_window, record_oversized_window, record_rx_overflows,
+    MAX_RAILCOM_WINDOW_BYTES, RailcomRxWindow, RailcomRxWindowError, process_rx_window,
+    record_oversized_window, record_rx_overflows,
 };
 use crate::railcom::uart_reader::{RailcomRxOutput, RailcomUartWindowError};
+use crate::railcom::{PacketSequence, RailcomChannel};
 
 const CAPTURE_RING_CAPACITY: usize = 64;
 
@@ -74,7 +75,10 @@ impl RailcomIsrCaptureUart {
 }
 
 /// GPIO matrix input signal index of U1RXD on the ESP32-C6.
-#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "used only by the optional UART bench snapshot")
+)]
 const U1RXD_SIGNAL: usize = 9;
 #[inline(always)]
 fn uart1_rx_fifo_count() -> Option<u16> {
@@ -229,7 +233,13 @@ static RAW_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
 ///
 /// Compiled out unless `bench-diag` is enabled: this runs once per captured
 /// window, and a defmt line holds a critical section for its whole duration.
-#[cfg_attr(not(feature = "bench-diag"), allow(unused_variables))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its arguments when bench diagnostics are disabled"
+    )
+)]
 fn log_raw_window(window: &CapturedWindow) {
     bench_diag! {
         let count = RAW_DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -322,7 +332,13 @@ pub async fn railcom_isr_capture_task(
 /// Read-only: touches no control bit, so it is safe to call from a task while
 /// the cutout ISR owns the FIFO data path.
 #[derive(Debug, Clone, Copy, defmt::Format)]
-#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        dead_code,
+        reason = "constructed only by the optional bench diagnostics task"
+    )
+)]
 pub struct Uart1RawDiag {
     pub rxfifo_cnt: u16,
     pub rxd_level: bool,
@@ -336,7 +352,13 @@ pub struct Uart1RawDiag {
     pub samples: u32,
 }
 
-#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        dead_code,
+        reason = "called only by the optional bench diagnostics task"
+    )
+)]
 #[must_use]
 pub fn uart1_raw_diag() -> Uart1RawDiag {
     // SAFETY: read-only register access; see the ownership note on

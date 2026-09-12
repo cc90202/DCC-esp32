@@ -131,13 +131,29 @@ pub enum InitError {
     InterruptEnable,
 }
 
+impl core::fmt::Display for InitError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let message = match self {
+            Self::InvalidIdleWaveform => "invalid idle waveform for RMT driver",
+            Self::StartContinuousTx => "failed to start continuous RMT transmission",
+            Self::InterruptEnable => "failed to enable the RMT interrupt",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl core::error::Error for InitError {}
+
 /// Timing observed inside the RMT packet-boundary interrupt.
 ///
 /// These are diagnostic maxima in microseconds. They describe software
 /// service time, not the hardware-generated DCC or GPIO4 waveform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "read only by the optional bench diagnostics task")
+)]
 pub(crate) struct RmtTimingStats {
     pub max_isr_duration_us: u32,
     pub max_cutout_request_latency_us: u32,
@@ -156,7 +172,10 @@ static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_m
 static RMT_TX_KEEPALIVE: StaticCell<ManuallyDrop<ContinuousTxTransaction<'static>>> =
     StaticCell::new();
 
-#[cfg_attr(not(feature = "bench-diag"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "read only by the optional bench diagnostics task")
+)]
 #[must_use]
 pub(crate) fn timing_stats() -> RmtTimingStats {
     RmtTimingStats {

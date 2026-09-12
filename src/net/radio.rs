@@ -10,66 +10,89 @@ use static_cell::StaticCell;
 // provisioning AP mode are mutually exclusive and separated by a reboot.
 static RADIO_CONTROLLER: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RadioInitError {
-    General(i32),
-    WifiDriver,
-    WrongClockConfig,
-    InterruptsDisabled,
-    SchedulerNotInitialized,
-    Unknown,
+#[derive(Debug, Clone, Copy)]
+pub struct RadioInitError(esp_radio::InitializationError);
+
+#[cfg(target_arch = "riscv32")]
+impl defmt::Format for RadioInitError {
+    fn format(&self, formatter: defmt::Formatter) {
+        defmt::write!(
+            formatter,
+            "esp-radio initialization failed: {:?}",
+            defmt::Debug2Format(&self.0)
+        );
+    }
 }
 
 impl From<esp_radio::InitializationError> for RadioInitError {
     fn from(error: esp_radio::InitializationError) -> Self {
-        match error {
-            esp_radio::InitializationError::General(code) => Self::General(code),
-            esp_radio::InitializationError::WifiError(_) => Self::WifiDriver,
-            esp_radio::InitializationError::WrongClockConfig => Self::WrongClockConfig,
-            esp_radio::InitializationError::InterruptsDisabled => Self::InterruptsDisabled,
-            esp_radio::InitializationError::SchedulerNotInitialized => {
-                Self::SchedulerNotInitialized
-            }
-            _ => Self::Unknown,
-        }
+        Self(error)
     }
 }
 
 impl fmt::Display for RadioInitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::General(code) => write!(formatter, "general esp-radio error {code}"),
-            Self::WifiDriver => formatter.write_str("esp-radio WiFi driver initialization failed"),
-            Self::WrongClockConfig => {
-                formatter.write_str("esp-radio clock configuration is invalid")
-            }
-            Self::InterruptsDisabled => formatter.write_str("esp-radio interrupts are disabled"),
-            Self::SchedulerNotInitialized => {
-                formatter.write_str("esp-radio scheduler is not initialized")
-            }
-            Self::Unknown => formatter.write_str("unknown esp-radio initialization error"),
-        }
+        write!(formatter, "esp-radio initialization failed: {}", self.0)
+    }
+}
+
+impl core::error::Error for RadioInitError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.0)
     }
 }
 
 /// Error for the WiFi bring-up sequence shared by station and AP mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy)]
 pub enum WifiBringupError {
     EspRadioInit(RadioInitError),
-    WifiInit,
-    WifiSetConfig,
-    WifiStart,
+    WifiInit(esp_radio::wifi::WifiError),
+    WifiSetConfig(esp_radio::wifi::WifiError),
+    WifiStart(esp_radio::wifi::WifiError),
+}
+
+#[cfg(target_arch = "riscv32")]
+impl defmt::Format for WifiBringupError {
+    fn format(&self, formatter: defmt::Formatter) {
+        match self {
+            Self::EspRadioInit(error) => defmt::write!(formatter, "{:?}", error),
+            Self::WifiInit(error) => defmt::write!(
+                formatter,
+                "WiFi init failed: {:?}",
+                defmt::Debug2Format(error)
+            ),
+            Self::WifiSetConfig(error) => defmt::write!(
+                formatter,
+                "WiFi set_config failed: {:?}",
+                defmt::Debug2Format(error)
+            ),
+            Self::WifiStart(error) => defmt::write!(
+                formatter,
+                "WiFi start failed: {:?}",
+                defmt::Debug2Format(error)
+            ),
+        }
+    }
 }
 
 impl fmt::Display for WifiBringupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EspRadioInit(error) => write!(formatter, "esp-radio init failed: {error}"),
-            Self::WifiInit => formatter.write_str("WiFi init failed"),
-            Self::WifiSetConfig => formatter.write_str("WiFi set_config failed"),
-            Self::WifiStart => formatter.write_str("WiFi start failed"),
+            Self::WifiInit(error) => write!(formatter, "WiFi init failed: {error}"),
+            Self::WifiSetConfig(error) => write!(formatter, "WiFi set_config failed: {error}"),
+            Self::WifiStart(error) => write!(formatter, "WiFi start failed: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for WifiBringupError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::EspRadioInit(error) => Some(error),
+            Self::WifiInit(error) | Self::WifiSetConfig(error) | Self::WifiStart(error) => {
+                Some(error)
+            }
         }
     }
 }
@@ -98,7 +121,7 @@ pub(super) async fn start_wifi(
                     "WiFi driver initialization failed: {:?}",
                     defmt::Debug2Format(&error)
                 );
-                WifiBringupError::WifiInit
+                WifiBringupError::WifiInit(error)
             },
         )?;
 
@@ -107,11 +130,11 @@ pub(super) async fn start_wifi(
             "WiFi configuration failed: {:?}",
             defmt::Debug2Format(&error)
         );
-        WifiBringupError::WifiSetConfig
+        WifiBringupError::WifiSetConfig(error)
     })?;
     wifi_ctrl.start_async().await.map_err(|error| {
         defmt::error!("WiFi start failed: {:?}", defmt::Debug2Format(&error));
-        WifiBringupError::WifiStart
+        WifiBringupError::WifiStart(error)
     })?;
 
     Ok((wifi_ctrl, interfaces))

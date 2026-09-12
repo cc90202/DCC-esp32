@@ -3,25 +3,20 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use crate::dcc::DccAddress;
-use crate::railcom::pipeline::PacketSequence;
+use crate::railcom::PacketSequence;
 use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
-// Number of most-recently-identified locos kept for display/diagnostics.
-//
-// TODO(tuning): no recorded derivation for `4`. Observable constraint: this
-// is a rolling "who is on the track right now" display list, not a full
-// roster, and a handful of entries is enough to show recent activity on a
-// hobby-scale layout without growing the stack-resident stats struct.
+// Fixed-size recent-activity cache used by diagnostics and Z21 RailCom lookup.
+// It is deliberately not a locomotive roster: retaining four addresses keeps
+// the stack-resident diagnostics snapshot bounded while serving recent polls.
 const RECENT_SIGHTING_CAPACITY: usize = 4;
 
 // Maximum packet-boundary gap allowed between an ADR-HIGH fragment (channel 1)
 // and the ADR-LOW fragment that completes a long-address identification.
 //
-// TODO(tuning): no recorded derivation for `8`. Observable constraint: the
-// two fragments are expected to arrive on the very next RailCom-eligible
-// packet from the same decoder; 8 packet boundaries gives slack for a couple
-// of skipped/collided cutouts while still discarding genuinely stale
-// fragments before they could be paired with an unrelated decoder's ADR-LOW.
+// The fragments normally arrive on consecutive RailCom-eligible packets.
+// Eight packet boundaries tolerate skipped or collided cutouts while still
+// expiring the high fragment before it can be paired with unrelated traffic.
 const PENDING_ADR_HIGH_MAX_PACKET_GAP: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
