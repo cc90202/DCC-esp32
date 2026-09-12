@@ -39,6 +39,11 @@ mode, a scheduler that keeps every active decoder refreshed with its speed,
 direction and function state, emergency stop and fault handling, and the
 Z21-compatible network layer the app talks to.
 
+The station also listens to what the decoders answer. It opens the RailCom
+cutout in the waveform, captures the reply with a comparator front end and a
+UART, and uses it to recognise which locomotives are on the track and to read
+and write their CVs while they run.
+
 WiFi credentials are configured at runtime from a setup page the board serves
 itself, so nothing is baked in at build time. Protocol, encoder and scheduler
 logic is pure and covered by host-side tests; the rest runs on the target.
@@ -47,17 +52,21 @@ logic is pure and covered by host-side tests; the rest runs on the target.
 
 Read this before wiring or powering anything:
 
-- [Components inventory](docs/hardware/components-inventory.md)
+- [Current breadboard circuit](docs/hardware/current-circuit.md) — what is wired today
+- [Components inventory](docs/hardware/components-inventory.md) — mounted, in the drawer, left the design, to buy
 
-Two track drivers have been used on the bench. The BTS7960 is the
-higher-current H-bridge, and the older breadboard and RailCom notes still refer
-to it. The Pololu DRV8874 carrier (#4035) is the compact option used for the
-current bring-up and short-recovery testing.
+The bench circuit is built around a Pololu DRV8874 carrier (#4035) driving the
+two rails, with the RailCom cutout obtained by braking the bridge: two AND
+gates and two inverters combine the waveform with a run signal so that both
+bridge inputs rise together during the cutout. The decoder's answer is picked
+up as a few tens of millivolts across a sense resistor in series with each
+rail, squared up by an LM339 comparator and read by a serial port on the
+board.
 
 The firmware drives the DCC signal path and the control logic, but safe operation depends on the
 external hardware around it: the power stage, the protection circuitry, and how the signals are
-routed. Detailed wiring notes for the two drivers are kept outside this repository for now, so do
-not wire a track from this README alone.
+routed. Those documents describe one specific breadboard, not a general recipe, so do not wire a
+track from this README alone.
 
 ## Getting started
 
@@ -99,12 +108,11 @@ not wire a track from this README alone.
 
 6. Select the locomotive address and drive.
 
-Build-time `.env` credentials have been removed entirely: WiFi credentials are
-configured from the setup page and stored in flash.
-
-CV programming is still being worked on. The RailCom and programming-on-main
-read and write paths are being integrated, but the programming-track hardware
-support is not finished.
+Programming on the main track works: the station reads and writes CVs over
+RailCom while the locomotive is running, verified on the bench with ESU and
+ZIMO decoders. Service-mode programming on a separate track is not available,
+because the hardware it needs (track relay and acknowledgement detection) has
+not been built yet.
 
 ## Cargo aliases
 
@@ -120,6 +128,19 @@ Custom aliases are defined in `.cargo/config.toml` for common workflows:
 | `cargo clippy-host` | Lint for host target |
 | `cargo clippy-esp` | Lint for ESP32-C6 target |
 | `cargo run` | Flash to device via espflash and monitor |
+
+## Cargo features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `bench-diag` | off | Bench diagnostics: per-window and per-command `defmt` logging, plus the periodic RailCom counter dump task. Off by default because every `defmt` line is written inside a critical section, which delays the DCC waveform and RailCom cutout interrupts. The counters are always maintained; only their output is gated. |
+
+Enable it for a bench session, then go back to the default build for normal use:
+
+```bash
+cargo run --release --features bench-diag   # verbose, bench only
+cargo run --release                         # normal: boot, heartbeat, warnings and errors
+```
 
 ## Build
 
@@ -141,8 +162,11 @@ cargo run --release        # flash release build
 cargo test-host            # host-side unit tests
 cargo check-esp            # fast embedded compile check
 cargo clippy-host          # lint (host)
-cargo clippy-esp           # lint (ESP32-C6)
+cargo clippy-esp           # lint (ESP32-C6, all features)
 ```
+
+CI runs the same commands with `-D warnings`, and lints the ESP32-C6 target
+both in the default configuration and with `bench-diag` enabled.
 
 ## Commit conventions
 
@@ -156,11 +180,14 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 ## Project layout
 
 - `src/bin/main.rs`: firmware entrypoint
+- `src/boot/`: composition root, hardware setup and task spawning
+- `src/application/`: framework-independent use cases and read projections
 - `src/dcc/`: DCC packet, encoder, timing, scheduler, validator, CV logic, ISR-driven RMT backend
 - `src/net/`: Z21-compatible network protocol, UDP control, WiFi, and provisioning
 - `src/railcom/`: RailCom capture, parsing, runtime dispatch, and POM integration
+- `src/z21/`: pure Z21 protocol contract, independent of transport
 - `docs/specs/`: protocol and standards references
-- `docs/hardware/`: component inventory and hardware notes
+- `docs/hardware/`: the breadboard as it is wired today, inventory and assembly notes
 
 ## Safety notes
 
@@ -170,9 +197,9 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 
 ## TODO
 
-- [ ] CV programming hardware integration (prog track relay, ACK detection circuit)
+- [ ] Service-mode programming on a separate track. The packet encoder already
+      builds the verify and write packets; what is missing is hardware.
 - [ ] Z21 multi-client support (multiple apps controlling the same station)
-- [ ] RailCom bi-directional communication (hardware + firmware)
 - [ ] PCB design for a standalone command station board
 
 ## License
