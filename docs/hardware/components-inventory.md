@@ -39,7 +39,6 @@ be bought. The mounted circuit is described in `wiring.md`.
 
 | Component | Why |
 |---|---|
-| BTS7960 43 A H-bridge | Replaced by the DRV8874: the BTS7960 cannot short the rails together as the RailCom cutout requires |
 | TLV3501 comparator (2 pieces on adapters) | Input limited to 3.3 V, it saturated on the full DCC swing; replaced by the LM339 in series with the rail |
 | External terminator with IRLZ44N and 2.7 Ω resistors | The cutout is done with the DRV8874 brake, which shorts the rails at very low impedance; the terminator was out of specification |
 | BAT54 Schottky | No longer needed: the clamps are 1N5819 and the circuit works |

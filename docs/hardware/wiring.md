@@ -1,8 +1,8 @@
 # Breadboard wiring
 
-The single description of the bench circuit: what is connected to what, why
-the values are what they are, and what the measurements say. State on
-12 September 2026. It must be updated with every change on the breadboard.
+The single description of the bench circuit: what is connected to what and why
+the values are what they are. State on
+13 September 2026. It must be updated with every change on the breadboard.
 
 The parts list is in `components-inventory.md`. How the firmware behaves
 around the cutout is in `docs/specs/rmt-isr-dcc-railcom-flow.md`.
@@ -11,7 +11,7 @@ around the cutout is in `docs/specs/rmt-isr-dcc-railcom-flow.md`.
 
 The ESP32-C6 board generates the DCC waveform and feeds it to the DRV8874
 H-bridge, which drives the two rails. After every packet addressed to a
-locomotive the board opens a RailCom cutout: for about 460 microseconds the
+locomotive the board opens a RailCom cutout: for about 425 microseconds the
 bridge brakes, that is it shorts the two rails together, and the decoder in
 the locomotive answers with small current pulses. A resistor in series with
 each rail turns those pulses into millivolts, an LM339 comparator turns them
@@ -39,15 +39,28 @@ A single star ground, where every return goes: the board, the bridge, the
 logic chips and the comparator.
 
 Three supply lines. The 15 V from the bench supply enters only the VIN pin of
-the Pololu module. The 5 V for the 74HC08, the 74HC14 and the LM339 is taken
-from the USB connector of the ESP32-C6 board, and is therefore present only
-while the USB cable is plugged in. The board's 3.3 V is used only for the
-pull-up of the comparator output.
+the Pololu module. The 5 V is taken from the 5 V output pin of the ESP32-C6
+board and feeds the LM339 alone, because that is the operating point the
+manufacturer characterises the comparator at. The board's 3.3 V output pin
+feeds the 74HC08 and the 74HC14, and is also the pull-up of the comparator
+output.
+
+The two logic chips are on 3.3 V and not on 5 V for a reason worth keeping in
+mind on the printed board too. Their inputs come from GPIO2 and GPIO4, which
+the board drives at 3.3 V, and a chip of the HC family asks for seventy per
+cent of its own supply before it reads a level as high: on 5 V that would be
+3.5 V, above what the board gives, while on 3.3 V the threshold is about 2.3 V
+and there is margin to spare. The measurement agrees: during the cutout the
+bridge inputs, which come from the outputs of the 74HC14, sit at about 3.2 V,
+that is at the chip's own supply.
 
 The VM pin of the module must not be connected: it is a measurement point
 after the protection, not an input.
 
-On a printed board the 5 V will have to come from a converter fed by the 15 V.
+On the bench both lines come from the output pins of the ESP32-C6 board, and
+both are therefore present only while the board is powered. Only on a future
+printed board will the comparator's 5 V have to come from a converter fed by
+the 15 V.
 
 ## The board and its pins
 
@@ -64,7 +77,11 @@ drive the green and red LEDs.
 
 The DRV8874 works in PWM mode: its PMODE pin is at 3.3 V. In this mode the two
 inputs IN1 and IN2 drive the two outputs directly, and with both inputs high
-the bridge brakes.
+the bridge brakes. GPIO18 reaches the sleep pin of the module, the one the
+firmware calls SLEEP and holds low until it is ready; the exact wording of the
+silkscreen next to that pin on the Pololu carrier has to be read on the board
+itself. The two outputs OUT1 and OUT2 go to the two rails, each through its own
+sense resistor, and the module's ground goes to the star ground.
 
 The two inputs do not come from the board directly; they pass through two AND
 gates of the 74HC08 and two inverters of the 74HC14. The first AND gate
@@ -74,22 +91,55 @@ signal. The gate outputs, pins 3 and 6 of the 74HC08, enter two 74HC14
 inverters, pins 5 and 9, and their outputs, pins 6 and 8, go to the bridge
 inputs crosswise: IN1 from pin 8, IN2 from pin 6.
 
+The pin numbers on the input side of the two logic chips are not recorded in
+any earlier document and have not been checked component by component on the
+breadboard; what follows is what the standard pinouts of the two parts allow,
+given the output pins above, and it is the one thing in this section still to
+be confirmed by eye. On the 74HC08 the gate whose output is pin 3 has its
+inputs on pins 1 and 2, and the gate whose output is pin 6 has its inputs on
+pins 4 and 5: GPIO2 and GPIO4 therefore land on pins 1 and 2 in some order, and
+the inverted waveform and GPIO4 on pins 4 and 5 in some order. Which of the two
+pins of each pair carries which signal makes no difference electrically,
+because an AND gate treats its inputs alike. The 74HC14 inverter that produces
+the inverted waveform for the second gate is not the one on pins 5 and 6 nor
+the one on pins 9 and 8, since those two are already used after the gates: it
+is one of the four remaining, whose inputs are pins 1, 3, 11 and 13 and whose
+outputs are, in the same order, pins 2, 4, 10 and 12.
+
+Both logic chips take their 3.3 V on pin 14 and their ground on pin 7, and it
+is across those two pins that the 100 nF of each sits. The inputs of the unused
+gates and inverters are not described in the earlier documents either, and what
+they are tied to, if anything, has to be checked on the breadboard.
+
 As a result, outside the cutout the bridge reproduces the DCC waveform as
 before, and inside the cutout, with GPIO4 low, both inputs rise and the bridge
 brakes. Measured on 1 September: during the cutout both inputs sit at about
-3.2 V for 460 microseconds and the rails are at zero.
+3.2 V and the rails are at zero.
 
-On the run signal, between GPIO4 and the 74HC08, a resistor to ground keeps
-the bridge inputs at rest while the board is not yet driving the pin; the
-design value is 100 kΩ.
+The firmware does not command a duration but two instants, both counted from
+the reference edge, that is from the polarity inversion that closes the packet:
+the brake comes in at 28 microseconds and is released at 454. The brake itself
+therefore lasts about 425 microseconds. The capture of 2 September measures a
+33 microsecond stub before the brake and 424 microseconds of rails at zero,
+which puts the end at 457 from the edge against the 454 commanded: the bridge
+is some three microseconds late in letting go.
+
+On the run signal, between GPIO4 and the 74HC08, a resistor to ground holds the
+pin low while the board is not yet driving it; the design value is 100 kΩ. A
+low run signal means brake, so what this resistor gives at power-up is a
+defined state, not an idle one: the bridge is harmless in that moment because
+GPIO18 is low and the bridge is asleep, not because of this resistor.
 
 ## The short-circuit detector
 
 The FAULT pin of the bridge goes to GPIO3, so the firmware's detector watches
-the bridge. The connection is bare wire: the 4.7 kΩ and 100 nF filter that sat
-on GPIO3 in May is gone, and there is no capacitor on this pin. The pin is
-open drain and active low, so it can only pull down; the line is held up by
-the pull-up inside the ESP32-C6, which the firmware enables on GPIO3.
+the bridge. On that pin there is a capacitor to ground, confirmed by eye on the
+bench; the value is 100 nF as far as the notes go, and whether a resistor is
+fitted with it, and where, has not been settled. The pin is open drain and
+active low, so it can only pull down; the line is held up by the pull-up inside
+the ESP32-C6, which the firmware enables on GPIO3, and that pull-up is weak,
+around 45 kΩ, so the capacitor slows the line down appreciably when FAULT lets
+go. This matters for the open bug below.
 
 ## The sense resistors
 
@@ -130,6 +180,13 @@ The rail-side node of the first sense resistor reaches pin 4 and that of the
 second reaches pin 6, each through a 1 kΩ resistor that protects the chip while
 those nodes swing by tens of volts outside the cutout.
 
+Pins 4 and 6 are the inverting inputs of the first two comparators of the
+LM339, and pins 5 and 7, which carry the threshold, are the non-inverting ones.
+The output therefore goes low when the signal rises above the threshold, that
+is when current is flowing, and is high when there is none. This is the reason
+for what the measurements show on GPIO5: the line rests high during the cutout
+and the decoder's pulses appear as short trips to ground.
+
 The two outputs, pins 1 and 2, are tied together: they are open collector and
 can only pull low. From the common node a 1 kΩ resistor goes up to the 3.3 V,
 not to the 5 V, so GPIO5 never sees more than 3.3 V. The same node goes to
@@ -165,9 +222,10 @@ checked by eye on the breadboard.
 
 ## The capacitors
 
-Four in the whole circuit, all 100 nF, one per chip on its supply: 74HC08,
-74HC14, LM339 and the ESP32-C6 board. There is no capacitor anywhere else, in
-particular none on the bridge module.
+Five, all 100 nF. Four are one per chip on its supply: 74HC08 and 74HC14
+between their pins 14 and 7, on the 3.3 V, LM339 between its pins 3 and 12, on
+the 5 V, and one on the ESP32-C6 board. The fifth is on GPIO3, towards ground,
+on the fault line. There is none on the bridge module.
 
 ## Assembling the read front end
 
@@ -175,101 +233,83 @@ This is the procedure followed on 7 September 2026 for the comparator and the
 sense resistors. All the assembly is done with the circuit off, supply
 disconnected and USB cable unplugged.
 
-**Step 0 — check before powering.** With the multimeter, circuit off, check
-that there is no continuity between the 5 V line and ground, and likewise
-between 3.3 V and ground. Repeat the check at the end, before applying power.
+1. Before anything else, with the multimeter and the circuit off, check that
+   there is no continuity between the 5 V line and ground, and likewise
+   between 3.3 V and ground.
 
-1. Plug the socket across the centre channel of the breadboard, in a free area,
+2. Plug the socket across the centre channel of the breadboard, in a free area,
    with the reference notch facing up. Insert the LM339 in the socket following
    that notch.
 
-2. A wire from pin 3 to the 5 V line. A wire from pin 12 to the star ground,
+3. A wire from pin 3 to the 5 V line. A wire from pin 12 to the star ground,
    the same used for everything else.
 
-3. A 100 nF capacitor directly between pin 3 and pin 12, as short as possible.
+4. A 100 nF capacitor directly between pin 3 and pin 12, as short as possible.
 
-4. Pick a free row of the breadboard: it will be the threshold node. From the
+5. Pick a free row of the breadboard: it will be the threshold node. From the
    5 V line, put a 22 kΩ and a 4.7 kΩ resistor in series, with the second one
    landing on that row.
 
-5. From the same row, a 100 Ω resistor to ground.
+6. From the same row, a 100 Ω resistor to ground.
 
-6. From the threshold row, one wire to pin 5 and another to pin 7.
+7. From the threshold row, one wire to pin 5 and another to pin 7.
 
-7. On each rail, break the direct link between the bridge output and the track
+8. On each rail, break the direct link between the bridge output and the track
    and put two 4.7 Ω resistors in parallel in its place, so that the current
    from the bridge output to the rail has to pass through them.
 
-8. Across each pair, two 1N5819 diodes facing opposite ways: the first with its
+9. Across each pair, two 1N5819 diodes facing opposite ways: the first with its
    band towards the track side, the second with its band towards the bridge
    side.
 
-9. From the track-side node of the first pair, not the bridge side, a 1 kΩ
+10. From the track-side node of the first pair, not the bridge side, a 1 kΩ
    resistor to pin 4. From the track-side node of the second pair, a 1 kΩ
    resistor to pin 6.
 
-10. Join pin 1 and pin 2, which are adjacent, with a short wire. The two
+11. Join pin 1 and pin 2, which are adjacent, with a short wire. The two
     outputs work together: the one that sees current pulls the common wire
     down, the other watches.
 
-11. From that common node, a 1 kΩ resistor to the **3.3 V** line, 3.3 and not
+12. From that common node, a 1 kΩ resistor to the **3.3 V** line, 3.3 and not
     five. This resistor sets the high level, and it is the reason the board pin
     will never see more than 3.3 V.
 
-12. From the same common node, the wire to GPIO5 on the board.
+13. From the same common node, the wire to GPIO5 on the board.
 
-13. Repeat the step 0 check and add two more: that pin 3 is not in contact with
-    ground, and that the common output node is not either.
+14. Repeat the check of step 1 and add two more: that pin 3 is not in contact
+    with ground, and that the common output node is not either.
 
 **Two things not to get wrong.** The signal inputs are pins 4 and 6, the
 threshold goes to pins 5 and 7; swapped, the circuit works backwards and the
-board's serial port understands nothing. The resistor of step 11 goes to 3.3 V;
+board's serial port understands nothing. The resistor of step 12 goes to 3.3 V;
 taking it to five by mistake sends five volts into a pin rated for 3.3.
 
-## What the measurements say
+## Open bug: the fault with two locomotives
 
-The reference captures are the oscilloscope files of 7 and 11 September 2026 in
-the `OneDrive/dcc` folder, taken with the probe on the track-side leg of a sense
-resistor and the clip on the star ground.
+Since 10 September 2026, with two locomotives on the track, the short-circuit
+detector trips 17 milliseconds after the track is powered. With a single
+locomotive the bench starts cleanly. The log puts the power at 5.537 s and the
+short at 5.663 s, and the detector needs fifteen low samples out of twenty at
+one millisecond, so the line stays low for the whole window. The bench supply
+reads 0.08 A, which is no short at all.
 
-**The signal.** Inside the cutout the current pulses swing about 130 millivolts
-on the Roco, from a rest line 70 to 80 millivolts below zero down to about 200.
-That is roughly seven times the 18.5 millivolt threshold, so the margin is
-comfortable.
+The lead to follow is the inrush that charges the capacitors of the
+two decoders: the bridge sees an overcurrent, retries every few milliseconds,
+and FAULT pulses long enough for the detector to call it a short. The
+measurement agreed for this, still to be done, is one probe on GPIO3 and one on
+a rail at 5 ms per division, triggered on the falling edge of GPIO3, powering up
+with both locomotives. A burst of pulses on FAULT while the waveform on the
+rail breaks up means inrush; a single fall that stays down means something else.
 
-**The timing.** In the captures of 7 September the decoder's first bit arrives
-84 microseconds after the end of the packet, and the comparator output is high
-and steady from 49 microseconds on.
-
-**On GPIO5, referred to ground.** The line is low outside the cutout, because
-the traction current keeps the comparator conducting; at the start of the
-cutout it stays low for about twenty more microseconds while the residual
-current dies out, then rises and stays high; from the decoder's first bit
-onwards, pulses to ground of 4 microseconds each.
-
-**The edges are not square.** In the captures of 11 September the current takes
-1.5 to 2.6 microseconds to cross the band between 100 and 180 millivolts, on a
-bit cell of 4 microseconds. The delay of about a microsecond seen on the
-comparator output is therefore already present in the current itself: it comes
-from the measuring loop or from the decoder, not from the chip. Whether it is
-the loop or the decoder has not been separated yet; the test for that is to
-shorten and twist the wires between the breadboard and the rails and repeat the
-same capture unchanged.
-
-**Chatter.** The comparator chatters for two or three microseconds around slow
-edges, in particular when the residual traction current falls below the
-threshold at the start of the cutout. The serial port is not affected, because
-it samples in the middle of each bit. No hysteresis is fitted and none is
-needed.
-
-**Not measured.** The input offset of this particular chip, which the
-manufacturer allows up to five millivolts. The total voltage the detector drops
-in the track circuit, which RCN-217 bounds; the captures suggest it is worth
-checking with a measurement made for that purpose.
+Worth keeping in mind while reading the capture: GPIO3 carries a capacitor to
+ground and is held up only by the weak pull-up inside the chip, so the line
+rises slowly. A FAULT that pulses briefly can therefore look, on the pin, like
+a line that stays down, and that alone could be enough to make the detector
+call a short where there is none.
 
 ## What is no longer there
 
-The BTS7960 bridge of the first build, the two TLV3501 comparators, the
-external terminator with the IRLZ44N MOSFETs and their burden resistors, and
-the 74HC14 inverter on the board's serial input, which served an earlier front
-end and is now replaced by the pull-up to 3.3 V.
+The H-bridge of the first build, the two TLV3501 comparators, the external
+terminator with the IRLZ44N MOSFETs and their burden resistors, and the 74HC14
+inverter on the board's serial input, which served an earlier front end and is
+now replaced by the pull-up to 3.3 V.
