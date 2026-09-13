@@ -108,7 +108,7 @@ impl StatusModel {
     /// whenever track power is logically off, including e-stop and any fault.
     #[must_use]
     pub const fn pom_allowed(self) -> bool {
-        self.track_power_on() && !self.fault_active()
+        self.track_power_on()
     }
 
     /// Compute the current LED state with fixed priority.

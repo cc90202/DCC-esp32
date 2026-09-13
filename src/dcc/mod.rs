@@ -42,10 +42,10 @@ pub use crate::cutout::CutoutMode;
 /// Precomputed transmission metadata for one DCC packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DccFrame {
-    pub packet: DccPacket,
-    pub cutout: CutoutMode,
-    pub railcom_target_address: Option<DccAddress>,
-    pub pom_request_id: Option<PomRequestId>,
+    packet: DccPacket,
+    cutout: CutoutMode,
+    railcom_target_address: Option<DccAddress>,
+    pom_request_id: Option<PomRequestId>,
     fence_generation: Option<PowerGeneration>,
 }
 
@@ -96,6 +96,26 @@ impl DccFrame {
     }
 
     #[must_use]
+    pub const fn packet(self) -> DccPacket {
+        self.packet
+    }
+
+    #[must_use]
+    pub const fn cutout(self) -> CutoutMode {
+        self.cutout
+    }
+
+    #[must_use]
+    pub const fn railcom_target_address(self) -> Option<DccAddress> {
+        self.railcom_target_address
+    }
+
+    #[must_use]
+    pub const fn pom_request_id(self) -> Option<PomRequestId> {
+        self.pom_request_id
+    }
+
+    #[must_use]
     #[cfg(any(test, target_arch = "riscv32"))]
     pub(crate) const fn with_pom_request_id(mut self, request_id: PomRequestId) -> Self {
         self.pom_request_id = Some(request_id);
@@ -139,9 +159,10 @@ pub use scheduler::SlotManager;
 pub use scheduler::packet_scheduler_task;
 #[doc(inline)]
 pub use scheduler::{
-    ConsistId, FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex, LocoRequest,
-    LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoRequestResult, LocoResponse,
-    LocoSnapshot, LogicalSpeed, SchedulerCommand, SchedulerRequest, SpeedFormat,
+    ConsistId, FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex,
+    LOCO_SLOT_CAPACITY, LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage,
+    LocoRequestResult, LocoResponse, LocoSnapshot, LogicalSpeed, SchedulerCommand,
+    SchedulerRequest, SpeedFormat,
 };
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
@@ -164,7 +185,7 @@ mod frame_tests {
         let frame =
             DccFrame::new(DccPacket::Idle, CutoutMode::None).with_pom_request_id(request_id);
 
-        assert_eq!(frame.pom_request_id, Some(request_id));
+        assert_eq!(frame.pom_request_id(), Some(request_id));
         assert_eq!(request_id.value(), 0);
     }
 

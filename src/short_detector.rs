@@ -1,12 +1,13 @@
-//! Track short-circuit detector using an active-low conditioned GPIO signal.
+//! Track short-circuit detector using an active-low GPIO signal.
 //!
-//! The external current/fault detector conditions the track-driver signal into
-//! a clean 3.3V digital output for GPIO3.
+//! GPIO3 is wired to the FAULT pin of the DRV8874 carrier. That pin is open
+//! drain and can only pull down, so the line is held up by the pull-up inside
+//! the ESP32-C6, enabled here.
 //!
 //! - Normal operation: GPIO3 = HIGH (3.3V)
 //! - Short circuit:    GPIO3 = LOW  (0V)  → falling edge triggers fault
 //!
-//! Monitors GPIO3 (digital input from 74HC14 Schmitt trigger) for track short-circuit detection.
+//! Monitors GPIO3 for track short-circuit detection.
 //! The signal is active-low: GPIO3=LOW means short detected. A falling-edge interrupt opens a
 //! qualification window: the pin is sampled every millisecond and the fault latches only when
 //! the line stays LOW for most of the window (15 of 20 samples), mirroring commercial command
@@ -31,7 +32,7 @@ use crate::runtime_channels::{BootReadySender, FaultEventSender, announce_ready}
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::BootReadyEvent;
 #[cfg(target_arch = "riscv32")]
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::cell::Cell;
 #[cfg(target_arch = "riscv32")]
 use embassy_futures::select::{Either, select};
 #[cfg(target_arch = "riscv32")]
@@ -54,27 +55,50 @@ const TRACK_SHORT_BOOT_BLANKING_MS: u64 = 5_000;
 const RECOVERY_SETTLE_MS: u64 = 100;
 
 #[cfg(target_arch = "riscv32")]
-static SHORT_EDGE_SUPPRESSED_UNTIL_MS: AtomicU32 = AtomicU32::new(0);
+static SHORT_SUPPRESSION: critical_section::Mutex<Cell<ShortSuppression>> =
+    critical_section::Mutex::new(Cell::new(ShortSuppression { until_ms: 0 }));
+
+/// Keep the full monotonic clock width: an expired 32-bit circular deadline
+/// would look like a future deadline again after half a counter revolution.
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Clone, Copy)]
+struct ShortSuppression {
+    until_ms: u64,
+}
+
+#[cfg(any(test, target_arch = "riscv32"))]
+impl ShortSuppression {
+    fn starting_at(now_ms: u64, duration_ms: u64) -> Self {
+        Self {
+            until_ms: now_ms.saturating_add(duration_ms),
+        }
+    }
+
+    fn is_active_at(self, now_ms: u64) -> bool {
+        now_ms < self.until_ms
+    }
+}
 
 #[cfg(target_arch = "riscv32")]
 pub fn suppress_short_edges_for(duration: Duration) {
-    let until = embassy_time::Instant::now()
-        .as_millis()
-        .saturating_add(duration.as_millis()) as u32;
-    SHORT_EDGE_SUPPRESSED_UNTIL_MS.store(until, Ordering::Release);
+    critical_section::with(|cs| {
+        SHORT_SUPPRESSION
+            .borrow(cs)
+            .set(ShortSuppression::starting_at(
+                embassy_time::Instant::now().as_millis(),
+                duration.as_millis(),
+            ));
+    });
 }
 
 #[cfg(target_arch = "riscv32")]
 fn short_edges_suppressed() -> bool {
-    ms_before(
-        embassy_time::Instant::now().as_millis() as u32,
-        SHORT_EDGE_SUPPRESSED_UNTIL_MS.load(Ordering::Acquire),
-    )
-}
-
-#[cfg(any(test, target_arch = "riscv32"))]
-fn ms_before(now: u32, until: u32) -> bool {
-    now != until && until.wrapping_sub(now) < (1 << 31)
+    critical_section::with(|cs| {
+        SHORT_SUPPRESSION
+            .borrow(cs)
+            .get()
+            .is_active_at(embassy_time::Instant::now().as_millis())
+    })
 }
 
 /// Total pin samples taken after a falling edge before declaring the window
@@ -173,7 +197,7 @@ pub async fn short_detector_task(
     mut fault_state_receiver: watch::Receiver<
         'static,
         CriticalSectionRawMutex,
-        crate::fault_manager::FaultManagerState,
+        crate::system_status::FaultManagerState,
         1,
     >,
     ready_sender: BootReadySender,
@@ -199,7 +223,7 @@ pub async fn short_detector_task(
     let mut fault_state = fault_state_receiver.get().await;
 
     loop {
-        while !matches!(fault_state, crate::fault_manager::FaultManagerState::Normal) {
+        while !matches!(fault_state, crate::system_status::FaultManagerState::Normal) {
             fault_state = fault_state_receiver.changed().await;
         }
 
@@ -246,19 +270,33 @@ pub async fn short_detector_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{SHORT_CONFIRM_MIN_LOW_SAMPLES, SHORT_CONFIRM_SAMPLES, ShortQualifier, ms_before};
+    use super::{
+        SHORT_CONFIRM_MIN_LOW_SAMPLES, SHORT_CONFIRM_SAMPLES, ShortQualifier, ShortSuppression,
+    };
 
     #[test]
     fn suppression_window_is_active_before_deadline() {
-        assert!(ms_before(100, 350));
-        assert!(!ms_before(350, 350));
-        assert!(!ms_before(351, 350));
+        let window = ShortSuppression::starting_at(100, 250);
+        assert!(window.is_active_at(100));
+        assert!(!window.is_active_at(350));
+        assert!(!window.is_active_at(351));
     }
 
     #[test]
-    fn suppression_window_handles_u32_wrap() {
-        assert!(ms_before(u32::MAX - 10, 20));
-        assert!(!ms_before(20, u32::MAX - 10));
+    fn suppression_window_crosses_u32_boundary_without_truncation() {
+        let start = u64::from(u32::MAX) - 10;
+        let window = ShortSuppression::starting_at(start, 250);
+        assert!(window.is_active_at(start + 100));
+        assert!(!window.is_active_at(start + 250));
+    }
+
+    #[test]
+    fn expired_suppression_never_reactivates_after_25_or_50_days() {
+        let window = ShortSuppression::starting_at(100, 250);
+        for elapsed in [1, (1u64 << 31) + 1, (1u64 << 32) + 1, 10 * (1u64 << 32)] {
+            assert!(!window.is_active_at(350 + elapsed));
+        }
+        assert!(!(ShortSuppression { until_ms: 0 }).is_active_at((1u64 << 31) + 1));
     }
 
     #[test]

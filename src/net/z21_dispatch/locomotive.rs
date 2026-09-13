@@ -2,14 +2,19 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use defmt::{info, warn};
+#[cfg(feature = "bench-diag")]
+use defmt::info;
+use defmt::warn;
 
 use crate::application::locomotive::{
     LocoCommandFailure, LocoCommandOutcome, LocoLookupIssue, LocoRequestError,
     prepare_drive_request, prepare_function_request, resolve_loco_command, resolve_loco_lookup,
 };
 use crate::application::{LocoSlots, LocoState};
-use crate::dcc::{DccAddress, Direction, FunctionChange, FunctionIndex, LocoRequest, SpeedFormat};
+#[cfg(feature = "bench-diag")]
+use crate::dcc::FunctionIndex;
+use crate::dcc::{DccAddress, Direction, FunctionChange, LocoRequest, SpeedFormat};
+use crate::macros::bench_diag;
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::LocoCtx;
 use crate::z21::{self as z21_proto, FunctionAction};
@@ -25,6 +30,10 @@ pub(super) struct DriveCommand {
     pub format: SpeedFormat,
 }
 
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "read only by the optional bench diagnostics task")
+)]
 #[must_use]
 pub(crate) fn loco_command_rejected_count() -> u32 {
     LOCO_COMMAND_REJECTED_COUNT.load(Ordering::Acquire)
@@ -128,14 +137,16 @@ pub(super) async fn set_drive(
     };
 
     let outcome = apply_requested_change(loco_slots, ctx, request, "drive").await;
-    if outcome.confirmed_state().is_some() {
-        info!(
-            "loco drive addr={} fmt={:?} dir={:?} speed={}",
-            address.value(),
-            format,
-            direction,
-            speed
-        );
+    bench_diag! {
+        if outcome.confirmed_state().is_some() {
+            info!(
+                "loco drive addr={} fmt={:?} dir={:?} speed={}",
+                address.value(),
+                format,
+                direction,
+                speed
+            );
+        }
     }
     encode_confirmed_feedback(outcome, out)
 }
@@ -167,16 +178,18 @@ pub(super) async fn set_function(
     };
 
     let outcome = apply_requested_change(loco_slots, ctx, request, "function").await;
-    if let Some(state) = outcome.confirmed_state() {
-        info!(
-            "loco fn addr={} f{} action={:?} enabled={} speed={} fmt={:?}",
-            address.value(),
-            function,
-            action,
-            FunctionIndex::new(function).is_some_and(|index| state.functions.is_enabled(index)),
-            state.speed.value(),
-            state.speed.format()
-        );
+    bench_diag! {
+        if let Some(state) = outcome.confirmed_state() {
+            info!(
+                "loco fn addr={} f{} action={:?} enabled={} speed={} fmt={:?}",
+                address.value(),
+                function,
+                action,
+                FunctionIndex::new(function).is_some_and(|index| state.functions.is_enabled(index)),
+                state.speed.value(),
+                state.speed.format()
+            );
+        }
     }
     encode_confirmed_feedback(outcome, out)
 }
@@ -222,7 +235,7 @@ fn loco_info(state: LocoState) -> z21_proto::LocoInfo {
         address: state.address,
         speed: state.speed,
         direction: state.direction,
-        functions: state.functions.bits(),
+        functions: state.functions,
     }
 }
 

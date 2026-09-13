@@ -26,6 +26,7 @@ use crate::application::client_safety::{
     LeaseActivity, LeaseDecision, LeaseEpoch, LeasePermit, LeaseRequest,
 };
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::macros::bench_diag;
 use crate::net::client_watchdog::LeaseTripNotification;
 use crate::net::loco_client::reset_for_lease;
 use crate::net::wifi_config::WifiCredentials;
@@ -38,9 +39,11 @@ use crate::runtime_channels::{
     NetStatusReceiver, PomRequestSender, PomResponseReceiver, SystemStatusSender, announce_ready,
 };
 use crate::system_status::{BootReadyEvent, DisplayEvent};
-use crate::z21::{self as z21_proto, HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
+use crate::z21 as z21_proto;
+#[cfg(feature = "bench-diag")]
+use crate::z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 
-pub use super::wifi::NetInitError;
+use super::wifi::NetInitError;
 use super::{radio, wifi};
 
 const Z21_PORT: u16 = 21105;
@@ -54,11 +57,13 @@ static NET_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 static STATUS_BROADCAST_SEND_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 static UDP_RECEIVE_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(feature = "bench-diag")]
 #[must_use]
 pub(crate) fn status_broadcast_send_failure_count() -> u32 {
     STATUS_BROADCAST_SEND_FAILURE_COUNT.load(Ordering::Relaxed)
 }
 
+#[cfg(feature = "bench-diag")]
 #[must_use]
 pub(crate) fn udp_receive_failure_count() -> u32 {
     UDP_RECEIVE_FAILURE_COUNT.load(Ordering::Relaxed)
@@ -163,9 +168,40 @@ fn bind_z21_socket(stack: Stack<'static>) -> Result<UdpSocket<'static>, NetInitE
     let tx_meta = TX_META.init([PacketMetadata::EMPTY; 16]);
     let tx_buf = TX_BUF.init([0u8; 1024]);
     let mut socket = UdpSocket::new(stack, rx_meta, rx_buf, tx_meta, tx_buf);
-    socket.bind(Z21_PORT).map_err(|_| NetInitError::UdpBind)?;
+    socket
+        .bind(Z21_PORT)
+        .map_err(|error| NetInitError::UdpBind(error.into()))?;
     info!("Z21 UDP listening on port {}", Z21_PORT);
     Ok(socket)
+}
+
+/// Bench diagnostic: one line per received Z21 datagram that is not a poll.
+///
+/// Compiled out unless `bench-diag` is enabled. A throttle in motion sends a
+/// steady stream of datagrams, and each defmt line holds a critical section
+/// that delays the DCC waveform and cutout interrupts. Parse errors, rejected
+/// commands and send failures are logged unconditionally elsewhere.
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its arguments when bench diagnostics are disabled"
+    )
+)]
+fn log_datagram(datagram: &[u8], endpoint: IpEndpoint) {
+    bench_diag! {
+        let kind = z21_proto::frame_kind(datagram);
+        let is_polling = kind.header == HEADER_SYSTEMSTATE_GETDATA || kind.header == HEADER_XBUS;
+        if !is_polling {
+            info!(
+                "UDP rx {} bytes from {}: header=0x{:04X} xheader=0x{:02X}",
+                datagram.len(),
+                defmt::Display2Format(&endpoint),
+                kind.header,
+                kind.xheader
+            );
+        }
+    }
 }
 
 async fn handle_udp_datagram(
@@ -177,17 +213,7 @@ async fn handle_udp_datagram(
     io: &Z21LoopIo,
 ) {
     let observed_at_ms = Instant::now().as_millis();
-    let kind = z21_proto::frame_kind(datagram);
-    let is_polling = kind.header == HEADER_SYSTEMSTATE_GETDATA || kind.header == HEADER_XBUS;
-    if !is_polling {
-        info!(
-            "UDP rx {} bytes from {}: header=0x{:04X} xheader=0x{:02X}",
-            datagram.len(),
-            defmt::Display2Format(&endpoint),
-            kind.header,
-            kind.xheader
-        );
-    }
+    log_datagram(datagram, endpoint);
 
     for (frame_index, boundary) in z21_proto::iter_frames(datagram).enumerate() {
         if frame_index == MAX_FRAMES_PER_DATAGRAM {
@@ -198,15 +224,7 @@ async fn handle_udp_datagram(
             Ok(frame) => frame,
             Err(error) => {
                 warn!("Z21 invalid frame boundary: {:?}", error);
-                let response_len = encoded_len(z21_proto::encode_unknown_command(send_buf));
-                if response_len > 0
-                    && socket
-                        .send_to(&send_buf[..response_len], endpoint)
-                        .await
-                        .is_err()
-                {
-                    warn!("Z21 UDP send failed");
-                }
+                send_unknown_command_response(socket, endpoint, send_buf).await;
                 break;
             }
         };
@@ -214,15 +232,7 @@ async fn handle_udp_datagram(
             Ok(command) => command,
             Err(error) => {
                 warn!("Z21 parse error: {:?}", error);
-                let response_len = encoded_len(z21_proto::encode_unknown_command(send_buf));
-                if response_len > 0
-                    && socket
-                        .send_to(&send_buf[..response_len], endpoint)
-                        .await
-                        .is_err()
-                {
-                    warn!("Z21 UDP send failed");
-                }
+                send_unknown_command_response(socket, endpoint, send_buf).await;
                 continue;
             }
         };
@@ -234,14 +244,23 @@ async fn handle_udp_datagram(
             &io.lease_response_receiver,
         )
         .await;
-        if authorization.owner_update {
-            state.lease_owner = authorization.owner;
-        }
-        if !authorization.execute {
-            warn!("Z21 command rejected by controller lease");
-            continue;
-        }
-        if let Some(permit) = authorization.permit
+        let lease_permit = match authorization {
+            CommandAuthorization::ExecuteWithoutLeaseUpdate => None,
+            CommandAuthorization::ExecuteForOwner { owner, permit } => {
+                state.lease_owner = Some(owner);
+                permit
+            }
+            CommandAuthorization::Reject => {
+                warn!("Z21 command rejected by controller lease");
+                continue;
+            }
+            CommandAuthorization::Trip => {
+                state.lease_owner = None;
+                warn!("Z21 command rejected by controller lease");
+                continue;
+            }
+        };
+        if let Some(permit) = lease_permit
             && state.scheduler_epoch != Some(permit.epoch())
         {
             if !reset_for_lease(
@@ -261,24 +280,24 @@ async fn handle_udp_datagram(
             track: TrackCtx {
                 fault_sender: &io.fault_sender,
                 status_model: &state.status_model,
-                lease_permit: authorization.permit,
+                lease_permit,
             },
             loco: LocoCtx {
                 status_model: &state.status_model,
-                lease_permit: authorization.permit,
+                lease_permit,
                 request_sender: &io.loco_request_sender,
                 response_receiver: &io.loco_response_receiver,
                 next_request_id: &state.next_loco_request_id,
             },
             pom: PomCtx {
                 status_model: &state.status_model,
-                lease_permit: authorization.permit,
+                lease_permit,
                 request_sender: &io.pom_request_sender,
                 response_receiver: &io.pom_response_receiver,
                 next_request_id: &state.next_pom_request_id,
                 loco: LocoCtx {
                     status_model: &state.status_model,
-                    lease_permit: authorization.permit,
+                    lease_permit,
                     request_sender: &io.loco_request_sender,
                     response_receiver: &io.loco_response_receiver,
                     next_request_id: &state.next_loco_request_id,
@@ -295,6 +314,22 @@ async fn handle_udp_datagram(
         {
             warn!("Z21 UDP send failed");
         }
+    }
+}
+
+async fn send_unknown_command_response(
+    socket: &mut UdpSocket<'_>,
+    endpoint: IpEndpoint,
+    send_buf: &mut [u8],
+) {
+    let response_len = encoded_len(z21_proto::encode_unknown_command(send_buf));
+    if response_len > 0
+        && socket
+            .send_to(&send_buf[..response_len], endpoint)
+            .await
+            .is_err()
+    {
+        warn!("Z21 UDP send failed");
     }
 }
 
@@ -435,11 +470,14 @@ pub(crate) async fn net_task(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CommandAuthorization {
-    execute: bool,
-    permit: Option<LeasePermit>,
-    owner_update: bool,
-    owner: Option<IpEndpoint>,
+enum CommandAuthorization {
+    ExecuteWithoutLeaseUpdate,
+    ExecuteForOwner {
+        owner: IpEndpoint,
+        permit: Option<LeasePermit>,
+    },
+    Reject,
+    Trip,
 }
 
 async fn authorize_command(
@@ -450,12 +488,7 @@ async fn authorize_command(
     response_receiver: &Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
 ) -> CommandAuthorization {
     let LeaseClassification::Activity(activity) = classification else {
-        return CommandAuthorization {
-            execute: true,
-            permit: None,
-            owner_update: false,
-            owner: None,
-        };
+        return CommandAuthorization::ExecuteWithoutLeaseUpdate;
     };
     request_sender
         .send(LeaseRequest {
@@ -468,29 +501,20 @@ async fn authorize_command(
         })
         .await;
     match response_receiver.receive().await {
-        LeaseDecision::Acquired(permit) | LeaseDecision::Renewed(permit) => CommandAuthorization {
-            execute: true,
-            permit: Some(permit),
-            owner_update: true,
-            owner: Some(endpoint),
-        },
-        LeaseDecision::Maintained(_) => CommandAuthorization {
-            execute: true,
+        LeaseDecision::Acquired(permit) | LeaseDecision::Renewed(permit) => {
+            CommandAuthorization::ExecuteForOwner {
+                owner: endpoint,
+                permit: Some(permit),
+            }
+        }
+        LeaseDecision::Maintained(_) => CommandAuthorization::ExecuteForOwner {
+            owner: endpoint,
             permit: None,
-            owner_update: true,
-            owner: Some(endpoint),
         },
-        LeaseDecision::Rejected(_) => CommandAuthorization {
-            execute: matches!(activity, LeaseActivity::KeepAlive),
-            permit: None,
-            owner_update: false,
-            owner: None,
-        },
-        LeaseDecision::Trip { .. } => CommandAuthorization {
-            execute: false,
-            permit: None,
-            owner_update: true,
-            owner: None,
-        },
+        LeaseDecision::Rejected(_) if matches!(activity, LeaseActivity::KeepAlive) => {
+            CommandAuthorization::ExecuteWithoutLeaseUpdate
+        }
+        LeaseDecision::Rejected(_) => CommandAuthorization::Reject,
+        LeaseDecision::Trip { .. } => CommandAuthorization::Trip,
     }
 }

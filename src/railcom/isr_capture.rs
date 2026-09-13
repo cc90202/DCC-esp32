@@ -19,11 +19,13 @@ use embassy_sync::channel::{Receiver, Sender};
 use esp_hal::Async;
 use esp_hal::uart::UartRx;
 
+use crate::macros::bench_diag;
 use crate::railcom::pipeline::{
-    MAX_RAILCOM_WINDOW_BYTES, PacketSequence, RailcomChannel, RailcomRxWindow,
-    RailcomRxWindowError, process_rx_window, record_oversized_window, record_rx_overflows,
+    MAX_RAILCOM_WINDOW_BYTES, RailcomRxWindow, RailcomRxWindowError, process_rx_window,
+    record_oversized_window, record_rx_overflows,
 };
 use crate::railcom::uart_reader::{RailcomRxOutput, RailcomUartWindowError};
+use crate::railcom::{PacketSequence, RailcomChannel};
 
 const CAPTURE_RING_CAPACITY: usize = 64;
 
@@ -72,6 +74,12 @@ impl RailcomIsrCaptureUart {
     }
 }
 
+/// GPIO matrix input signal index of U1RXD on the ESP32-C6.
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "used only by the optional UART bench snapshot")
+)]
+const U1RXD_SIGNAL: usize = 9;
 #[inline(always)]
 fn uart1_rx_fifo_count() -> Option<u16> {
     if !CAPTURE_READY.load(Ordering::Acquire) {
@@ -103,8 +111,25 @@ fn uart1_reset_rx_fifo() {
     }
     // SAFETY: same UART1 ownership invariant as `uart1_rx_fifo_count`.
     let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
+    // On the ESP32-C6 `conf0` is a synchronised register: a write only
+    // reaches the UART core after `reg_update` is pulsed. Mirror esp-idf's
+    // `uart_ll_rxfifo_rst` (set, update, clear, update); without the updates
+    // the reset never happens and the FIFO keeps accumulating.
     regs.conf0().modify(|_, w| w.rxfifo_rst().set_bit());
+    uart1_reg_update();
     regs.conf0().modify(|_, w| w.rxfifo_rst().clear_bit());
+    uart1_reg_update();
+}
+
+#[inline(always)]
+fn uart1_reg_update() {
+    // SAFETY: same UART1 ownership invariant as `uart1_rx_fifo_count`;
+    // `reg_update` only commits the pending synchronised writes.
+    let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
+    regs.reg_update().modify(|_, w| w.reg_update().set_bit());
+    while regs.reg_update().read().reg_update().bit_is_set() {
+        core::hint::spin_loop();
+    }
 }
 
 #[inline(always)]
@@ -199,10 +224,42 @@ fn take_captured_window(next_read: &mut u32) -> Option<CapturedWindow> {
     None
 }
 
+#[cfg(feature = "bench-diag")]
+static RAW_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Bench diagnostic: log the raw bytes of the first windows after boot and
+/// then one window every 100, so the byte layout per channel can be checked
+/// against the scope without flooding the log.
+///
+/// Compiled out unless `bench-diag` is enabled: this runs once per captured
+/// window, and a defmt line holds a critical section for its whole duration.
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its arguments when bench diagnostics are disabled"
+    )
+)]
+fn log_raw_window(window: &CapturedWindow) {
+    bench_diag! {
+        let count = RAW_DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count < 60 || count.is_multiple_of(100) {
+            defmt::info!(
+                "railcom raw seq={} ch={} len={} bytes={=[u8]:#04x}",
+                window.packet_sequence.value(),
+                u8::from(window.channel),
+                window.len,
+                &window.bytes[..window.len.min(MAX_RAILCOM_WINDOW_BYTES)]
+            );
+        }
+    }
+}
+
 async fn send_captured_window(
     sender: &Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
     window: CapturedWindow,
 ) {
+    log_raw_window(&window);
     if window.len > MAX_RAILCOM_WINDOW_BYTES {
         record_rx_overflows(1);
         record_oversized_window();
@@ -267,5 +324,69 @@ pub async fn railcom_isr_capture_task(
         while let Some(window) = take_captured_window(&mut next_read) {
             send_captured_window(&result_sender, window).await;
         }
+    }
+}
+
+/// Raw UART1/GPIO5 register snapshot for bench diagnostics.
+///
+/// Read-only: touches no control bit, so it is safe to call from a task while
+/// the cutout ISR owns the FIFO data path.
+#[derive(Debug, Clone, Copy, defmt::Format)]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        dead_code,
+        reason = "constructed only by the optional bench diagnostics task"
+    )
+)]
+pub struct Uart1RawDiag {
+    pub rxfifo_cnt: u16,
+    pub rxd_level: bool,
+    pub rxd_edge_cnt: u16,
+    pub int_raw: u32,
+    pub st_urx_out: u8,
+    pub conf0_rxfifo_rst: bool,
+    pub u1rxd_in_sel: u8,
+    pub gpio5_high_samples: u32,
+    pub uart_rxd_high_samples: u32,
+    pub samples: u32,
+}
+
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        dead_code,
+        reason = "called only by the optional bench diagnostics task"
+    )
+)]
+#[must_use]
+pub fn uart1_raw_diag() -> Uart1RawDiag {
+    // SAFETY: read-only register access; see the ownership note on
+    // `uart1_rx_fifo_count`. The GPIO `in` register is a pure status read.
+    let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
+    let gpio = unsafe { &*esp_hal::peripherals::GPIO::ptr() };
+    const SAMPLES: u32 = 40_000;
+    let mut gpio5_high_samples = 0u32;
+    let mut uart_rxd_high_samples = 0u32;
+    for _ in 0..SAMPLES {
+        if gpio.in_().read().data_next().bits() & (1 << 5) != 0 {
+            gpio5_high_samples += 1;
+        }
+        if regs.status().read().rxd().bit_is_set() {
+            uart_rxd_high_samples += 1;
+        }
+    }
+    let status = regs.status().read();
+    Uart1RawDiag {
+        rxfifo_cnt: u16::from(status.rxfifo_cnt().bits()),
+        rxd_level: status.rxd().bit_is_set(),
+        rxd_edge_cnt: regs.rxd_cnt().read().rxd_edge_cnt().bits(),
+        int_raw: regs.int_raw().read().bits(),
+        st_urx_out: regs.fsm_status().read().st_urx_out().bits(),
+        conf0_rxfifo_rst: regs.conf0().read().rxfifo_rst().bit_is_set(),
+        u1rxd_in_sel: gpio.func_in_sel_cfg(U1RXD_SIGNAL).read().in_sel().bits(),
+        gpio5_high_samples,
+        uart_rxd_high_samples,
+        samples: SAMPLES,
     }
 }

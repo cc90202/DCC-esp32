@@ -39,9 +39,7 @@ enum CutoutState {
     WaitingToOpen = 1,
     WaitingCh1Open = 2,
     Ch1Open = 3,
-    // Value 4 is intentionally unused to preserve the historical wire/storage
-    // representation while making the gap explicit.
-    Ch2Open = 5,
+    Ch2Open = 4,
 }
 
 impl CutoutState {
@@ -55,7 +53,7 @@ impl CutoutState {
             1 => Some(Self::WaitingToOpen),
             2 => Some(Self::WaitingCh1Open),
             3 => Some(Self::Ch1Open),
-            5 => Some(Self::Ch2Open),
+            4 => Some(Self::Ch2Open),
             _ => None,
         }
     }
@@ -90,14 +88,15 @@ static CUTOUT_EVENT_SLOTS: [SeqSlot<3>; CUTOUT_EVENT_RING_CAPACITY] =
     [const { SeqSlot::new() }; CUTOUT_EVENT_RING_CAPACITY];
 static CUTOUT_EVENT_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 
-// Ring size for the packet_sequence -> RailCom metadata side channel.
-//
-// TODO(tuning): no recorded derivation for `64`. Observable constraint: a
-// consumer (e.g. `pom_dispatch`) must read back a given `packet_sequence`'s
-// metadata before that slot is recycled by 64 further cutouts; at typical
-// scheduler cadence that is on the order of seconds of slack, which is ample
-// for an Embassy task woken by a channel notification rather than polling.
-const RAILCOM_PACKET_META_CAPACITY: usize = 64;
+// Keep twice the event-ring depth so metadata for every retained event remains
+// available even if the consumer drains one full ring behind the producer.
+const RAILCOM_PACKET_META_CAPACITY: usize = CUTOUT_EVENT_RING_CAPACITY * 2;
+const _: () = assert!(RAILCOM_PACKET_META_CAPACITY >= CUTOUT_EVENT_RING_CAPACITY);
+
+/// How early the cutout-start timer fires so the handler can absorb
+/// interrupt-entry jitter (observed up to 29 µs under WiFi critical sections)
+/// by spin-waiting to the exact deadline.
+const CUTOUT_ARM_GUARD_US: u32 = 40;
 static RAILCOM_PACKET_META_SLOTS: [SeqSlot<3>; RAILCOM_PACKET_META_CAPACITY] =
     [const { SeqSlot::new() }; RAILCOM_PACKET_META_CAPACITY];
 
@@ -123,18 +122,14 @@ static PENDING_CUTOUT_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_METADATA: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_POM_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
 static CUTOUT_TIMER_ORIGIN_US: AtomicU32 = AtomicU32::new(0);
-static PENDING_PACKET_END_OFFSET_US: AtomicU32 = AtomicU32::new(0);
+static PENDING_REFERENCE_EDGE_OFFSET_US: AtomicU32 = AtomicU32::new(0);
 
 // `RAILCOM_WINDOW_PACKET_SEQUENCE`/`RAILCOM_WINDOW_CHANNEL` are a functional
 // guard, not telemetry: `close_realtime_window_from_isr` uses them to confirm
 // the window it is about to close still belongs to the window
 // `open_realtime_window_from_isr` most recently opened, before forwarding the
-// close to `isr_capture`'s FIFO read. A previously-existing
-// `RAILCOM_WINDOW_GENERATION`/`RAILCOM_WINDOW_ACTIVE` pair (plus a
-// `railcom_realtime_window_snapshot()` public accessor) tracked the same
-// open/close transitions purely for external observability and had no
-// callers anywhere in the crate (confirmed by grep before removal); it was
-// deleted here without touching this guard.
+// close to `isr_capture`'s FIFO read. Both values therefore participate in
+// correctness and must remain paired.
 static RAILCOM_WINDOW_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static RAILCOM_WINDOW_CHANNEL: AtomicU8 = AtomicU8::new(0);
 static TRACK_OUTPUT_HW: StaticCell<TrackOutputHwCell> = StaticCell::new();
@@ -262,6 +257,11 @@ impl TrackOutput {
         timer0: timg::Timer<'static>,
     ) -> Self {
         let mut cutout_timer = OneShotTimer::new(timer0);
+        // Same priority as the RMT ISR: the two handlers must not preempt each
+        // other (both reach TrackOutputHw). Interrupt-entry jitter (observed up
+        // to 29 µs under WiFi critical sections) is absorbed instead by arming
+        // deadlines CUTOUT_ARM_GUARD_US early and spin-waiting to the exact
+        // microsecond in the handler.
         cutout_timer.set_interrupt_handler(InterruptHandler::new(
             cutout_timer_interrupt.handler().aligned_ptr(),
             Priority::Priority3,
@@ -295,28 +295,26 @@ impl TrackOutput {
         TRACK_ENABLED.store(enabled, Ordering::Release);
 
         critical_section_with(|_| {
-            let Some(hw) = hw_mut() else {
-                return;
-            };
-
-            if !enabled {
-                stop_cutout_timer_fast(hw);
-                cutout_off_fast(hw);
-                enable_low_fast(hw);
-                store_cutout_state(CutoutState::Idle);
-            } else {
-                match CutoutState::from_u8(CUTOUT_STATE.load(Ordering::Acquire)) {
-                    Some(CutoutState::Idle) => enable_high_fast(hw),
-                    None => {
-                        CUTOUT
-                            .cutout_invalid_state_count
-                            .fetch_add(1, Ordering::Relaxed);
-                        store_cutout_state(CutoutState::Idle);
-                        enable_high_fast(hw);
+            with_hw_mut(|hw| {
+                if !enabled {
+                    stop_cutout_timer_fast(hw);
+                    cutout_off_fast(hw);
+                    enable_low_fast(hw);
+                    store_cutout_state(CutoutState::Idle);
+                } else {
+                    match CutoutState::from_u8(CUTOUT_STATE.load(Ordering::Acquire)) {
+                        Some(CutoutState::Idle) => enable_high_fast(hw),
+                        None => {
+                            CUTOUT
+                                .cutout_invalid_state_count
+                                .fetch_add(1, Ordering::Relaxed);
+                            store_cutout_state(CutoutState::Idle);
+                            enable_high_fast(hw);
+                        }
+                        Some(_) => {}
                     }
-                    Some(_) => {}
                 }
-            }
+            });
         });
     }
 
@@ -335,19 +333,18 @@ impl TrackOutput {
 pub fn emergency_disable() -> bool {
     TRACK_ENABLED.store(false, Ordering::Release);
     critical_section_with(|_| {
-        let Some(hw) = hw_mut() else {
-            return false;
-        };
-        stop_cutout_timer_fast(hw);
-        cutout_off_fast(hw);
-        enable_low_fast(hw);
-        store_cutout_state(CutoutState::Idle);
-        true
+        with_hw_mut(|hw| {
+            stop_cutout_timer_fast(hw);
+            cutout_off_fast(hw);
+            enable_low_fast(hw);
+            store_cutout_state(CutoutState::Idle);
+        })
+        .is_some()
     })
 }
 
 #[inline(always)]
-fn hw_mut() -> Option<&'static mut TrackOutputHw> {
+fn with_hw_mut<R>(operation: impl FnOnce(&mut TrackOutputHw) -> R) -> Option<R> {
     if !TRACK_OUTPUT_HW_READY.load(Ordering::Acquire) {
         None
     } else {
@@ -358,14 +355,13 @@ fn hw_mut() -> Option<&'static mut TrackOutputHw> {
         // SAFETY: `TrackOutputHwCell` documents the singleton ownership invariant.
         // `CUTOUT_STATE` remains non-idle until every ISR-side hardware access is
         // complete, preventing RMT from entering while TIMG owns the hardware.
-        Some(unsafe { &mut *(*ptr).0.get() })
+        // The closure boundary prevents the mutable reference from escaping.
+        Some(operation(unsafe { &mut *(*ptr).0.get() }))
     }
 }
 
-// NOTE: These `*_fast()` wrappers intentionally isolate the ISR/timer critical path.
-// Today they still use esp-hal internally; if future multi-loco/WiFi stress tests show
-// timing margin issues, only these wrappers should be rewritten to more direct
-// register-level access. Keep policy and branching out of this layer.
+// These `*_fast()` wrappers are the hardware-only boundary of the ISR/timer
+// critical path. Policy and branching stay outside this layer.
 #[inline(always)]
 fn enable_low_fast(hw: &mut TrackOutputHw) {
     hw.enable.set_low();
@@ -577,40 +573,47 @@ pub fn request_cutout_from_isr(request: CutoutRequest) -> bool {
         }
     }
 
-    let Some(hw) = hw_mut() else {
+    let Some(scheduled) = with_hw_mut(|hw| {
+        stop_cutout_timer_fast(hw);
+        clear_cutout_timer_interrupt_fast(hw);
+        // Keep GPIO18/SLEEP unchanged during RailCom. The DRV8874 sleep/wake path
+        // is too slow for the sub-millisecond cutout, so GPIO4 owns this sequence.
+        cutout_off_fast(hw);
+        let metadata_raw =
+            PackedRailcomPacketMetadata::new(target_address, cutout, pom_request_id).raw();
+        let pom_request_id_raw = pom_request_id.map_or(0, PomRequestId::value);
+        PENDING_CUTOUT_PACKET_SEQUENCE.store(packet_sequence.value(), Ordering::Release);
+        PENDING_CUTOUT_METADATA.store(metadata_raw, Ordering::Release);
+        PENDING_CUTOUT_POM_REQUEST_ID.store(pom_request_id_raw, Ordering::Release);
+        record_railcom_packet_metadata_from_isr(packet_sequence, metadata_raw, pom_request_id_raw);
+
+        let reference_edge_offset_us =
+            CutoutTimeline::new(dcc_packet_duration_us).reference_edge_from_packet_start_us();
+        PENDING_REFERENCE_EDGE_OFFSET_US.store(reference_edge_offset_us, Ordering::Release);
+        // Arm the timer early: interrupt entry can be held off for tens of µs by
+        // global critical sections (WiFi driver), far beyond the 6 µs RCN-217
+        // tolerance. The handler then spin-waits the residual time and flips GPIO4
+        // on the exact microsecond.
+        let cutout_start_deadline = reference_edge_offset_us + CUTOUT_CONTROL_START_US;
+        let armed_deadline = cutout_start_deadline.saturating_sub(CUTOUT_ARM_GUARD_US);
+        if schedule_cutout_deadline_fast(hw, armed_deadline) {
+            true
+        } else {
+            cutout_off_fast(hw);
+            CUTOUT
+                .cutout_schedule_fail_count
+                .fetch_add(1, Ordering::Relaxed);
+            store_cutout_state(CutoutState::Idle);
+            false
+        }
+    }) else {
         store_cutout_state(CutoutState::Idle);
         CUTOUT
             .cutout_skipped_disabled_count
             .fetch_add(1, Ordering::Relaxed);
         return false;
     };
-    stop_cutout_timer_fast(hw);
-    clear_cutout_timer_interrupt_fast(hw);
-    // Keep GPIO18/SLEEP unchanged during RailCom. The DRV8874 sleep/wake path
-    // is too slow for the sub-millisecond cutout, so GPIO4 owns this sequence.
-    cutout_off_fast(hw);
-    let metadata_raw =
-        PackedRailcomPacketMetadata::new(target_address, cutout, pom_request_id).raw();
-    let pom_request_id_raw = pom_request_id.map_or(0, PomRequestId::value);
-    PENDING_CUTOUT_PACKET_SEQUENCE.store(packet_sequence.value(), Ordering::Release);
-    PENDING_CUTOUT_METADATA.store(metadata_raw, Ordering::Release);
-    PENDING_CUTOUT_POM_REQUEST_ID.store(pom_request_id_raw, Ordering::Release);
-    record_railcom_packet_metadata_from_isr(packet_sequence, metadata_raw, pom_request_id_raw);
-
-    let packet_end_offset_us =
-        CutoutTimeline::new(dcc_packet_duration_us).packet_end_from_packet_start_us();
-    PENDING_PACKET_END_OFFSET_US.store(packet_end_offset_us, Ordering::Release);
-    let cutout_start_deadline = packet_end_offset_us + CUTOUT_CONTROL_START_US;
-    if schedule_cutout_deadline_fast(hw, cutout_start_deadline) {
-        true
-    } else {
-        cutout_off_fast(hw);
-        CUTOUT
-            .cutout_schedule_fail_count
-            .fetch_add(1, Ordering::Relaxed);
-        store_cutout_state(CutoutState::Idle);
-        false
-    }
+    scheduled
 }
 
 /// Returns a copy of the current cutout statistics.
@@ -680,104 +683,113 @@ pub fn cutout_event_notify_receiver() -> Receiver<'static, CriticalSectionRawMut
 #[handler(priority = Priority::Priority3)]
 #[ram]
 fn cutout_timer_interrupt() {
-    let Some(hw) = hw_mut() else {
-        return;
-    };
+    with_hw_mut(|hw| {
+        clear_cutout_timer_interrupt_fast(hw);
+        stop_cutout_timer_fast(hw);
 
-    clear_cutout_timer_interrupt_fast(hw);
-    stop_cutout_timer_fast(hw);
-
-    let raw_state = CUTOUT_STATE.load(Ordering::Acquire);
-    match CutoutState::from_u8(raw_state) {
-        Some(CutoutState::WaitingToOpen) => {
-            let cutout_start_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + CUTOUT_CONTROL_START_US;
-            record_deadline_lateness(cutout_start_deadline);
-            cutout_on_fast(hw);
-            let capture_start_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
-            if schedule_cutout_deadline_fast(hw, capture_start_deadline) {
-                store_cutout_state(CutoutState::WaitingCh1Open);
-            } else {
+        let raw_state = CUTOUT_STATE.load(Ordering::Acquire);
+        match CutoutState::from_u8(raw_state) {
+            Some(CutoutState::WaitingToOpen) => {
+                // The timer fired CUTOUT_ARM_GUARD_US early; spin until the exact
+                // cutout-start instant so interrupt-entry jitter cannot push the
+                // short outside the RCN-217 26-32 µs window, then flip GPIO4.
+                let cutout_start_deadline = PENDING_REFERENCE_EDGE_OFFSET_US
+                    .load(Ordering::Acquire)
+                    + CUTOUT_CONTROL_START_US;
+                let origin_us = CUTOUT_TIMER_ORIGIN_US.load(Ordering::Acquire);
+                while now_us().wrapping_sub(origin_us) < cutout_start_deadline {
+                    core::hint::spin_loop();
+                }
+                cutout_on_fast(hw);
+                record_deadline_lateness(cutout_start_deadline);
+                let capture_start_deadline =
+                    PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
+                if schedule_cutout_deadline_fast(hw, capture_start_deadline) {
+                    store_cutout_state(CutoutState::WaitingCh1Open);
+                } else {
+                    cutout_off_fast(hw);
+                    CUTOUT
+                        .cutout_schedule_fail_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    store_cutout_state(CutoutState::Idle);
+                }
+            }
+            Some(CutoutState::WaitingCh1Open) => {
+                let packet_sequence =
+                    PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
+                let capture_start_deadline =
+                    PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
+                record_deadline_lateness(capture_start_deadline);
+                let split_deadline =
+                    PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
+                if schedule_cutout_deadline_guarded_fast(hw, split_deadline) {
+                    store_cutout_state(CutoutState::Ch1Open);
+                    open_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
+                    let pending_metadata = PackedRailcomPacketMetadata::from_raw(
+                        PENDING_CUTOUT_METADATA.load(Ordering::Acquire),
+                    );
+                    push_cutout_event_from_isr(CutoutRuntimeEvent::Opened {
+                        packet_sequence,
+                        cutout: pending_metadata.cutout(),
+                        target_address: pending_metadata.target_address(),
+                        pom_request_id: pending_metadata
+                            .pom_request_id(PENDING_CUTOUT_POM_REQUEST_ID.load(Ordering::Acquire)),
+                    });
+                    CUTOUT.cutout_started_count.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    cutout_off_fast(hw);
+                    CUTOUT
+                        .cutout_schedule_fail_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    store_cutout_state(CutoutState::Idle);
+                }
+            }
+            Some(CutoutState::Ch1Open) => {
+                let packet_sequence =
+                    PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
+                let split_deadline =
+                    PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
+                wait_until_cutout_offset(split_deadline);
+                record_deadline_lateness(split_deadline);
+                let channel2_end_deadline =
+                    PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
+                if schedule_cutout_deadline_guarded_fast(hw, channel2_end_deadline) {
+                    store_cutout_state(CutoutState::Ch2Open);
+                    close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
+                    open_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
+                } else {
+                    cutout_off_fast(hw);
+                    close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
+                    CUTOUT
+                        .cutout_schedule_fail_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    store_cutout_state(CutoutState::Idle);
+                }
+            }
+            Some(CutoutState::Ch2Open) => {
+                let packet_sequence =
+                    PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
+                let channel2_end_deadline =
+                    PENDING_REFERENCE_EDGE_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
+                wait_until_cutout_offset(channel2_end_deadline);
+                // Re-enable the DCC drive first: the RMT padding ends at this very
+                // instant and the next preamble bit is already on the wire, so any
+                // bookkeeping done before the flip truncates its first half.
                 cutout_off_fast(hw);
-                CUTOUT
-                    .cutout_schedule_fail_count
-                    .fetch_add(1, Ordering::Relaxed);
+                record_deadline_lateness(channel2_end_deadline);
+                close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
+                CUTOUT.cutout_ended_count.fetch_add(1, Ordering::Relaxed);
+                store_cutout_state(CutoutState::Idle);
+            }
+            Some(CutoutState::Idle) | None => {
+                if CutoutState::from_u8(raw_state).is_none() {
+                    CUTOUT
+                        .cutout_invalid_state_count
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                cutout_off_fast(hw);
                 store_cutout_state(CutoutState::Idle);
             }
         }
-        Some(CutoutState::WaitingCh1Open) => {
-            let packet_sequence =
-                PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
-            let capture_start_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CAPTURE_START_US;
-            record_deadline_lateness(capture_start_deadline);
-            let split_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
-            if schedule_cutout_deadline_guarded_fast(hw, split_deadline) {
-                store_cutout_state(CutoutState::Ch1Open);
-                open_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
-                let pending_metadata = PackedRailcomPacketMetadata::from_raw(
-                    PENDING_CUTOUT_METADATA.load(Ordering::Acquire),
-                );
-                push_cutout_event_from_isr(CutoutRuntimeEvent::Opened {
-                    packet_sequence,
-                    cutout: pending_metadata.cutout(),
-                    target_address: pending_metadata.target_address(),
-                    pom_request_id: pending_metadata
-                        .pom_request_id(PENDING_CUTOUT_POM_REQUEST_ID.load(Ordering::Acquire)),
-                });
-                CUTOUT.cutout_started_count.fetch_add(1, Ordering::Relaxed);
-            } else {
-                cutout_off_fast(hw);
-                CUTOUT
-                    .cutout_schedule_fail_count
-                    .fetch_add(1, Ordering::Relaxed);
-                store_cutout_state(CutoutState::Idle);
-            }
-        }
-        Some(CutoutState::Ch1Open) => {
-            let packet_sequence =
-                PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
-            let split_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + RX_CHANNEL_SPLIT_US;
-            wait_until_cutout_offset(split_deadline);
-            record_deadline_lateness(split_deadline);
-            let channel2_end_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
-            if schedule_cutout_deadline_guarded_fast(hw, channel2_end_deadline) {
-                store_cutout_state(CutoutState::Ch2Open);
-                close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
-                open_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
-            } else {
-                cutout_off_fast(hw);
-                close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
-                CUTOUT
-                    .cutout_schedule_fail_count
-                    .fetch_add(1, Ordering::Relaxed);
-                store_cutout_state(CutoutState::Idle);
-            }
-        }
-        Some(CutoutState::Ch2Open) => {
-            let packet_sequence =
-                PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
-            let channel2_end_deadline =
-                PENDING_PACKET_END_OFFSET_US.load(Ordering::Acquire) + CHANNEL2_END_US;
-            wait_until_cutout_offset(channel2_end_deadline);
-            record_deadline_lateness(channel2_end_deadline);
-            close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel2);
-            cutout_off_fast(hw);
-            CUTOUT.cutout_ended_count.fetch_add(1, Ordering::Relaxed);
-            store_cutout_state(CutoutState::Idle);
-        }
-        Some(CutoutState::Idle) | None => {
-            if CutoutState::from_u8(raw_state).is_none() {
-                CUTOUT
-                    .cutout_invalid_state_count
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            cutout_off_fast(hw);
-            store_cutout_state(CutoutState::Idle);
-        }
-    }
+    });
 }

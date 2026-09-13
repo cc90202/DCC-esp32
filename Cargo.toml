@@ -8,6 +8,19 @@ version      = "0.1.0"
 [features]
 default = []
 
+# Bench diagnostics: per-window and per-command defmt logging plus the periodic
+# RailCom counter dump.
+#
+# Off by default on purpose. Every defmt line is emitted inside a critical
+# section (esp-println takes the global logger lock, disables interrupts, then
+# writes the frame to the USB-serial FIFO, spinning if the FIFO is full). The
+# DCC waveform ISR and the RailCom cutout timer both run at Priority3, so a log
+# line on a per-packet path adds interrupt latency exactly where cutout timing
+# is measured in microseconds. Enable only for bench sessions:
+#
+#     cargo run --release --features bench-diag
+bench-diag = []
+
 [[bin]]
 name = "dcc-esp32"
 path = "./src/bin/main.rs"
@@ -58,6 +71,7 @@ embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 [dev-dependencies]
 # For running tests on host platform
 heapless = "0.9"
+embassy-futures = "0.1.2"
 embassy-sync = "0.7.2"
 embassy-time = { version = "0.5.0", features = ["std", "generic-queue-8"] }
 

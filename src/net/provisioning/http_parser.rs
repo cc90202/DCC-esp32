@@ -301,9 +301,8 @@ mod tests {
 
     #[test]
     fn realistic_phone_browser_request_is_accepted() {
-        // Regression: an Android Chrome GET / with client hints was bounced
-        // with 431 by the previous 128-byte line / 16-header / 768-byte
-        // section limits.
+        // A realistic Android Chrome request includes enough client-hint
+        // metadata to exercise the supported header limits.
         let request = concat!(
             "GET / HTTP/1.1\r\n",
             "Host: 192.168.4.1\r\n",

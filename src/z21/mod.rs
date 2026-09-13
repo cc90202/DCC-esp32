@@ -30,7 +30,9 @@
 //! - `RailcomGetData`: poll the cached RailCom data
 //! - `GetTurnoutInfo`: accessory decoder state, always answered as unknown
 
-use crate::dcc::{DccAddress, Direction, LogicalSpeed, SpeedFormat};
+use core::fmt;
+
+use crate::dcc::{DccAddress, Direction, FunctionState, LogicalSpeed, SpeedFormat};
 
 mod encoding;
 mod parsing;
@@ -45,8 +47,11 @@ pub use encoding::{
     encode_turnout_info, encode_unknown_command, encode_xbus_version,
 };
 pub use parsing::{FrameBoundaryError, FrameIter, frame_kind, iter_frames, parse_frame};
+// Read only by the bench diagnostics datagram log; see `bench-diag`.
+#[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+pub(crate) use wire::HEADER_SYSTEMSTATE_GETDATA;
 #[cfg(target_arch = "riscv32")]
-pub(crate) use wire::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
+pub(crate) use wire::HEADER_XBUS;
 
 /// Locomotive state required to encode a `LAN_X_LOCO_INFO` frame.
 ///
@@ -59,7 +64,7 @@ pub struct LocoInfo {
     pub address: DccAddress,
     pub speed: LogicalSpeed,
     pub direction: Direction,
-    pub functions: u32,
+    pub functions: FunctionState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,3 +179,20 @@ pub enum ParseError {
     InvalidFunctionAction,
     InvalidCvAddress,
 }
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::FrameTooShort => "Z21 frame is too short",
+            Self::LenMismatch => "Z21 frame length does not match its header",
+            Self::BadXBusChecksum => "Z21 X-Bus checksum is invalid",
+            Self::InvalidAddress => "Z21 locomotive address is invalid",
+            Self::InvalidFunction => "Z21 locomotive function is invalid",
+            Self::InvalidFunctionAction => "Z21 function action is invalid",
+            Self::InvalidCvAddress => "Z21 CV address is invalid",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl core::error::Error for ParseError {}

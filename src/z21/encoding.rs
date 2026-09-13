@@ -61,7 +61,7 @@ pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> Option<usize> {
     out[8] = dir_bit | (wire_speed & 0x7F);
 
     // DB4: 0DSLFGHJ, D=double traction(0), S=smartsearch(0), L=F0, F=F4, G=F3, H=F2, J=F1
-    let f = state.functions;
+    let f = state.functions.bits();
     let f0 = (f & 1) as u8;
     let f1 = ((f >> 1) & 1) as u8;
     let f2 = ((f >> 2) & 1) as u8;

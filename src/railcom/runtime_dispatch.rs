@@ -8,16 +8,18 @@ use defmt::{info, warn};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
+#[cfg(feature = "bench-diag")]
+use crate::cutout::CutoutMode;
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
+use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::RailcomLocoSighting;
 use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
 use crate::railcom::pipeline::{
-    PacketSequence, RailcomChannel, RailcomRxResult, record_pom_result_dropped,
-    record_pom_result_forwarded,
+    RailcomRxResult, record_pom_result_dropped, record_pom_result_forwarded,
 };
 use crate::railcom::pom_dispatch::evaluate_pom_window;
 use crate::railcom::uart_reader::RailcomRxOutput;
-use crate::railcom_data::RailcomItem;
+use crate::railcom::{PacketSequence, RailcomChannel, RailcomItem};
 use crate::track_output::RailcomPacketMetadata;
 
 #[derive(Default)]
@@ -139,12 +141,14 @@ fn forward_pom_result(
     complete_items: &[RailcomItem],
     pom_result_sender: Sender<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
 ) {
-    let Some(pom_result) = evaluate_pom_window(
+    let pom_result = evaluate_pom_window(
         result.window.packet_sequence,
         result.window.channel,
         packet_metadata,
         complete_items,
-    ) else {
+    );
+    log_pom_window(result, packet_metadata, complete_items, pom_result.as_ref());
+    let Some(pom_result) = pom_result else {
         return;
     };
 
@@ -152,6 +156,56 @@ fn forward_pom_result(
         record_pom_result_forwarded();
     } else {
         record_pom_result_dropped();
+    }
+}
+
+/// Bench diagnostic: every channel-2 window of a POM cutout, with what the
+/// parser made of it and what reached the POM actor. The periodic raw dump
+/// samples one window in a hundred, which never shows the windows of a
+/// read that times out.
+///
+/// Compiled out unless `bench-diag` is enabled. This one is unthrottled and
+/// fires during the very reads whose cutout timing we measure, and a defmt
+/// line holds a critical section for its whole duration.
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its arguments when bench diagnostics are disabled"
+    )
+)]
+fn log_pom_window(
+    result: &RailcomRxResult,
+    packet_metadata: Option<RailcomPacketMetadata>,
+    complete_items: &[RailcomItem],
+    pom_result: Option<&PomRailcomResult>,
+) {
+    bench_diag! {
+        let Some(metadata) = packet_metadata else {
+            return;
+        };
+        if result.window.channel != RailcomChannel::Channel2
+            || !matches!(metadata.cutout, CutoutMode::PomRead | CutoutMode::PomWrite)
+        {
+            return;
+        }
+        let (value, ack, nack) = match pom_result {
+            Some(PomRailcomResult::Window {
+                value, ack, nack, ..
+            }) => (*value, *ack, *nack),
+            _ => (None, false, false),
+        };
+        info!(
+            "railcom pom ch2 seq={} req={:?} raw={=[u8]:#04x} outcome={:?} items={} value={:?} ack={} nack={}",
+            result.window.packet_sequence.value(),
+            metadata.pom_request_id,
+            result.window.raw_slice(),
+            result.outcome,
+            complete_items.len(),
+            value,
+            ack,
+            nack
+        );
     }
 }
 

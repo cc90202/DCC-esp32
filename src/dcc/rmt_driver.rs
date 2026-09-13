@@ -30,7 +30,7 @@ use esp_hal::rmt::{Channel as RmtChannel, ContinuousTxTransaction, LoopMode, Pul
 use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
-use crate::cutout::timing::CUTOUT_CONTROL_END_US;
+use crate::cutout::timing::{CUTOUT_CONTROL_END_US, PREAMBLE_STUB_US};
 use crate::cutout::{CutoutMode, PacketSequence};
 use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US, PREAMBLE_RMT_OFFSET};
 use crate::dcc::{DccAddress, PomRequestId};
@@ -51,6 +51,11 @@ const RMT_CHANNEL_RAM_SIZE: usize = 48;
 const RMT_CHANNEL_INDEX: usize = 0;
 const RMT_CHANNEL_MEM_BLOCKS: usize = 3;
 const RMT_CHANNEL_TOTAL_RAM_SIZE: usize = RMT_CHANNEL_RAM_SIZE * RMT_CHANNEL_MEM_BLOCKS;
+// The padding covers the whole cutout window (reference edge to
+// CUTOUT_CONTROL_END_US), so the RMT loop wraps into the next preamble exactly
+// when GPIO4 re-enables the DCC drive. Its first PREAMBLE_STUB_US are driven
+// HIGH: that transition after the fully emitted end bit is the RCN-217
+// reference edge the decoder times the cutout against.
 const CUTOUT_PADDING_US: u32 = CUTOUT_CONTROL_END_US;
 const PACKET_SLOT_COUNT: usize = 2;
 const PACKET_SLOT_A: u8 = 0;
@@ -126,12 +131,29 @@ pub enum InitError {
     InterruptEnable,
 }
 
+impl core::fmt::Display for InitError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let message = match self {
+            Self::InvalidIdleWaveform => "invalid idle waveform for RMT driver",
+            Self::StartContinuousTx => "failed to start continuous RMT transmission",
+            Self::InterruptEnable => "failed to enable the RMT interrupt",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl core::error::Error for InitError {}
+
 /// Timing observed inside the RMT packet-boundary interrupt.
 ///
 /// These are diagnostic maxima in microseconds. They describe software
 /// service time, not the hardware-generated DCC or GPIO4 waveform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "read only by the optional bench diagnostics task")
+)]
 pub(crate) struct RmtTimingStats {
     pub max_isr_duration_us: u32,
     pub max_cutout_request_latency_us: u32,
@@ -150,6 +172,10 @@ static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_m
 static RMT_TX_KEEPALIVE: StaticCell<ManuallyDrop<ContinuousTxTransaction<'static>>> =
     StaticCell::new();
 
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(dead_code, reason = "read only by the optional bench diagnostics task")
+)]
 #[must_use]
 pub(crate) fn timing_stats() -> RmtTimingStats {
     RmtTimingStats {
@@ -432,17 +458,17 @@ fn write_data_to_rmt_ram(data: &[PulseCode], cutout_allowed: bool) {
 
     let end_offset = data.len() + usize::from(cutout_allowed);
     if cutout_allowed {
-        // Keep the DCC RMT output low until the GPIO4 control pulse rises at
-        // the RCN-217 channel-2 end. The next loop then starts a fresh
-        // preamble. The external RC logic keeps the DRV8874 disabled for a few
-        // more microseconds, so only the first preamble pulse can be partial on
-        // the physical track; the remaining 19 preamble bits stay intact.
+        // Drive the first preamble half for PREAMBLE_STUB_US — the flip after
+        // the end bit is the decoder's cutout reference edge — then keep the
+        // output low until GPIO4 rises at the RCN-217 channel-2 end. The next
+        // loop then continues with a fresh 20-bit preamble, satisfying the
+        // RCN-211 sync-bit budget the cutout consumes.
         unsafe {
             base.add(data.len()).write_volatile(PulseCode::new(
+                Level::High,
+                PREAMBLE_STUB_US as u16,
                 Level::Low,
-                (CUTOUT_PADDING_US - 1) as u16,
-                Level::Low,
-                1,
+                (CUTOUT_PADDING_US - PREAMBLE_STUB_US) as u16,
             ));
         }
     }

@@ -1,11 +1,16 @@
 //! Thin Embassy task adapters used by the boot composition root.
 
-use defmt::info;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
 use esp_hal::uart::UartRx;
 
-use crate::cutout::RailcomChannel;
+// Used only by the bench diagnostics dump task below.
+#[cfg(feature = "bench-diag")]
+use {
+    crate::railcom::RailcomChannel,
+    defmt::info,
+    embassy_time::{Duration, Timer},
+};
+
 use crate::dcc::{PowerGeneration, packet_scheduler_task};
 use crate::dcc_runtime::dcc_engine_task;
 use crate::net::udp_control::{NetTaskChannels, net_task};
@@ -113,6 +118,14 @@ pub(super) async fn railcom_isr_capture_task_wrapper(
     crate::railcom_capture::railcom_isr_capture_task(uart_rx, result_sender).await
 }
 
+/// Bench diagnostic: periodic dump of the RailCom, POM and network counters.
+///
+/// Compiled out unless `bench-diag` is enabled. The line carries ~50 fields,
+/// far more than the 64-byte USB-serial FIFO, and defmt writes the whole frame
+/// inside one critical section: when the FIFO fills, the writer spins with
+/// interrupts disabled until the host drains it. The counters themselves are
+/// always maintained; only this dump is gated.
+#[cfg(feature = "bench-diag")]
 #[embassy_executor::task]
 pub(super) async fn railcom_diag_task() -> ! {
     loop {
@@ -125,6 +138,8 @@ pub(super) async fn railcom_diag_task() -> ! {
         let loco_command_rejected = crate::net::loco_command_rejected_count();
         let status_broadcast_send_failure = crate::net::status_broadcast_send_failure_count();
         let udp_receive_failure = crate::net::udp_receive_failure_count();
+        let uart_raw = crate::railcom_capture::uart1_raw_diag();
+        info!("railcom uart1 raw: {:?}", uart_raw);
 
         info!(
             "railcom diag: boundary={} rmt_isr_max_us={} rmt_cutout_request_max_us={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} stale_recovery={} invalid_state={} deadline_late_max_us={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_oversized={} rx_overflow={} pom_forwarded={} pom_dropped={} pom_tx_timeout={} pom_response_timeout={} pom_stale={} pom_wrong_target={} getdata_no_data={} loco_response_timeout={} loco_command_rejected={} status_broadcast_send_failure={} udp_receive_failure={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",

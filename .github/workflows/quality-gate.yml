@@ -3,7 +3,7 @@ name: quality-gate
 on:
   pull_request:
   push:
-    branches: [ main ]
+    branches: [ develop, main ]
   workflow_dispatch:
 
 concurrency:
@@ -46,3 +46,8 @@ jobs:
 
       - name: Clippy riscv32 lib
         run: cargo clippy --lib --target riscv32imac-unknown-none-elf -- -D warnings
+
+      # Compiles the bench-diag configuration, whose call sites all live in
+      # firmware-only modules and are therefore never built by the host jobs.
+      - name: Clippy riscv32 bench-diag
+        run: cargo clippy-esp -- -D warnings

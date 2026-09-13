@@ -1,10 +1,11 @@
+use core::fmt;
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
 
 use crate::diagnostics::diagnostic_counters;
 
-pub use crate::cutout::{PacketSequence, RailcomChannel};
+use crate::cutout::{PacketSequence, RailcomChannel};
 
 use crate::railcom::parser::{
     ParseError, RailcomParseResult, RailcomParseStatus, parse_channel1, parse_channel2,
@@ -62,6 +63,22 @@ pub(crate) const MAX_RAILCOM_WINDOW_BYTES: usize = 6;
 pub enum RailcomRxWindowError {
     WindowTooLong { provided_len: usize, max_len: usize },
 }
+
+impl fmt::Display for RailcomRxWindowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WindowTooLong {
+                provided_len,
+                max_len,
+            } => write!(
+                formatter,
+                "RailCom window has {provided_len} bytes; maximum is {max_len}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for RailcomRxWindowError {}
 
 /// One logical RailCom receive window.
 ///
@@ -166,7 +183,7 @@ pub fn railcom_rx_stats() -> RailcomRxStats {
     RAILCOM_RX.snapshot()
 }
 
-/// Per-channel receive counters, indexed by [`RailcomChannel::index`].
+/// Per-channel receive counters, ordered as channel 1 followed by channel 2.
 #[must_use]
 pub fn railcom_rx_channel_stats() -> [RailcomChannelStats; RAILCOM_CHANNEL_COUNT] {
     core::array::from_fn(|index| RX_CHANNEL[index].snapshot())
@@ -292,7 +309,8 @@ fn record_parsed_items(items: &[RailcomItem]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE, RailcomDatagram};
+    use crate::railcom::RailcomDatagram;
+    use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE};
     use std::sync::Mutex;
 
     const TEST_ID0_CODE_0X42: [u8; 2] = [0b1010_1010, 0b1010_1001];
@@ -322,7 +340,7 @@ mod tests {
             .lock()
             .expect("test lock poisoned");
         reset_railcom_rx_stats();
-        let raw = [ACK_1_CODE, TEST_ID0_CODE_0X42[0], TEST_ID0_CODE_0X42[1]];
+        let raw = [TEST_ID0_CODE_0X42[0], TEST_ID0_CODE_0X42[1], ACK_1_CODE];
         let window = RailcomRxWindow::try_new(11, RailcomChannel::Channel2, &raw)
             .expect("raw window must fit");
         let result = process_rx_window(window);
@@ -331,8 +349,8 @@ mod tests {
         assert_eq!(
             result.items.as_slice(),
             &[
-                RailcomItem::Ack,
                 RailcomItem::Datagram(RailcomDatagram::CvData(0x42)),
+                RailcomItem::Ack,
             ]
         );
         assert_eq!(result.complete_items(), result.items.as_slice());
@@ -349,7 +367,12 @@ mod tests {
             .lock()
             .expect("test lock poisoned");
         reset_railcom_rx_stats();
-        let raw = [ACK_1_CODE, 0b1011_0010, 0b1010_1100];
+        let raw = [
+            TEST_ID0_CODE_0X42[0],
+            TEST_ID0_CODE_0X42[1],
+            0b1011_0010,
+            0b1010_1100,
+        ];
         let window = RailcomRxWindow::try_new(21, RailcomChannel::Channel2, &raw)
             .expect("raw window must fit");
         let result = process_rx_window(window);
@@ -358,7 +381,10 @@ mod tests {
             result.outcome,
             RailcomRxOutcome::PartialUnsupportedDatagram(4)
         );
-        assert_eq!(result.items.as_slice(), &[RailcomItem::Ack]);
+        assert_eq!(
+            result.items.as_slice(),
+            &[RailcomItem::Datagram(RailcomDatagram::CvData(0x42))]
+        );
         assert!(result.complete_items().is_empty());
         assert_eq!(railcom_rx_stats().rx_parse_ok_count, 1);
         assert_eq!(railcom_rx_stats().rx_parse_err_count, 0);
@@ -439,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn test_process_rx_window_channel1_accepts_ack() {
+    fn test_invalid_channel1_does_not_discard_valid_channel2() {
         let _guard = RAILCOM_RX_STATS_TEST_LOCK
             .lock()
             .expect("test lock poisoned");
@@ -448,14 +474,25 @@ mod tests {
             .expect("single-byte CH1 window must fit");
         let result = process_rx_window(window);
 
-        assert_eq!(result.outcome, RailcomRxOutcome::Parsed);
-        assert_eq!(result.items.as_slice(), &[RailcomItem::Ack]);
+        assert_eq!(
+            result.outcome,
+            RailcomRxOutcome::ParseError(ParseError::ControlSymbolNotAllowed(ACK_2_CODE))
+        );
+        assert!(result.complete_items().is_empty());
         let stats = railcom_rx_stats();
-        assert_eq!(stats.rx_parse_ok_count, 1);
-        assert_eq!(stats.rx_parse_err_count, 0);
+        assert_eq!(stats.rx_parse_ok_count, 0);
+        assert_eq!(stats.rx_parse_err_count, 1);
         let channels = railcom_rx_channel_stats();
         assert_eq!(channels[RailcomChannel::Channel1.index()].window_count, 1);
-        assert_eq!(stats.rx_ack_count, 1);
+        assert_eq!(stats.rx_ack_count, 0);
+        let ch2 = process_rx_window(
+            RailcomRxWindow::try_new(19, RailcomChannel::Channel2, &TEST_ID0_CODE_0X42).unwrap(),
+        );
+        assert_eq!(ch2.outcome, RailcomRxOutcome::Parsed);
+        assert_eq!(
+            ch2.complete_items(),
+            &[RailcomItem::Datagram(RailcomDatagram::CvData(0x42))]
+        );
     }
 
     #[test]

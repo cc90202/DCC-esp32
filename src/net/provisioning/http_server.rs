@@ -5,7 +5,7 @@ use core::fmt::Write as _;
 use defmt::{info, warn};
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use static_cell::StaticCell;
 
 use crate::net::wifi_config::WifiCredentialsStore;
@@ -122,6 +122,7 @@ enum RequestOutcome {
 async fn read_request(socket: &mut TcpSocket<'_>) -> RequestOutcome {
     let mut request = [0u8; MAX_REQUEST_BYTES];
     let mut len = 0usize;
+    let deadline = Instant::now() + SOCKET_TIMEOUT;
 
     loop {
         match parse_request(&request[..len]) {
@@ -134,7 +135,11 @@ async fn read_request(socket: &mut TcpSocket<'_>) -> RequestOutcome {
             Err(error) => return RequestOutcome::Invalid(error),
         }
 
-        match with_timeout(SOCKET_TIMEOUT, socket.read(&mut request[len..])).await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining == Duration::MIN {
+            return RequestOutcome::Timeout;
+        }
+        match with_timeout(remaining, socket.read(&mut request[len..])).await {
             Err(_) => return RequestOutcome::Timeout,
             Ok(Err(_)) => return RequestOutcome::Disconnected,
             // Peer closed before completing the request.

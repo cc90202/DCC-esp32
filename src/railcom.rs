@@ -16,6 +16,9 @@ pub(crate) mod runtime_dispatch;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod uart_reader;
 
+pub use crate::cutout::{PacketSequence, RailcomChannel};
+pub use crate::railcom_data::{RailcomDatagram, RailcomItem};
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(target_arch = "riscv32")]
@@ -30,11 +33,9 @@ use crate::railcom::pipeline::{
 #[cfg(target_arch = "riscv32")]
 use crate::track_output::{TrackOutputStats, stats as track_output_stats};
 
-// A global atomic is the only viable mechanism for ISR ↔ task communication on
-// this target: the ISR cannot receive injected dependencies, and
-// `embassy_sync` primitives are not safe to use from a hardware interrupt
-// context. Relaxed ordering is sufficient: the boundary counter is advisory
-// telemetry, not a synchronisation point.
+// A global atomic is the smallest sufficient mechanism for this single counter
+// shared between the ISR and tasks. Relaxed ordering is sufficient: the value
+// is advisory telemetry, not a synchronisation point.
 static PACKET_BOUNDARY_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Snapshot of RMT boundary telemetry counters.
@@ -84,7 +85,7 @@ pub struct RailcomDiagnostics {
     pub track_output: TrackOutputStats,
     #[cfg(target_arch = "riscv32")]
     pub rx: RailcomRxStats,
-    /// Per-channel receive counters, indexed by `RailcomChannel::index`.
+    /// Per-channel receive counters, ordered as channel 1 followed by channel 2.
     #[cfg(target_arch = "riscv32")]
     pub rx_channels: [RailcomChannelStats; RAILCOM_CHANNEL_COUNT],
     #[cfg(target_arch = "riscv32")]

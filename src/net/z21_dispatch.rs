@@ -3,11 +3,14 @@
 //! ESP32-C6 only; command behavior lives in focused controllers below this
 //! module, while POM delegates to its existing scheduler/RailCom adapter.
 
-use defmt::{info, warn};
+#[cfg(feature = "bench-diag")]
+use defmt::info;
+use defmt::warn;
 
 use crate::application::LocoSlots;
 use crate::application::client_safety::LeaseActivity;
 use crate::application::track_control::TrackPowerRequest;
+use crate::macros::bench_diag;
 use crate::net::z21_context::Z21Ctx;
 use crate::z21::{self as z21_proto, HEADER_XBUS, Z21Command};
 
@@ -18,9 +21,10 @@ mod locomotive;
 mod railcom;
 mod track;
 
-pub(crate) use locomotive::loco_command_rejected_count;
-pub(crate) use railcom::railcom_getdata_no_data_count;
+// Counter readers for the bench diagnostics dump; see `bench-diag`.
 pub(super) use track::encode_system_state;
+#[cfg(feature = "bench-diag")]
+pub(crate) use {locomotive::loco_command_rejected_count, railcom::railcom_getdata_no_data_count};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LeaseClassification {
@@ -68,9 +72,24 @@ pub(super) async fn handle_command(
     route_command(command, raw_frame, loco_slots, out, ctx).await
 }
 
+/// Bench diagnostic: one line per accepted Z21 command.
+///
+/// Compiled out unless `bench-diag` is enabled. A throttle or a loco function
+/// held down produces a steady stream of commands, and each defmt line holds a
+/// critical section that delays the DCC waveform and cutout interrupts.
+/// Rejections and errors are logged unconditionally elsewhere.
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its argument when bench diagnostics are disabled"
+    )
+)]
 fn log_command(command: Z21Command) {
-    if !matches!(command, Z21Command::GetSystemState | Z21Command::GetStatus) {
-        info!("Z21 cmd: {:?}", command);
+    bench_diag! {
+        if !matches!(command, Z21Command::GetSystemState | Z21Command::GetStatus) {
+            info!("Z21 cmd: {:?}", command);
+        }
     }
 }
 

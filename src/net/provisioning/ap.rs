@@ -29,7 +29,7 @@ const AP_PASSWORD: &str = "dcc-setup";
 
 static PROVISIONING_NET_RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum ProvisioningApError {
     WifiBringup(WifiBringupError),
@@ -51,6 +51,16 @@ impl fmt::Display for ProvisioningApError {
             }
             Self::InvalidCredentials(error) => write!(formatter, "{error}"),
             Self::SsidBuild => formatter.write_str("WiFi AP SSID build failed"),
+        }
+    }
+}
+
+impl core::error::Error for ProvisioningApError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::WifiBringup(error) => Some(error),
+            Self::InvalidCredentials(error) => Some(error),
+            Self::WifiRunnerSpawn | Self::DhcpServerSpawn | Self::SsidBuild => None,
         }
     }
 }

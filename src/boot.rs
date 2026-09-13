@@ -23,9 +23,11 @@ use hardware::{
 };
 use provisioning::{open_wifi_config_store, provisioning_request_task};
 use readiness::wait_for_runtime_ready;
+#[cfg(feature = "bench-diag")]
+use runtime_tasks::railcom_diag_task;
 use runtime_tasks::{
     NetTaskWrapperContext, dcc_engine_task_wrapper, display_task_wrapper, net_task_wrapper,
-    railcom_diag_task, railcom_isr_capture_task_wrapper, scheduler_task_wrapper,
+    railcom_isr_capture_task_wrapper, scheduler_task_wrapper,
 };
 use self_check::verify_boot_packet_encoding;
 use startup_sequence::{send_decoder_reset_sequence, send_power_on_idle_burst};
@@ -49,8 +51,8 @@ use crate::dcc::{
 };
 use crate::dcc_runtime::{DccPacketChannel, PowerFenceAckChannel};
 use crate::fault_manager::{
-    FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerState, FaultManagerTaskContext,
-    FaultStateWatch, fault_effects_task, fault_manager_task,
+    FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerTaskContext, FaultStateWatch,
+    fault_effects_task, fault_manager_task,
 };
 use crate::net::client_watchdog::{
     ClientWatchdogContext, LeaseRequestChannel, LeaseResponseChannel, LeaseTripChannel,
@@ -59,7 +61,8 @@ use crate::net::client_watchdog::{
 use crate::net::provisioning::run_provisioning_ap;
 use crate::net::udp_control::NetTaskChannels;
 use crate::net::wifi_config::{
-    ProvisioningDecision, StoreError, WifiCredentials, load_wifi_credentials_and_decision,
+    EspWifiConfigStoreError, ProvisioningDecision, WifiCredentials,
+    load_wifi_credentials_and_decision,
 };
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
@@ -70,7 +73,9 @@ use crate::runtime_channels::{
 };
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
-use crate::system_status::{BootStep, DisplayEvent, FaultEvent, SystemStatusEvent};
+use crate::system_status::{
+    BootStep, DisplayEvent, FaultEvent, FaultManagerState, SystemStatusEvent,
+};
 use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.
@@ -282,8 +287,11 @@ async fn start_dcc_core(
     )?;
     info!("boot: scheduler task spawned");
 
-    spawn_critical(spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
-    info!("boot: RailCom diagnostics task spawned");
+    #[cfg(feature = "bench-diag")]
+    {
+        spawn_critical(spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
+        info!("boot: RailCom diagnostics task spawned");
+    }
 
     spawn_critical(
         spawner,
@@ -519,7 +527,7 @@ pub async fn run(
     let credentials = match decision {
         ProvisioningDecision::StationMode => {
             credentials.ok_or(BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-                WifiConfigInitError::Store(StoreError::MissingCredentials),
+                WifiConfigInitError::Store(EspWifiConfigStoreError::MissingCredentials),
             )))?
         }
         ProvisioningDecision::ProvisioningMode(reason) => {

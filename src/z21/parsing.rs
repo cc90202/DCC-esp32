@@ -1,3 +1,5 @@
+use core::fmt;
+
 use crate::dcc::{DccAddress, Direction, SpeedFormat};
 
 use super::wire::*;
@@ -105,6 +107,25 @@ pub enum FrameBoundaryError {
     TruncatedHeader { remaining: usize },
     InvalidLength { declared: usize, remaining: usize },
 }
+
+impl fmt::Display for FrameBoundaryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TruncatedHeader { remaining } => {
+                write!(formatter, "truncated Z21 header: {remaining} bytes remain")
+            }
+            Self::InvalidLength {
+                declared,
+                remaining,
+            } => write!(
+                formatter,
+                "invalid Z21 frame length {declared}: only {remaining} bytes remain"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for FrameBoundaryError {}
 
 /// Return the byte length of the first frame in `buf`.
 fn frame_len(buf: &[u8]) -> Result<usize, FrameBoundaryError> {

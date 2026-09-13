@@ -499,11 +499,19 @@ fn ensure_refresh_never_replaces_a_full_table_even_when_a_slot_is_stopped() {
 fn stopped_age_changes_only_when_motion_state_changes() {
     let mut manager = SlotManager::new();
     let address = addr(6);
-    assert!(manager.set_speed(address, LogicalSpeed::ZERO, Direction::Forward));
+    assert!(manager.set_speed(
+        address,
+        LogicalSpeed::zero(SpeedFormat::Speed28),
+        Direction::Forward
+    ));
     let original_age = manager.stopped_since_for_test(address);
     assert!(original_age.is_some());
 
-    assert!(manager.set_speed(address, LogicalSpeed::ZERO, Direction::Reverse));
+    assert!(manager.set_speed(
+        address,
+        LogicalSpeed::zero(SpeedFormat::Speed28),
+        Direction::Reverse
+    ));
     assert!(set_function(&mut manager, address, 2, true));
     assert_eq!(manager.stopped_since_for_test(address), original_age);
 
@@ -525,10 +533,8 @@ fn emergency_stop_request_requires_existing_slot_and_returns_stopped_state() {
 
     assert!(matches!(
         manager.handle_loco_request(LocoRequest::EmergencyStop { address }),
-        LocoRequestResult::Updated(LocoSnapshot {
-            speed: LogicalSpeed::ZERO,
-            ..
-        })
+        LocoRequestResult::Updated(LocoSnapshot { speed, .. })
+            if speed == LogicalSpeed::zero(SpeedFormat::Speed28)
     ));
 }
 
@@ -759,7 +765,11 @@ fn test_remove_slot() {
     let _ = mgr.set_speed(addr(2), ls(20, SpeedFormat::Speed28), Direction::Forward);
 
     assert!(!mgr.remove_slot(addr(1)));
-    assert!(mgr.set_speed(addr(1), LogicalSpeed::ZERO, Direction::Forward));
+    assert!(mgr.set_speed(
+        addr(1),
+        LogicalSpeed::zero(SpeedFormat::Speed28),
+        Direction::Forward
+    ));
     assert!(!mgr.remove_slot(addr(1)));
     drain_pending_slot_transmissions(&mut mgr);
     assert!(mgr.remove_slot(addr(1)));

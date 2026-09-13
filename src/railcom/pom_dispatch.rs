@@ -10,8 +10,7 @@ use embassy_sync::channel::Sender;
 
 use crate::cutout::CutoutMode;
 use crate::dcc::{PomRailcomResult, PomTxStarted, pom_result_from_railcom_items};
-use crate::railcom::pipeline::{PacketSequence, RailcomChannel};
-use crate::railcom_data::RailcomItem;
+use crate::railcom::{PacketSequence, RailcomChannel, RailcomItem};
 use crate::track_output::{CutoutRuntimeEvent, RailcomPacketMetadata};
 
 #[must_use]
@@ -85,7 +84,13 @@ pub async fn pom_cutout_monitor_task(
                             })
                             .is_err()
                         {
-                            defmt::warn!(
+                            // Expected, not a fault: the POM actor stops reading
+                            // this channel once it has seen the two tx-starts it
+                            // needs, so every further cutout of the same request
+                            // overflows the queue until the actor drains it before
+                            // the next burst. Debug level, so the default
+                            // `DEFMT_LOG=info` build compiles the line out.
+                            defmt::debug!(
                                 "railcom pom tx-start notify dropped: packet={}",
                                 packet_sequence.value(),
                             );

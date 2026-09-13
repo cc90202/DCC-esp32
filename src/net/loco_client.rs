@@ -23,6 +23,7 @@ const LOCO_RESPONSE_TIMEOUT: Duration = Duration::from_millis(LOCO_RESPONSE_TIME
 
 static LOCO_RESPONSE_TIMEOUT_COUNT: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(any(test, feature = "bench-diag"))]
 #[must_use]
 pub(crate) fn loco_response_timeout_count() -> u32 {
     LOCO_RESPONSE_TIMEOUT_COUNT.load(Ordering::Relaxed)
@@ -34,12 +35,11 @@ fn next_loco_request_id(counter: &Cell<u32>) -> LocoRequestId {
     LocoRequestId::new(value)
 }
 
-pub(super) async fn request_loco(
+async fn send_correlated_request(
     request_sender: &Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
     response_receiver: &Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
     next_request_id: &Cell<u32>,
-    permit: Option<LeasePermit>,
-    request: LocoRequest,
+    request: SchedulerRequest,
 ) -> Option<LocoResponse> {
     while response_receiver.try_receive().is_ok() {}
 
@@ -48,7 +48,7 @@ pub(super) async fn request_loco(
     let response_deadline = now + LOCO_RESPONSE_TIMEOUT;
     let message = LocoRequestMessage {
         request_id,
-        request: SchedulerRequest::Loco { request, permit },
+        request,
         deadline: LocoRequestDeadline::from_ticks((now + LOCO_EXECUTION_TIMEOUT).as_ticks()),
     };
 
@@ -56,20 +56,38 @@ pub(super) async fn request_loco(
         .await
         .is_err()
     {
-        LOCO_RESPONSE_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
         return None;
     }
 
     loop {
         let remaining = response_deadline.saturating_duration_since(Instant::now());
         let Ok(response) = with_timeout(remaining, response_receiver.receive()).await else {
-            LOCO_RESPONSE_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
             return None;
         };
         if response.request_id == request_id {
             return Some(response);
         }
     }
+}
+
+pub(super) async fn request_loco(
+    request_sender: &Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
+    response_receiver: &Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
+    next_request_id: &Cell<u32>,
+    permit: Option<LeasePermit>,
+    request: LocoRequest,
+) -> Option<LocoResponse> {
+    let response = send_correlated_request(
+        request_sender,
+        response_receiver,
+        next_request_id,
+        SchedulerRequest::Loco { request, permit },
+    )
+    .await;
+    if response.is_none() {
+        LOCO_RESPONSE_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    response
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -79,30 +97,14 @@ pub(super) async fn reset_for_lease(
     next_request_id: &Cell<u32>,
     permit: LeasePermit,
 ) -> bool {
-    while response_receiver.try_receive().is_ok() {}
-    let request_id = next_loco_request_id(next_request_id);
-    let now = Instant::now();
-    let message = LocoRequestMessage {
-        request_id,
-        request: SchedulerRequest::ResetForLease { permit },
-        deadline: LocoRequestDeadline::from_ticks((now + LOCO_EXECUTION_TIMEOUT).as_ticks()),
-    };
-    if with_timeout(LOCO_RESPONSE_TIMEOUT, request_sender.send(message))
-        .await
-        .is_err()
-    {
-        return false;
-    }
-    let deadline = now + LOCO_RESPONSE_TIMEOUT;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let Ok(response) = with_timeout(remaining, response_receiver.receive()).await else {
-            return false;
-        };
-        if response.request_id == request_id {
-            return response.result == LocoRequestResult::LeaseReset(permit.epoch());
-        }
-    }
+    send_correlated_request(
+        request_sender,
+        response_receiver,
+        next_request_id,
+        SchedulerRequest::ResetForLease { permit },
+    )
+    .await
+    .is_some_and(|response| response.result == LocoRequestResult::LeaseReset(permit.epoch()))
 }
 
 #[cfg(test)]
