@@ -526,13 +526,13 @@ pub fn parse_logon_response_48(
         });
     }
 
+    // Not the two-byte address form [`DccAddress::from_address_fragments`]
+    // reads: here bit 7 is the frame's own marker — required a few lines above,
+    // and so set for short and long alike — which leaves magnitude as the only
+    // thing that can tell the two apart in this frame.
     let raw_address = ((u16::from(bytes[0] & 0x3f)) << 8) | u16::from(bytes[1]);
-    let address = if raw_address <= 127 {
-        DccAddress::new_short(raw_address as u8)
-    } else {
-        DccAddress::new_long(raw_address)
-    }
-    .ok_or(ParseError::InvalidLogonAddress(raw_address))?;
+    let address = DccAddress::from_magnitude(raw_address)
+        .ok_or(ParseError::InvalidLogonAddress(raw_address))?;
 
     Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
 }
