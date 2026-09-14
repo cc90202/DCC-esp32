@@ -20,12 +20,40 @@ const RECENT_SIGHTING_CAPACITY: usize = 4;
 // expiring the high fragment before it can be paired with unrelated traffic.
 const PENDING_ADR_HIGH_MAX_PACKET_GAP: u32 = 8;
 
+// How long a sighting is still served as current, in packet boundaries.
+//
+// The boundary counter advances about 154 times a second, so this is a little
+// over three minutes. Under programming traffic a locomotive on the track is
+// confirmed about every thirty seconds (bench, 2026-09-14: two confirmations in
+// sixty seconds), which this window clears several times over. Without it the
+// answer was "yes, I have data" for as long as the firmware ran, because only
+// four addresses share the list and a second address practically never turns up
+// to take a slot: the same evening, fourteen minutes with the track idle
+// produced no address other than the one already known.
+//
+// The window errs long on purpose. Too short is the damaging direction — a
+// locomotive standing on the track reported absent between two confirmations is
+// something the operator sees, while a stale answer surviving a few minutes
+// longer is not. And those thirty seconds were measured while the Z21 app was
+// polling CVs, which is what produces most of the cutouts: with the track idle
+// the interval is unmeasured and could be far longer than this window. That
+// measurement is what would let this value be set rather than guessed.
+const SIGHTING_MAX_AGE_PACKETS: u32 = 30_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct RailcomLocoSighting {
     pub address: DccAddress,
     pub packet_sequence: PacketSequence,
     pub seen_count: u32,
+}
+
+impl RailcomLocoSighting {
+    /// Whether this sighting still describes the track as it is at `now`.
+    #[must_use]
+    pub(crate) fn is_current_at(self, now: PacketSequence) -> bool {
+        now.is_within(self.packet_sequence, SIGHTING_MAX_AGE_PACKETS)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -42,6 +70,40 @@ pub struct RailcomLocoTrackerStats {
     pub recent_sightings: [Option<RailcomLocoSighting>; RECENT_SIGHTING_CAPACITY],
 }
 
+impl RailcomLocoTrackerStats {
+    /// The current sighting of `address`, if the track still says it is there.
+    ///
+    /// A sighting older than the freshness window stays in the list so that a
+    /// locomotive which comes back keeps counting from where it left off. It is
+    /// simply no longer answered for, and its slot is taken before that of any
+    /// locomotive the track still confirms.
+    #[must_use]
+    pub fn current_sighting_for(
+        &self,
+        address: DccAddress,
+        now: PacketSequence,
+    ) -> Option<RailcomLocoSighting> {
+        self.current_sightings(now)
+            .find(|sighting| sighting.address == address)
+    }
+
+    /// Every sighting the track still confirms, in slot order.
+    fn current_sightings(&self, now: PacketSequence) -> impl Iterator<Item = RailcomLocoSighting> {
+        self.recent_sightings
+            .iter()
+            .flatten()
+            .copied()
+            .filter(move |sighting| sighting.is_current_at(now))
+    }
+
+    /// The most recently seen locomotive that is still current.
+    #[must_use]
+    pub fn latest_current_sighting(&self, now: PacketSequence) -> Option<RailcomLocoSighting> {
+        self.current_sightings(now)
+            .min_by_key(|sighting| now.age_since(sighting.packet_sequence))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TrackerState {
     identification_window_count: u32,
@@ -49,7 +111,6 @@ struct TrackerState {
     invalid_identification_count: u32,
     unrepresentable_address_count: u32,
     recent_sightings: [Option<RailcomLocoSighting>; RECENT_SIGHTING_CAPACITY],
-    next_insert_index: usize,
     pending_adr_high: Option<PendingAdrHigh>,
     /// The last window the identification pass judged, so that the target pass
     /// cannot judge it again. The two passes do not see the same state — the
@@ -73,7 +134,6 @@ impl TrackerState {
             invalid_identification_count: 0,
             unrepresentable_address_count: 0,
             recent_sightings: [None; RECENT_SIGHTING_CAPACITY],
-            next_insert_index: 0,
             pending_adr_high: None,
             judged_window: None,
         }
@@ -118,14 +178,39 @@ impl TrackerState {
             packet_sequence,
             seen_count: 1,
         };
-        self.recent_sightings[self.next_insert_index] = Some(sighting);
-        self.next_insert_index = (self.next_insert_index + 1) % RECENT_SIGHTING_CAPACITY;
+        self.recent_sightings[self.slot_for_new_sighting(packet_sequence)] = Some(sighting);
         sighting
     }
 
     /// Marks a window as decided, so the target pass leaves it alone.
     fn judge(&mut self, packet_sequence: PacketSequence) {
         self.judged_window = Some(packet_sequence);
+    }
+
+    /// Picks the slot a newly seen address should take: the one the track has
+    /// gone longest without confirming, with an empty slot counting as older
+    /// than any of them.
+    ///
+    /// Taking slots in turn instead would let a new address evict the one
+    /// locomotive still being confirmed while sightings nobody confirms any
+    /// more kept their places — losing exactly the count this list is kept for.
+    /// Ties go to the lowest slot, so the choice never depends on the order the
+    /// array happens to be walked in.
+    fn slot_for_new_sighting(&self, now: PacketSequence) -> usize {
+        let staleness = |slot: &Option<RailcomLocoSighting>| {
+            slot.map_or(u32::MAX, |sighting| now.age_since(sighting.packet_sequence))
+        };
+        let oldest = self
+            .recent_sightings
+            .iter()
+            .map(staleness)
+            .max()
+            .unwrap_or_default();
+
+        self.recent_sightings
+            .iter()
+            .position(|slot| staleness(slot) == oldest)
+            .unwrap_or_default()
     }
 
     fn record_unreadable(&mut self, fragments: UnreadableFragments) {
@@ -798,6 +883,172 @@ mod tests {
         let stats = state.snapshot();
         assert_eq!(stats.identification_window_count, 1);
         assert_eq!(stats.invalid_identification_count, 1);
+    }
+
+    fn sighting_at(address: DccAddress, sequence: u32) -> RailcomLocoSighting {
+        RailcomLocoSighting {
+            address,
+            packet_sequence: PacketSequence::new(sequence),
+            seen_count: 1,
+        }
+    }
+
+    fn stats_with(
+        sightings: [Option<RailcomLocoSighting>; RECENT_SIGHTING_CAPACITY],
+    ) -> RailcomLocoTrackerStats {
+        RailcomLocoTrackerStats {
+            recent_sightings: sightings,
+            ..RailcomLocoTrackerStats::default()
+        }
+    }
+
+    #[test]
+    fn test_a_sighting_stays_current_to_the_edge_of_its_window() {
+        let sighting = sighting_at(short_addr(3), 1_000);
+
+        assert!(sighting.is_current_at(PacketSequence::new(1_000)));
+        assert!(sighting.is_current_at(PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS)));
+        assert!(!sighting.is_current_at(PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS + 1)));
+        // A date in the future counts as stale: silence beats a wrong answer.
+        assert!(!sighting.is_current_at(PacketSequence::new(999)));
+    }
+
+    #[test]
+    fn test_freshness_survives_the_counter_wrapping() {
+        // The boundary counter is 32 bits and advances about 154 times a
+        // second, so it wraps after about eleven months of running. A sighting taken
+        // just before the wrap must still read as current just after it.
+        let sighting = sighting_at(short_addr(3), u32::MAX - 10);
+
+        assert!(sighting.is_current_at(PacketSequence::new(20)));
+        assert!(sighting.is_current_at(PacketSequence::new(SIGHTING_MAX_AGE_PACKETS - 11)));
+        assert!(!sighting.is_current_at(PacketSequence::new(SIGHTING_MAX_AGE_PACKETS)));
+    }
+
+    #[test]
+    fn test_a_stale_sighting_is_no_longer_answered_for() {
+        // The locomotive was lifted off the track. Without the window the
+        // lookup kept saying it was there for as long as the firmware ran,
+        // because only four addresses share the list and a second address
+        // practically never appears.
+        let stats = stats_with([Some(sighting_at(short_addr(3), 1_000)), None, None, None]);
+        let within = PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS);
+        let past = PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS + 1);
+
+        assert_eq!(
+            stats.current_sighting_for(short_addr(3), within),
+            Some(sighting_at(short_addr(3), 1_000))
+        );
+        assert_eq!(stats.current_sighting_for(short_addr(3), past), None);
+        assert_eq!(stats.latest_current_sighting(past), None);
+    }
+
+    #[test]
+    fn test_the_latest_sighting_skips_the_stale_ones() {
+        let stale = sighting_at(short_addr(7), 1_000);
+        let fresh = sighting_at(short_addr(3), 1_000 + SIGHTING_MAX_AGE_PACKETS);
+        let stats = stats_with([Some(stale), Some(fresh), None, None]);
+        let now = PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS + 1);
+
+        assert_eq!(stats.latest_current_sighting(now), Some(fresh));
+        assert_eq!(stats.current_sighting_for(short_addr(7), now), None);
+    }
+
+    #[test]
+    fn test_the_latest_sighting_is_the_most_recent_of_the_current_ones() {
+        // With the freshness filter doing nothing, the ordering is what decides.
+        let older = sighting_at(short_addr(7), 1_000);
+        let newer = sighting_at(short_addr(3), 1_500);
+        let stats = stats_with([Some(older), Some(newer), None, None]);
+
+        assert_eq!(
+            stats.latest_current_sighting(PacketSequence::new(2_000)),
+            Some(newer)
+        );
+    }
+
+    #[test]
+    fn test_a_stale_sighting_stops_being_answered_for_but_keeps_its_count() {
+        // The two halves of the decision, in one test: silent while stale, and
+        // counting from where it left off when the locomotive comes back.
+        let mut state = TrackerState::new();
+        let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(3))];
+
+        state
+            .record_loco_identification(PacketSequence::new(10), &items)
+            .expect("must identify");
+
+        let gone = PacketSequence::new(10 + SIGHTING_MAX_AGE_PACKETS + 1);
+        let stats = state.snapshot();
+        assert_eq!(stats.current_sighting_for(short_addr(3), gone), None);
+        assert!(stats.recent_sightings[0].is_some());
+
+        let back = state
+            .record_loco_identification(gone, &items)
+            .expect("must identify again");
+
+        assert_eq!(back.seen_count, 2);
+        assert_eq!(
+            state.snapshot().current_sighting_for(short_addr(3), gone),
+            Some(back)
+        );
+    }
+
+    #[test]
+    fn test_a_new_address_evicts_the_one_seen_longest_ago() {
+        // Four locomotives, all still confirmed, and a fifth address turns up.
+        // The list has to give something up: it gives up the one the track has
+        // gone longest without confirming.
+        let mut state = TrackerState::new();
+        for (offset, address) in [3u8, 7, 11, 15].into_iter().enumerate() {
+            state.record_identified(PacketSequence::new(10 + offset as u32), short_addr(address));
+        }
+
+        let now = PacketSequence::new(100);
+        state.record_identified(now, short_addr(42));
+
+        let stats = state.snapshot();
+        assert_eq!(
+            stats.current_sighting_for(short_addr(3), now),
+            None,
+            "the oldest must be the one to go"
+        );
+        for address in [7u8, 11, 15, 42] {
+            assert!(
+                stats
+                    .current_sighting_for(short_addr(address), now)
+                    .is_some(),
+                "address {address} must still be listed"
+            );
+        }
+    }
+
+    #[test]
+    fn test_a_new_address_evicts_a_stale_slot_before_a_current_one() {
+        // The list is full, only one locomotive is still being seen, and a new
+        // address turns up. Rotating blindly would evict the live one and keep
+        // three dead entries.
+        let mut state = TrackerState::new();
+        for address in [3u8, 7, 11, 15] {
+            state.record_identified(PacketSequence::new(10), short_addr(address));
+        }
+        // The list is full and the rotation points back at the first slot,
+        // which is where address 3 sits. Keep confirming exactly that one.
+        let refreshed = PacketSequence::new(10 + SIGHTING_MAX_AGE_PACKETS);
+        state.record_identified(refreshed, short_addr(3));
+
+        let later = PacketSequence::new(10 + SIGHTING_MAX_AGE_PACKETS + 1);
+        state.record_identified(later, short_addr(42));
+
+        let stats = state.snapshot();
+        assert!(
+            stats.current_sighting_for(short_addr(3), later).is_some(),
+            "the locomotive still being confirmed must survive the new address"
+        );
+        assert!(
+            stats.current_sighting_for(short_addr(42), later).is_some(),
+            "the new address must have taken a slot"
+        );
     }
 
     #[test]

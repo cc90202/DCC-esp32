@@ -7,23 +7,29 @@ use crate::dcc::DccAddress;
 use crate::railcom::PacketSequence;
 use crate::railcom::loco_tracker::RailcomLocoSighting;
 
+/// The packet boundary the track has reached.
+///
+/// Must be the very counter that stamps a receive window, not another one that
+/// merely advances at the same rate: ages are compared in absolute terms now,
+/// and two counters that agree only by habit would drift apart the first time
+/// one of them is restarted, leaving every sighting born already stale.
+///
+/// Read here rather than behind a helper in `railcom`, which would be the
+/// natural home: the driver already notifies `railcom` on every boundary, so a
+/// call the other way would close a dependency cycle. That cycle is a
+/// consequence of the notification, not of the structure — it goes away with
+/// the second boundary counter, which means touching the ISR, and this branch
+/// leaves the driver untouched on purpose.
+fn current_packet_boundary() -> PacketSequence {
+    PacketSequence::new(crate::rmt_dcc::isr_heartbeat())
+}
+
 pub(super) fn railcom_sighting_for_address(address: DccAddress) -> Option<RailcomLocoSighting> {
-    let stats = crate::railcom::loco_tracker::railcom_loco_tracker_stats();
-    stats
-        .recent_sightings
-        .iter()
-        .flatten()
-        .find(|sighting| sighting.address == address)
-        .copied()
+    crate::railcom::loco_tracker::railcom_loco_tracker_stats()
+        .current_sighting_for(address, current_packet_boundary())
 }
 
 pub(super) fn latest_railcom_sighting() -> Option<RailcomLocoSighting> {
-    let stats = crate::railcom::loco_tracker::railcom_loco_tracker_stats();
-    let current = PacketSequence::new(crate::railcom::stats().packet_boundary_count);
-    stats
-        .recent_sightings
-        .iter()
-        .flatten()
-        .min_by_key(|sighting| current.age_since(sighting.packet_sequence))
-        .copied()
+    crate::railcom::loco_tracker::railcom_loco_tracker_stats()
+        .latest_current_sighting(current_packet_boundary())
 }
