@@ -15,12 +15,12 @@ use crate::application::LocoSlots;
 use crate::application::pom::{
     PomAdmissionError, PomRefreshFailure, apply_refresh_result, prepare_read, prepare_write,
 };
+use crate::dcc::channels::{PomRequestSender, PomResponseReceiver};
 use crate::dcc::cv::drain_channel;
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::PomCtx;
 use crate::net::z21_dispatch::encoded_len;
-use crate::runtime_channels::{PomRequestSender, PomResponseReceiver};
 use crate::z21 as z21_proto;
 
 // Covers the single bounded POM actor attempt: TX-start waits + the

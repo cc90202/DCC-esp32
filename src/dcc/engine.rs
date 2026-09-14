@@ -1,10 +1,11 @@
 //! DCC engine feeder for the ISR-driven RMT backend.
 
+use crate::dcc::channels::{DccFrameReceiver, PowerFenceAckSender};
 use crate::dcc::encoder::{EncodeError, PulseCode as DccPulseCode, encode_dcc_data_portion};
 use crate::dcc::timing::{IDLE_RMT_SIZE, MAX_DATA_PULSES, RMT_CLOCK_HZ};
-use crate::dcc::{DccFrame, DccPacket, PowerGeneration, encode_dcc_packet};
+use crate::dcc::{DccPacket, encode_dcc_packet};
 use crate::rmt_dcc as rmt_driver;
-use crate::runtime_channels::{DccFrameReceiver, FaultEventSender, RuntimeChannel};
+use crate::system_status::channels::FaultEventSender;
 use crate::system_status::{FaultCause, FaultEvent};
 
 use embassy_time::{Duration, Instant, Timer, with_timeout};
@@ -19,10 +20,6 @@ const _: () = assert!(
 
 const ISR_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(50);
 const ISR_RESET_GRACE_PERIOD: Duration = Duration::from_millis(100);
-
-/// DCC packet channel type for sending packets to the engine.
-pub type DccPacketChannel = RuntimeChannel<DccFrame, 16>;
-pub type PowerFenceAckChannel = RuntimeChannel<PowerGeneration, 1>;
 
 /// Pre-encoded idle waveform used to bootstrap continuous RMT loop mode.
 pub type IdleRmtBuffer = Vec<PulseCode, IDLE_RMT_SIZE>;
@@ -79,7 +76,7 @@ pub fn build_idle_rmt_buffer() -> Result<IdleRmtBuffer, IdleWaveformBuildError> 
 pub async fn dcc_engine_task(
     receiver: DccFrameReceiver,
     fault_sender: FaultEventSender,
-    fence_ack_sender: crate::runtime_channels::RuntimeSender<PowerGeneration, 1>,
+    fence_ack_sender: PowerFenceAckSender,
 ) -> ! {
     defmt::info!("DCC engine feeder started");
 

@@ -28,6 +28,13 @@
 /// Attributes above the `static` line are applied to every generated item, so
 /// a `#[cfg(...)]` there gates the entire group.
 ///
+/// Attributes above the `snapshot` line are applied to the snapshot type and to
+/// the operation that produces it, but not to the storage. A `#[cfg(...)]`
+/// there therefore keeps the counters being maintained in every build while
+/// restricting the reading side to the builds that consume it. That is how a
+/// group whose only reader is the bench dump avoids dead-code warnings in the
+/// default build without being silenced.
+///
 /// # Example
 ///
 /// ```ignore
@@ -73,7 +80,11 @@ macro_rules! diagnostic_counters {
                     $( $field: ::core::sync::atomic::AtomicU32::new(0), )+
                 }
             }
+        }
 
+        $(#[$group_meta])*
+        $(#[$snap_meta])*
+        impl $counters {
             /// Loads every counter in the group into a plain snapshot.
             #[must_use]
             $pvis fn snapshot(&self) -> $stats {
@@ -85,7 +96,6 @@ macro_rules! diagnostic_counters {
                     )+
                 }
             }
-
         }
     };
 

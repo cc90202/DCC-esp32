@@ -28,6 +28,8 @@
 //! This module generates electrical signals. Always use proper current limiting
 //! and overcurrent protection when connecting to model railroad track.
 
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod channels;
 pub(crate) mod cv;
 pub(crate) mod encoder;
 pub(crate) mod packet;
@@ -133,13 +135,13 @@ impl DccFrame {
 }
 
 // Re-exports
+
 #[doc(inline)]
 pub use cv::PomRequestId;
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
 pub use cv::{
-    PomRailcomResult, PomRailcomResultChannel, PomRequest, PomRequestChannel, PomResponse,
-    PomResponseChannel, PomRuntimeStats, PomTxStarted, PomTxStartedChannel, pom_actor_task,
+    PomRailcomResult, PomRequest, PomResponse, PomRuntimeStats, PomTxStarted, pom_actor_task,
     pom_result_from_railcom_items, pom_runtime_stats,
 };
 #[doc(inline)]
@@ -163,11 +165,6 @@ pub use scheduler::{
     LOCO_SLOT_CAPACITY, LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage,
     LocoRequestResult, LocoResponse, LocoSnapshot, LogicalSpeed, SchedulerCommand,
     SchedulerRequest, SpeedFormat,
-};
-#[cfg(target_arch = "riscv32")]
-#[doc(inline)]
-pub use scheduler::{
-    LocoRequestChannel, LocoResponseChannel, PowerQuiesceChannel, SchedulerCommandChannel,
 };
 #[doc(inline)]
 pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};

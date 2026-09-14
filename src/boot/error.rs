@@ -2,8 +2,6 @@
 
 use core::fmt;
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-
 use crate::net::NetInitError;
 use crate::net::provisioning::ProvisioningApError;
 use crate::net::wifi_config::{EspFlashStoreError, EspWifiConfigStoreError};
@@ -140,9 +138,16 @@ pub enum WifiConfigInitError {
     FlashUnavailable,
 }
 
+/// One slot per critical task that can report an asynchronous failure.
+const BOOT_FAILURE_DEPTH: usize = 4;
+
 /// Channel used by critical tasks to report asynchronous initialization failures.
-pub type BootFailureChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, CriticalTaskInit, 4>;
+pub(crate) type BootFailureChannel =
+    crate::runtime_channels::RuntimeChannel<CriticalTaskInit, BOOT_FAILURE_DEPTH>;
+pub(crate) type CriticalTaskInitSender =
+    crate::runtime_channels::RuntimeSender<CriticalTaskInit, BOOT_FAILURE_DEPTH>;
+pub(crate) type CriticalTaskInitReceiver =
+    crate::runtime_channels::RuntimeReceiver<CriticalTaskInit, BOOT_FAILURE_DEPTH>;
 
 impl BootError {
     /// Select the recovery action associated with this failure.

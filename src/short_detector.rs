@@ -28,9 +28,9 @@
 //! cycle that stresses the driver.
 
 #[cfg(target_arch = "riscv32")]
-use crate::runtime_channels::{BootReadySender, FaultEventSender, announce_ready};
+use crate::system_status::channels::{BootReadySender, FaultEventSender};
 #[cfg(target_arch = "riscv32")]
-use crate::system_status::BootReadyEvent;
+use crate::system_status::{BootReadyEvent, announce_ready};
 #[cfg(target_arch = "riscv32")]
 use core::cell::Cell;
 #[cfg(target_arch = "riscv32")]

@@ -4,10 +4,10 @@ use defmt::info;
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, with_timeout};
 
-use crate::runtime_channels::{BootReadyReceiver, RuntimeReceiver};
 use crate::system_status::BootReadyEvent;
+use crate::system_status::channels::BootReadyReceiver;
 
-use super::error::log_degraded_boot_error;
+use super::error::{CriticalTaskInitReceiver, log_degraded_boot_error};
 use super::{BootError, CriticalTaskInit};
 
 #[repr(u16)]
@@ -37,9 +37,17 @@ impl ReadySet {
     }
 }
 
+/// Waits until every critical task has acknowledged, or one reports failure.
+///
+/// This drains the readiness channel continuously from the moment it starts, so
+/// the channel's depth does not have to hold every acknowledgement at once: ten
+/// tasks announce into nine slots and at most one of them waits, briefly, for
+/// this loop to read. That is why `system_status::channels::BOOT_READY_DEPTH`
+/// is nine and not ten. Raising it is safe; shrinking it below the number of
+/// tasks that can announce while this loop is blocked elsewhere is not.
 pub(super) async fn wait_for_runtime_ready(
     receiver: BootReadyReceiver,
-    failure_receiver: RuntimeReceiver<CriticalTaskInit, 4>,
+    failure_receiver: CriticalTaskInitReceiver,
 ) -> Result<(), BootError> {
     const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
     let mut ready = ReadySet::default();

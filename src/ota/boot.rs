@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     flash::Flash,
-    runtime_channels::{DisplaySender, FaultEventSender},
+    system_status::channels::{DisplaySender, FaultEventSender},
 };
 
 /// Opens the flash, starts the watchdog and reconciles the journal before

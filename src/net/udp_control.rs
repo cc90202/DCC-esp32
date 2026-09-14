@@ -26,6 +26,9 @@ use crate::application::client_safety::{
     LeaseActivity, LeaseDecision, LeaseEpoch, LeasePermit, LeaseRequest,
 };
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::dcc::channels::{
+    LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
+};
 use crate::macros::bench_diag;
 use crate::net::client_watchdog::LeaseTripNotification;
 use crate::net::loco_client::reset_for_lease;
@@ -34,9 +37,9 @@ use crate::net::z21_context::{LocoCtx, PomCtx, TrackCtx, Z21Ctx};
 use crate::net::z21_dispatch::{
     LeaseClassification, classify_lease_activity, encode_system_state, encoded_len, handle_command,
 };
-use crate::runtime_channels::{
-    BootReadySender, DisplaySender, FaultEventSender, LocoRequestSender, LocoResponseReceiver,
-    NetStatusReceiver, PomRequestSender, PomResponseReceiver, SystemStatusSender, announce_ready,
+use crate::system_status::announce_ready;
+use crate::system_status::channels::{
+    BootReadySender, DisplaySender, FaultEventSender, NetStatusReceiver, SystemStatusSender,
 };
 use crate::system_status::{BootReadyEvent, DisplayEvent};
 use crate::z21 as z21_proto;

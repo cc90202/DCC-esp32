@@ -5,11 +5,10 @@
 //! logon handling, and POM response attribution.
 
 use defmt::{info, warn};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 
 #[cfg(feature = "bench-diag")]
 use crate::cutout::CutoutMode;
+use crate::dcc::channels::{PomRailcomResultSender, SchedulerCommandSender};
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
 use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::RailcomLocoSighting;
@@ -18,7 +17,7 @@ use crate::railcom::pipeline::{
     RailcomRxResult, record_pom_result_dropped, record_pom_result_forwarded,
 };
 use crate::railcom::pom_dispatch::evaluate_pom_window;
-use crate::railcom::uart_reader::RailcomRxOutput;
+use crate::railcom::uart_reader::{RailcomRxOutput, RailcomRxOutputReceiver};
 use crate::railcom::{PacketSequence, RailcomChannel, RailcomItem};
 use crate::track_output::RailcomPacketMetadata;
 
@@ -53,7 +52,7 @@ impl LogonDispatchState {
         &mut self,
         packet_sequence: PacketSequence,
         response: RailcomLogonResponse,
-        scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+        scheduler_sender: SchedulerCommandSender,
     ) {
         match response {
             RailcomLogonResponse::DecoderId(logon_id) => {
@@ -139,7 +138,7 @@ fn forward_pom_result(
     result: &RailcomRxResult,
     packet_metadata: Option<RailcomPacketMetadata>,
     complete_items: &[RailcomItem],
-    pom_result_sender: Sender<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
+    pom_result_sender: PomRailcomResultSender,
 ) {
     let pom_result = evaluate_pom_window(
         result.window.packet_sequence,
@@ -212,8 +211,8 @@ fn log_pom_window(
 fn dispatch_processed_window(
     state: &mut LogonDispatchState,
     result: &RailcomRxResult,
-    pom_result_sender: Sender<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
-    scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+    pom_result_sender: PomRailcomResultSender,
+    scheduler_sender: SchedulerCommandSender,
 ) {
     let complete_items = result.complete_items();
     let packet_metadata =
@@ -230,9 +229,9 @@ fn dispatch_processed_window(
 
 #[embassy_executor::task]
 pub async fn railcom_uart_runtime_dispatch_task(
-    receiver: Receiver<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
-    pom_result_sender: Sender<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
-    scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+    receiver: RailcomRxOutputReceiver,
+    pom_result_sender: PomRailcomResultSender,
+    scheduler_sender: SchedulerCommandSender,
 ) -> ! {
     let mut state = LogonDispatchState::default();
 

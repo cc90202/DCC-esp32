@@ -4,28 +4,22 @@ use embassy_futures::yield_now;
 use embassy_time::Instant;
 
 use crate::cutout::CutoutMode;
-use crate::dcc::{DccFrame, DccPacket, PowerGeneration};
-use crate::runtime_channels::{
-    DccFrameSender, DisplaySender, LocoRequestReceiver, LocoResponseSender, RuntimeChannel,
+use crate::dcc::channels::{
+    DccFrameSender, LocoRequestReceiver, LocoResponseSender, PowerQuiesceReceiver,
     SchedulerCommandReceiver,
 };
+use crate::dcc::{DccFrame, DccPacket};
 use crate::system_status::DisplayEvent;
+use crate::system_status::channels::DisplaySender;
 
+use super::SchedulerCommand;
 use super::core::{CommandOutcome, SchedulerCore};
 use super::railcom_discovery::RailcomDiscovery;
 use super::railcom_policy::{PacketClass, RailcomCutoutBudget, record_track_search_throttled};
 use super::slot_manager::{PacketAuthority, scheduler_invariant_recovery_count};
-use super::{LocoRequestMessage, LocoResponse, SchedulerCommand};
-
-pub type SchedulerCommandChannel = RuntimeChannel<SchedulerCommand, 32>;
-pub type PowerQuiesceChannel = RuntimeChannel<PowerGeneration, 1>;
-
-pub type LocoRequestChannel = RuntimeChannel<LocoRequestMessage, 1>;
-
-pub type LocoResponseChannel = RuntimeChannel<LocoResponse, 1>;
 
 pub async fn packet_scheduler_task(
-    power_quiesce_receiver: crate::runtime_channels::RuntimeReceiver<PowerGeneration, 1>,
+    power_quiesce_receiver: PowerQuiesceReceiver,
     command_receiver: SchedulerCommandReceiver,
     loco_request_receiver: LocoRequestReceiver,
     loco_response_sender: LocoResponseSender,

@@ -2,16 +2,16 @@
 
 use core::sync::atomic::Ordering;
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Instant, with_timeout};
 
+use crate::dcc::channels::{
+    PomRailcomResultReceiver, PomRequestReceiver, PomResponseSender, PomTxStartedReceiver,
+    SchedulerCommandSender,
+};
 use crate::dcc::packet::DccPacket;
 use crate::dcc::scheduler::SchedulerCommand;
 
-use super::{
-    POM, PomRailcomResult, PomRequest, PomResponse, PomTxStarted, drain_channel, match_pom_result,
-};
+use super::{POM, PomRequest, PomResponse, drain_channel, match_pom_result};
 
 // The scheduler-to-engine path is naturally backpressured by a small frame
 // queue. Under app traffic the POM command can be accepted immediately but its
@@ -45,7 +45,7 @@ fn pom_packet_from_request(request: PomRequest) -> DccPacket {
 async fn await_matching_pom_result(
     request: PomRequest,
     earliest_sequence: crate::cutout::PacketSequence,
-    railcom_results: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
+    railcom_results: &PomRailcomResultReceiver,
 ) -> PomResponse {
     loop {
         let result = railcom_results.receive().await;
@@ -75,9 +75,9 @@ enum PomAttemptOutcome {
 
 async fn run_pom_attempt(
     request: PomRequest,
-    tx_started_receiver: &Receiver<'static, CriticalSectionRawMutex, PomTxStarted, 4>,
-    railcom_result_receiver: &Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
-    scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+    tx_started_receiver: &PomTxStartedReceiver,
+    railcom_result_receiver: &PomRailcomResultReceiver,
+    scheduler_sender: &SchedulerCommandSender,
 ) -> PomAttemptOutcome {
     drain_channel(tx_started_receiver);
     drain_channel(railcom_result_receiver);
@@ -140,7 +140,7 @@ async fn run_pom_attempt(
 }
 
 async fn enqueue_pom_burst(
-    scheduler_sender: &Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+    scheduler_sender: &SchedulerCommandSender,
     request: PomRequest,
     packet: DccPacket,
     repetitions: u8,
@@ -159,11 +159,11 @@ async fn enqueue_pom_burst(
 /// Runs one POM transaction at a time and correlates its RailCom response.
 #[embassy_executor::task]
 pub async fn pom_actor_task(
-    request_receiver: Receiver<'static, CriticalSectionRawMutex, PomRequest, 1>,
-    response_sender: Sender<'static, CriticalSectionRawMutex, PomResponse, 1>,
-    tx_started_receiver: Receiver<'static, CriticalSectionRawMutex, PomTxStarted, 4>,
-    railcom_result_receiver: Receiver<'static, CriticalSectionRawMutex, PomRailcomResult, 4>,
-    scheduler_sender: Sender<'static, CriticalSectionRawMutex, SchedulerCommand, 32>,
+    request_receiver: PomRequestReceiver,
+    response_sender: PomResponseSender,
+    tx_started_receiver: PomTxStartedReceiver,
+    railcom_result_receiver: PomRailcomResultReceiver,
+    scheduler_sender: SchedulerCommandSender,
 ) -> ! {
     loop {
         let request = request_receiver.receive().await;

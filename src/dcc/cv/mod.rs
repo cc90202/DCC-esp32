@@ -10,7 +10,6 @@ pub use pom::PomRequestId;
 pub(crate) use pom::drain_channel;
 #[cfg(target_arch = "riscv32")]
 pub use pom::{
-    PomRailcomResult, PomRailcomResultChannel, PomRequest, PomRequestChannel, PomResponse,
-    PomResponseChannel, PomRuntimeStats, PomTxStarted, PomTxStartedChannel, pom_actor_task,
+    PomRailcomResult, PomRequest, PomResponse, PomRuntimeStats, PomTxStarted, pom_actor_task,
     pom_result_from_railcom_items, pom_runtime_stats,
 };

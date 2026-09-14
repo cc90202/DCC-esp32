@@ -11,16 +11,20 @@ use {
     embassy_time::{Duration, Timer},
 };
 
-use crate::dcc::{PowerGeneration, packet_scheduler_task};
+use super::error::CriticalTaskInitSender;
+use crate::dcc::channels::{
+    DccFrameReceiver, DccFrameSender, LocoRequestReceiver, LocoResponseSender, PowerFenceAckSender,
+    PowerQuiesceReceiver, SchedulerCommandReceiver,
+};
+use crate::dcc::packet_scheduler_task;
 use crate::dcc_runtime::dcc_engine_task;
 use crate::net::udp_control::{NetTaskChannels, net_task};
 use crate::net::wifi_config::WifiCredentials;
-use crate::runtime_channels::{
-    BootReadySender, DccFrameReceiver, DccFrameSender, DisplayReceiver, DisplaySender,
-    FaultEventSender, LocoRequestReceiver, LocoResponseSender, RailcomRxOutputSender,
-    RuntimeSender, SchedulerCommandReceiver, announce_ready,
+use crate::railcom::uart_reader::RailcomRxOutputSender;
+use crate::system_status::channels::{
+    BootReadySender, DisplayReceiver, DisplaySender, FaultEventSender,
 };
-use crate::system_status::BootReadyEvent;
+use crate::system_status::{BootReadyEvent, announce_ready};
 
 use super::CriticalTaskInit;
 
@@ -30,14 +34,14 @@ pub(super) struct NetTaskWrapperContext {
     pub(super) credentials: WifiCredentials,
     pub(super) fault_sender: FaultEventSender,
     pub(super) channels: NetTaskChannels,
-    pub(super) failure_sender: RuntimeSender<CriticalTaskInit, 4>,
+    pub(super) failure_sender: CriticalTaskInitSender,
 }
 
 #[embassy_executor::task]
 pub(super) async fn dcc_engine_task_wrapper(
     receiver: DccFrameReceiver,
     fault_sender: FaultEventSender,
-    fence_ack_sender: RuntimeSender<PowerGeneration, 1>,
+    fence_ack_sender: PowerFenceAckSender,
     ready_sender: BootReadySender,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::DccEngine).await;
@@ -90,7 +94,7 @@ pub(super) async fn display_task_wrapper(
 
 #[embassy_executor::task]
 pub(super) async fn scheduler_task_wrapper(
-    power_quiesce_receiver: crate::runtime_channels::RuntimeReceiver<PowerGeneration, 1>,
+    power_quiesce_receiver: PowerQuiesceReceiver,
     command_receiver: SchedulerCommandReceiver,
     loco_request_receiver: LocoRequestReceiver,
     loco_response_sender: LocoResponseSender,
@@ -118,6 +122,41 @@ pub(super) async fn railcom_isr_capture_task_wrapper(
     crate::railcom_capture::railcom_isr_capture_task(uart_rx, result_sender).await
 }
 
+/// Snapshot of every RailCom-related counter the bench dump reports.
+///
+/// Assembled here rather than in `railcom`: each module publishes its own
+/// counters, and putting a view that spans several of them inside one of them
+/// made `railcom` depend on `track_output` for bookkeeping alone, which closed
+/// a cycle through the capture ISR.
+///
+/// Gated with the task below, because it exists only to feed it.
+#[cfg(feature = "bench-diag")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub(super) struct RailcomDiagnostics {
+    pub boundary: crate::railcom::RailcomStats,
+    pub scheduler: crate::dcc::scheduler::RailcomSchedulerStats,
+    pub track_output: crate::track_output::TrackOutputStats,
+    pub rx: crate::railcom::pipeline::RailcomRxStats,
+    /// Per-channel receive counters, ordered as channel 1 followed by channel 2.
+    pub rx_channels: [crate::railcom::pipeline::RailcomChannelStats;
+        crate::railcom::pipeline::RAILCOM_CHANNEL_COUNT],
+    pub loco: crate::railcom::loco_tracker::RailcomLocoTrackerStats,
+}
+
+#[cfg(feature = "bench-diag")]
+#[must_use]
+fn railcom_diagnostics() -> RailcomDiagnostics {
+    RailcomDiagnostics {
+        boundary: crate::railcom::stats(),
+        scheduler: crate::dcc::scheduler::railcom_scheduler_stats(),
+        track_output: crate::track_output::stats(),
+        rx: crate::railcom::pipeline::railcom_rx_stats(),
+        rx_channels: crate::railcom::pipeline::railcom_rx_channel_stats(),
+        loco: crate::railcom::loco_tracker::railcom_loco_tracker_stats(),
+    }
+}
+
 /// Bench diagnostic: periodic dump of the RailCom, POM and network counters.
 ///
 /// Compiled out unless `bench-diag` is enabled. The line carries ~50 fields,
@@ -130,7 +169,7 @@ pub(super) async fn railcom_isr_capture_task_wrapper(
 pub(super) async fn railcom_diag_task() -> ! {
     loop {
         Timer::after(Duration::from_secs(10)).await;
-        let diag = crate::railcom::diagnostics();
+        let diag = railcom_diagnostics();
         let rmt_timing = crate::rmt_dcc::timing_stats();
         let pom = crate::dcc::pom_runtime_stats();
         let railcom_getdata_no_data = crate::net::railcom_getdata_no_data_count();

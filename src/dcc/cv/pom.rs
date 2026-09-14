@@ -13,11 +13,6 @@ use crate::railcom_data::{RailcomDatagram, RailcomItem};
 use crate::diagnostics::diagnostic_counters;
 
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::Receiver;
-
-#[cfg(target_arch = "riscv32")]
 mod actor;
 #[cfg(target_arch = "riscv32")]
 pub use actor::pom_actor_task;
@@ -161,18 +156,6 @@ pub struct PomTxStarted {
     pub packet_sequence: PacketSequence,
 }
 
-#[cfg(target_arch = "riscv32")]
-pub type PomRequestChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRequest, 1>;
-#[cfg(target_arch = "riscv32")]
-pub type PomResponseChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomResponse, 1>;
-#[cfg(target_arch = "riscv32")]
-pub type PomTxStartedChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomTxStarted, 4>;
-#[cfg(target_arch = "riscv32")]
-pub type PomRailcomResultChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRailcomResult, 4>;
-
 /// Drain any pending items from a `Receiver` without awaiting.
 ///
 /// Used before dispatching a new request on a single-slot channel to make sure
@@ -181,7 +164,7 @@ pub type PomRailcomResultChannel =
 /// types that flow through these channels.
 #[cfg(target_arch = "riscv32")]
 pub(crate) fn drain_channel<T: Copy, const N: usize>(
-    receiver: &Receiver<'static, CriticalSectionRawMutex, T, N>,
+    receiver: &crate::runtime_channels::RuntimeReceiver<T, N>,
 ) {
     while receiver.try_receive().is_ok() {}
 }

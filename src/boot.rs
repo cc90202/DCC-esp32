@@ -13,10 +13,11 @@ mod runtime_tasks;
 mod self_check;
 mod startup_sequence;
 
+pub(crate) use error::BootFailureChannel;
 use error::log_degraded_boot_error;
 pub use error::{
-    BootAction, BootError, BootFailureChannel, CriticalHardwareInit, CriticalTask,
-    CriticalTaskInit, DccSelfCheckError, WifiConfigInitError,
+    BootAction, BootError, CriticalHardwareInit, CriticalTask, CriticalTaskInit, DccSelfCheckError,
+    WifiConfigInitError,
 };
 use hardware::{
     initialize_dcc_rmt, initialize_display_bus, initialize_railcom_receiver, start_async_runtime,
@@ -43,12 +44,12 @@ use crate::control_buttons::{
     ProvisioningRequestChannel, new_button_input, resume_button_task, stop_button_task,
     wait_for_boot_provisioning_override,
 };
-use crate::dcc::{
-    LocoRequestChannel, LocoResponseChannel, PomRailcomResultChannel, PomRequestChannel,
-    PomResponseChannel, PomTxStartedChannel, PowerQuiesceChannel, SchedulerCommandChannel,
-    pom_actor_task,
+use crate::dcc::channels::{
+    DccFrameSender, DccPacketChannel, LocoRequestChannel, LocoResponseChannel,
+    PomRailcomResultChannel, PomRequestChannel, PomResponseChannel, PomTxStartedChannel,
+    PowerFenceAckChannel, PowerQuiesceChannel, SchedulerCommandChannel,
 };
-use crate::dcc_runtime::{DccPacketChannel, PowerFenceAckChannel};
+use crate::dcc::pom_actor_task;
 use crate::fault_manager::{
     FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerTaskContext, FaultStateWatch,
     fault_effects_task, fault_manager_task,
@@ -66,12 +67,11 @@ use crate::net::wifi_config::{
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
 use crate::railcom::uart_reader::RailcomUartRuntimeResultChannel;
-use crate::runtime_channels::{
-    BootReadyChannel, DccFrameSender, DisplayChannel, FaultEventChannel, NetStatusChannel,
-    SystemStatusChannel,
-};
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
+use crate::system_status::channels::{
+    BootReadyChannel, DisplayChannel, FaultEventChannel, NetStatusChannel, SystemStatusChannel,
+};
 use crate::system_status::{BootStep, DisplayEvent, FaultManagerState, SystemStatusEvent};
 use crate::track_output::TrackOutput;
 
@@ -405,7 +405,7 @@ async fn activate_safe_runtime(
     } = resources;
 
     info!("boot: core runtime spawned, establishing DCC output");
-    send_power_on_idle_burst(&sender).await;
+    send_power_on_idle_burst(sender).await;
     info!("boot: power-on idle burst complete (20 packets)");
 
     spawn_critical(
@@ -459,7 +459,7 @@ async fn activate_safe_runtime(
     )?;
     info!("boot: control button tasks spawned (GPIO22=stop, GPIO21=resume)");
 
-    send_decoder_reset_sequence(&sender).await;
+    send_decoder_reset_sequence(sender).await;
     info!("boot: reset sequence complete (5 packets)");
 
     let short_pin = new_short_detect_input(short_detect_pin);

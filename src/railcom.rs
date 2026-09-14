@@ -3,8 +3,10 @@
 //! The pure parser and pipeline turn UART windows into typed datagrams, the
 //! locomotive tracker correlates decoder sightings, and target-only adapters
 //! route logon and POM feedback. Cutout authorisation lives in the scheduler
-//! and physical timing in `track_output`; this module also exposes aggregate
-//! diagnostics across those paths.
+//! and physical timing in `track_output`. Each of those publishes its own
+//! counters; assembling a view across them is the composition root's job, not
+//! this module's — reaching out for their snapshots was the only reason this
+//! module depended on `track_output`, and that dependency closed a cycle.
 
 pub mod loco_tracker;
 pub mod parser;
@@ -20,18 +22,6 @@ pub use crate::cutout::{PacketSequence, RailcomChannel};
 pub use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
 use core::sync::atomic::{AtomicU32, Ordering};
-
-#[cfg(target_arch = "riscv32")]
-use crate::dcc::scheduler::{RailcomSchedulerStats, railcom_scheduler_stats};
-#[cfg(target_arch = "riscv32")]
-use crate::railcom::loco_tracker::{RailcomLocoTrackerStats, railcom_loco_tracker_stats};
-#[cfg(target_arch = "riscv32")]
-use crate::railcom::pipeline::{
-    RAILCOM_CHANNEL_COUNT, RailcomChannelStats, RailcomRxStats, railcom_rx_channel_stats,
-    railcom_rx_stats,
-};
-#[cfg(target_arch = "riscv32")]
-use crate::track_output::{TrackOutputStats, stats as track_output_stats};
 
 // A global atomic is the smallest sufficient mechanism for this single counter
 // shared between the ISR and tasks. Relaxed ordering is sufficient: the value
@@ -72,38 +62,6 @@ pub fn on_dcc_packet_boundary() {
 pub fn stats() -> RailcomStats {
     RailcomStats {
         packet_boundary_count: PACKET_BOUNDARY_COUNT.load(Ordering::Acquire),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct RailcomDiagnostics {
-    pub boundary: RailcomStats,
-    #[cfg(target_arch = "riscv32")]
-    pub scheduler: RailcomSchedulerStats,
-    #[cfg(target_arch = "riscv32")]
-    pub track_output: TrackOutputStats,
-    #[cfg(target_arch = "riscv32")]
-    pub rx: RailcomRxStats,
-    /// Per-channel receive counters, ordered as channel 1 followed by channel 2.
-    #[cfg(target_arch = "riscv32")]
-    pub rx_channels: [RailcomChannelStats; RAILCOM_CHANNEL_COUNT],
-    #[cfg(target_arch = "riscv32")]
-    pub loco: RailcomLocoTrackerStats,
-}
-
-/// Returns a unified RailCom diagnostic snapshot across boundary telemetry,
-/// scheduler policy decisions, and physical cutout execution.
-#[cfg(target_arch = "riscv32")]
-#[must_use]
-pub fn diagnostics() -> RailcomDiagnostics {
-    RailcomDiagnostics {
-        boundary: stats(),
-        scheduler: railcom_scheduler_stats(),
-        track_output: track_output_stats(),
-        rx: railcom_rx_stats(),
-        rx_channels: railcom_rx_channel_stats(),
-        loco: railcom_loco_tracker_stats(),
     }
 }
 

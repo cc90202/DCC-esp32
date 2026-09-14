@@ -1,5 +1,13 @@
 //! Pure value objects shared by controller authority and DCC consumers.
 
+/// Registry for the lease accepted at mutation boundaries.
+///
+/// Gated `any(test, ...)` like every other policy module: the target-only form
+/// it carried before this move meant its tests were never compiled, let alone
+/// run.
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod lease_registry;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct LeaseEpoch(u32);

@@ -7,10 +7,10 @@ use core::cell::Cell;
 
 use crate::application::LeasePermit;
 use crate::application::StatusModel;
-use crate::runtime_channels::{
-    FaultEventSender, LocoRequestSender, LocoResponseReceiver, PomRequestSender,
-    PomResponseReceiver,
+use crate::dcc::channels::{
+    LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
 };
+use crate::system_status::channels::FaultEventSender;
 
 /// Dependencies used only by track-power and status handlers.
 pub(super) struct TrackCtx<'a> {

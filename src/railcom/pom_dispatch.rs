@@ -5,10 +5,8 @@
 //! module only decides whether a RailCom CH2 window belongs to the in-flight
 //! POM exchange and forwards matching results.
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Sender;
-
 use crate::cutout::CutoutMode;
+use crate::dcc::channels::PomTxStartedSender;
 use crate::dcc::{PomRailcomResult, PomTxStarted, pom_result_from_railcom_items};
 use crate::railcom::{PacketSequence, RailcomChannel, RailcomItem};
 use crate::track_output::{CutoutRuntimeEvent, RailcomPacketMetadata};
@@ -40,9 +38,7 @@ pub fn evaluate_pom_window(
 }
 
 #[embassy_executor::task]
-pub async fn pom_cutout_monitor_task(
-    pom_tx_started_sender: Sender<'static, CriticalSectionRawMutex, PomTxStarted, 4>,
-) -> ! {
+pub async fn pom_cutout_monitor_task(pom_tx_started_sender: PomTxStartedSender) -> ! {
     let mut next_cutout_sequence_read = 0u32;
 
     loop {
