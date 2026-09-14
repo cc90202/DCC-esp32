@@ -15,7 +15,7 @@
 //! Spawning the LED task (in main.rs):
 //!
 //! ```no_run
-//! use dcc_esp32::status_led::status_led_task;
+//! use crate::status_led::status_led_task;
 //! use esp_hal::gpio::Output;
 //!
 //! // Assuming GPIO14 and GPIO15 were already split from `peripherals.GPIO`

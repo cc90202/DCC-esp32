@@ -5,8 +5,8 @@
 //! Address, speed, service-mode CV, POM CV, and binary-state address fields use
 //! validated newtypes so invalid ranges are rejected before packet construction.
 //!
-//! ```
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! ```ignore
+//! use crate::dcc::{DccAddress, DccPacket, Direction};
 //!
 //! let addr = DccAddress::new_short(42).expect("42 is a valid short address");
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();

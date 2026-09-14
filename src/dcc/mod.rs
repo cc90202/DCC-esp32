@@ -10,8 +10,8 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! ```ignore
+//! use crate::dcc::{DccAddress, DccPacket, Direction};
 //!
 //! let addr = DccAddress::new_short(3).unwrap();
 //! let packet = DccPacket::speed_28step(addr, 15, Direction::Forward).expect("valid speed");

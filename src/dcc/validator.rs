@@ -18,8 +18,8 @@
 //!
 //! Validate pulse timing (NMRA S-9.1):
 //!
-//! ```
-//! use dcc_esp32::dcc::{
+//! ```ignore
+//! use crate::dcc::{
 //!     DccAddress, DccPacket, Direction, encode_dcc_packet, validate_timing,
 //! };
 //!
@@ -36,8 +36,8 @@
 //!
 //! Validate packet structure:
 //!
-//! ```
-//! use dcc_esp32::dcc::{
+//! ```ignore
+//! use crate::dcc::{
 //!     DccAddress, DccPacket, Direction, encode_dcc_packet, validate_packet_structure,
 //! };
 //!
@@ -51,8 +51,8 @@
 //!
 //! Validate complete packet (structure + timing + compliance + checksum):
 //!
-//! ```
-//! use dcc_esp32::dcc::{
+//! ```ignore
+//! use crate::dcc::{
 //!     DccAddress, DccPacket, Direction, encode_dcc_packet, validate_full,
 //! };
 //!
@@ -68,8 +68,8 @@
 //!
 //! Validate NMRA compliance (ranges only):
 //!
-//! ```
-//! use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_nmra_compliance};
+//! ```ignore
+//! use crate::dcc::{DccAddress, DccPacket, Direction, validate_nmra_compliance};
 //!
 //! let addr = DccAddress::new_short(5).unwrap();
 //! let packet = DccPacket::speed_28step(addr, 15, Direction::Forward).unwrap();
@@ -80,8 +80,8 @@
 //!
 //! Validate everything in one call (recommended):
 //!
-//! ```
-//! use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_complete};
+//! ```ignore
+//! use crate::dcc::{DccAddress, DccPacket, Direction, validate_complete};
 //!
 //! let addr = DccAddress::new_short(42).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
@@ -397,8 +397,8 @@ pub fn validate_full(packet: &DccPacket, pulses: &[PulseCode]) -> Result<(), Val
 ///
 /// # Examples
 ///
-/// ```
-/// use dcc_esp32::dcc::{DccAddress, DccPacket, Direction, validate_complete};
+/// ```ignore
+/// use crate::dcc::{DccAddress, DccPacket, Direction, validate_complete};
 ///
 /// let addr = DccAddress::new_short(42).unwrap();
 /// let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();

@@ -16,9 +16,9 @@
 //!
 //! Apply events to the model:
 //!
-//! ```
-//! use dcc_esp32::application::StatusModel;
-//! use dcc_esp32::system_status::{SystemStatusEvent, LedState};
+//! ```ignore
+//! use crate::application::StatusModel;
+//! use crate::system_status::{LedState, SystemStatusEvent};
 //!
 //! let mut model = StatusModel::new();
 //! assert_eq!(model.led_state(), LedState::Booting);
@@ -38,9 +38,9 @@
 //!
 //! Fault handling:
 //!
-//! ```
-//! use dcc_esp32::application::StatusModel;
-//! use dcc_esp32::system_status::{SystemStatusEvent, FaultCause, LedState};
+//! ```ignore
+//! use crate::application::StatusModel;
+//! use crate::system_status::{FaultCause, LedState, SystemStatusEvent};
 //!
 //! let mut model = StatusModel::new();
 //! model.apply(SystemStatusEvent::BootCompleted);
@@ -280,6 +280,35 @@ pub(crate) async fn announce_ready(sender: channels::BootReadySender, event: Boo
 
 #[cfg(test)]
 mod tests {
+    /// The first module-level example, as a test that actually runs.
+    #[test]
+    fn the_model_walks_boot_to_running_through_wifi() {
+        let mut model = StatusModel::new();
+        assert_eq!(model.led_state(), LedState::Booting);
+
+        model.apply(SystemStatusEvent::BootCompleted);
+        assert_eq!(model.led_state(), LedState::Running);
+
+        model.apply(SystemStatusEvent::WifiConnecting);
+        assert_eq!(model.led_state(), LedState::WifiConnecting);
+
+        model.apply(SystemStatusEvent::WifiConnected);
+        assert_eq!(model.led_state(), LedState::Running);
+    }
+
+    /// The second module-level example, as a test that actually runs.
+    #[test]
+    fn a_latched_fault_holds_the_led_until_it_is_cleared() {
+        let mut model = StatusModel::new();
+        model.apply(SystemStatusEvent::BootCompleted);
+
+        model.apply(SystemStatusEvent::FaultLatched(FaultCause::TrackShort));
+        assert_eq!(model.led_state(), LedState::FaultLatched);
+
+        model.apply(SystemStatusEvent::FaultCleared);
+        assert_eq!(model.led_state(), LedState::Running);
+    }
+
     use super::*;
     use crate::application::StatusModel;
 

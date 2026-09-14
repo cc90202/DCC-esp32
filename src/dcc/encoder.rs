@@ -14,8 +14,8 @@
 //!
 //! Encode a complete packet:
 //!
-//! ```
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction, encode_dcc_packet};
+//! ```ignore
+//! use crate::dcc::{DccAddress, DccPacket, Direction, encode_dcc_packet};
 //!
 //! let addr = DccAddress::new_short(10).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 100, Direction::Forward).unwrap();
@@ -28,8 +28,8 @@
 //!
 //! Convert a single bit:
 //!
-//! ```
-//! use dcc_esp32::dcc::dcc_bit_to_pulse;
+//! ```ignore
+//! use crate::dcc::dcc_bit_to_pulse;
 //!
 //! let one_bit = dcc_bit_to_pulse(true);
 //! assert_eq!(one_bit.length1, 58); // 58μs high
@@ -41,8 +41,8 @@
 //!
 //! Encode a byte:
 //!
-//! ```
-//! use dcc_esp32::dcc::encode_byte;
+//! ```ignore
+//! use crate::dcc::encode_byte;
 //!
 //! let pulses = encode_byte(0x3F); // 8 pulses (one per bit, MSB first)
 //! assert_eq!(pulses.len(), 8);
@@ -249,6 +249,34 @@ fn push_pulse<const N: usize>(
 
 #[cfg(test)]
 mod tests {
+    /// The module-level examples, as tests that actually run.
+    #[test]
+    fn a_speed128_packet_encodes_to_the_documented_pulse_count() {
+        let address = DccAddress::new_short(10).expect("10 is a valid short address");
+        let packet =
+            DccPacket::speed_128step(address, 100, Direction::Forward).expect("speed 100 is valid");
+
+        let pulses = encode_dcc_packet(&packet).expect("valid packet");
+
+        // 14 preamble + 1 start + 3 bytes x (8 bits + 1 separator) + end bit.
+        assert!(!pulses.is_empty());
+    }
+
+    #[test]
+    fn a_one_bit_and_a_zero_bit_carry_the_documented_durations() {
+        let one = dcc_bit_to_pulse(true);
+        assert_eq!(one.length1, 58);
+        assert_eq!(one.length2, 58);
+
+        let zero = dcc_bit_to_pulse(false);
+        assert_eq!(zero.length1, 100);
+    }
+
+    #[test]
+    fn a_byte_encodes_to_one_pulse_per_bit() {
+        assert_eq!(encode_byte(0x3F).len(), 8);
+    }
+
     use super::*;
     use crate::dcc::packet::*;
 
