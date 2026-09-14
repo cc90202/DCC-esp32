@@ -311,7 +311,14 @@ fn record_parsed_items(items: &[RailcomItem]) {
             RailcomItem::Datagram(RailcomDatagram::AdrLow(_)) => {
                 RAILCOM_RX.rx_adr_low_count.fetch_add(1, Ordering::Relaxed);
             }
-            RailcomItem::Datagram(_) => {}
+            RailcomItem::Datagram(
+                RailcomDatagram::CvData(_)
+                | RailcomDatagram::Ext(_)
+                | RailcomDatagram::Info1(_)
+                | RailcomDatagram::Dyn { .. }
+                | RailcomDatagram::Xpom { .. }
+                | RailcomDatagram::Search(_),
+            ) => {}
         }
     }
 }

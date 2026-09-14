@@ -251,6 +251,7 @@ fn address_parts(items: &[RailcomItem]) -> (Option<u8>, Option<u8>, bool) {
                 saw_address_datagram = true;
             }
             RailcomDatagram::Ext(_)
+            | RailcomDatagram::Info1(_)
             | RailcomDatagram::Dyn { .. }
             | RailcomDatagram::Xpom { .. }
             | RailcomDatagram::CvData(_)

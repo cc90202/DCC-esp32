@@ -2,8 +2,9 @@ use core::fmt;
 
 use heapless::Vec;
 
+use crate::cutout::RailcomChannel;
 use crate::dcc::DccAddress;
-use crate::railcom_data::{RailcomDatagram, RailcomItem};
+use crate::railcom_data::{ExtPayload, RailcomDatagram, RailcomItem};
 
 const SYMBOL_NACK: u8 = 0xfc;
 const SYMBOL_ACK: u8 = 0xfd;
@@ -121,6 +122,11 @@ pub enum ParseError {
         needed_symbols: usize,
         available_symbols: usize,
     },
+    /// `offset` counts symbols from the start of the datagram, not of the window.
+    ControlSymbolInsideDatagram {
+        id: u8,
+        offset: usize,
+    },
     InvalidLogonCrc {
         expected: u8,
         actual: u8,
@@ -153,6 +159,10 @@ impl fmt::Display for ParseError {
             } => write!(
                 formatter,
                 "truncated RailCom datagram {id}: needs {needed_symbols} symbols, has {available_symbols}"
+            ),
+            Self::ControlSymbolInsideDatagram { id, offset } => write!(
+                formatter,
+                "RailCom control symbol at position {offset} inside datagram {id}"
             ),
             Self::InvalidLogonCrc { expected, actual } => write!(
                 formatter,
@@ -248,6 +258,7 @@ enum ParsedSymbolItem {
 fn parse_symbol_item(
     symbols: &[DecodedSymbol],
     index: usize,
+    channel: RailcomChannel,
 ) -> Result<ParsedSymbolItem, ParseError> {
     match symbols[index] {
         DecodedSymbol::Ack => Ok(ParsedSymbolItem::Item {
@@ -258,7 +269,7 @@ fn parse_symbol_item(
             item: RailcomItem::Nack,
             consumed_symbols: 1,
         }),
-        DecodedSymbol::Data6(first) => parse_symbol_datagram(symbols, index, first),
+        DecodedSymbol::Data6(first) => parse_symbol_datagram(symbols, index, first, channel),
         DecodedSymbol::Reserved(code) => Err(ParseError::Reserved4Of8Code(code)),
         DecodedSymbol::Invalid(code) => Err(ParseError::Invalid4Of8Code(code)),
     }
@@ -268,32 +279,30 @@ fn parse_symbol_datagram(
     symbols: &[DecodedSymbol],
     index: usize,
     first: u8,
+    channel: RailcomChannel,
 ) -> Result<ParsedSymbolItem, ParseError> {
     let id = first >> 2;
-    let symbol_count = match datagram_symbol_count(id) {
+    let symbol_count = match resolve_symbol_count(symbols, index, id, channel) {
         Ok(symbol_count) => symbol_count,
         Err(ParseError::UnsupportedDatagramId(id)) => {
             return Ok(ParsedSymbolItem::UnsupportedDatagram(id));
         }
         Err(error) => return Err(error),
     };
+    let needed_symbols = usize::from(symbol_count);
     let available_symbols = symbols.len() - index;
-    if available_symbols < symbol_count {
+    if available_symbols < needed_symbols {
         return Err(ParseError::TruncatedDatagram {
             id,
-            needed_symbols: symbol_count,
+            needed_symbols,
             available_symbols,
         });
     }
 
     let mut useful_bits = 0u64;
-    for symbol in &symbols[index..index + symbol_count] {
+    for (offset, symbol) in symbols[index..index + needed_symbols].iter().enumerate() {
         let DecodedSymbol::Data6(value) = *symbol else {
-            return Err(ParseError::TruncatedDatagram {
-                id,
-                needed_symbols: symbol_count,
-                available_symbols,
-            });
+            return Err(ParseError::ControlSymbolInsideDatagram { id, offset });
         };
         useful_bits = (useful_bits << 6) | u64::from(value);
     }
@@ -301,17 +310,20 @@ fn parse_symbol_datagram(
     let payload_bits = symbol_count * 6 - 4;
     let payload = useful_bits & ((1u64 << payload_bits) - 1);
     Ok(ParsedSymbolItem::Item {
-        item: RailcomItem::Datagram(parse_datagram(id, payload, payload_bits as u8)?),
-        consumed_symbols: symbol_count,
+        item: RailcomItem::Datagram(parse_datagram(id, payload, payload_bits, channel)?),
+        consumed_symbols: needed_symbols,
     })
 }
 
 /// Turns already-decoded symbols into RailCom items (ACK/NACK/datagrams).
-fn items_from_symbols(symbols: &[DecodedSymbol]) -> Result<RailcomParseResult, ParseError> {
+fn items_from_symbols(
+    symbols: &[DecodedSymbol],
+    channel: RailcomChannel,
+) -> Result<RailcomParseResult, ParseError> {
     let mut items = Vec::<RailcomItem, 6>::new();
     let mut index = 0usize;
     while index < symbols.len() {
-        match parse_symbol_item(symbols, index)? {
+        match parse_symbol_item(symbols, index, channel)? {
             ParsedSymbolItem::Item {
                 item,
                 consumed_symbols,
@@ -334,6 +346,13 @@ fn items_from_symbols(symbols: &[DecodedSymbol]) -> Result<RailcomParseResult, P
     })
 }
 
+/// Decodes one channel-2 receive window into RailCom items.
+///
+/// Rejects the window whole on the first byte that is not a 4-of-8 code, and on
+/// a window that opens with a control symbol and then carries a datagram: a
+/// control symbol between two datagrams is padding and is kept. Accepts the
+/// short `app:ext` some decoders emit in place of the conforming three-symbol
+/// one, whenever nothing that could be its third symbol follows.
 pub fn parse_channel2(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
     let symbols = decode_symbols::<6>(raw_bytes)?;
     // RCN-217 §3: a response starting with ACK/NACK may contain further
@@ -347,7 +366,7 @@ pub fn parse_channel2(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError
     {
         return Err(ParseError::DatagramAfterControl);
     }
-    items_from_symbols(&symbols)
+    items_from_symbols(&symbols, RailcomChannel::Channel2)
 }
 
 /// Number of bytes a channel-1 window can legitimately hold (one 12-bit
@@ -372,6 +391,12 @@ fn strip_channel1_break_tail(raw_bytes: &[u8]) -> &[u8] {
     }
 }
 
+/// Decodes one channel-1 receive window into RailCom items.
+///
+/// Strips the UART break-frame tail, rejects the window whole on the first byte
+/// that is not a 4-of-8 code, and rejects the control symbols RCN-217 §3
+/// prohibits here. Reads identifier 3 as the two-symbol `app:info1`, which is
+/// the only form that fits a channel-1 window.
 pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
     let raw_bytes = strip_channel1_break_tail(raw_bytes);
     let symbols = decode_symbols::<2>(raw_bytes)?;
@@ -381,7 +406,7 @@ pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError
             return Err(ParseError::ControlSymbolNotAllowed(raw));
         }
     }
-    items_from_symbols(&symbols)
+    items_from_symbols(&symbols, RailcomChannel::Channel1)
 }
 
 pub fn parse_logon_response_48(
@@ -458,26 +483,100 @@ pub fn parse_logon_response_48(
     Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
 }
 
-fn datagram_symbol_count(id: u8) -> Result<usize, ParseError> {
-    match id {
-        0..=2 | 14 => Ok(2),
-        3 | 7 => Ok(3),
-        8..=11 => Ok(6),
+/// The extended datagram: the one identifier whose size is not fixed.
+const ID_APP_EXT: u8 = 3;
+
+/// Symbols one datagram occupies, by the book, in the given receive window.
+///
+/// [`ID_APP_EXT`] is the only identifier whose size depends on the channel, and
+/// the only one whose arms name the channel rather than matching any window.
+/// RCN-217 gives it three symbols in channel 2, where it is `app:ext`. In
+/// channel 1 it is `app:info1`, a different two-symbol datagram that happens to
+/// share the identifier: the standard reserves that channel for the address
+/// fragments, but decoders do send `app:info1` there and ZIMO's dissector reads
+/// it as two symbols.
+///
+/// What a decoder really sends can still be shorter than the book says: see
+/// [`resolve_symbol_count`].
+fn datagram_symbol_count(id: u8, channel: RailcomChannel) -> Result<u8, ParseError> {
+    match (id, channel) {
+        (0..=2 | 14, _) => Ok(2),
+        (ID_APP_EXT, RailcomChannel::Channel1) => Ok(2),
+        (ID_APP_EXT, RailcomChannel::Channel2) => Ok(3),
+        (7, _) => Ok(3),
+        (8..=11, _) => Ok(6),
         _ => Err(ParseError::UnsupportedDatagramId(id)),
     }
 }
 
-fn parse_datagram(id: u8, payload: u64, payload_bits: u8) -> Result<RailcomDatagram, ParseError> {
-    match (id, payload_bits) {
-        (0, 8) => Ok(RailcomDatagram::CvData(payload as u8)),
-        (1, 8) => Ok(RailcomDatagram::AdrHigh(payload as u8)),
-        (2, 8) => Ok(RailcomDatagram::AdrLow(payload as u8)),
-        (3, 14) => Ok(RailcomDatagram::Ext(payload as u16)),
-        (7, 14) => Ok(RailcomDatagram::Dyn {
+/// Symbols this datagram actually occupies, allowing for the short `app:ext`.
+///
+/// An ESU LokPilot 3 is documented emitting `app:ext` in two symbols where
+/// RCN-217 asks for three. OpenMRN fixes its length at two for that reason,
+/// which in exchange misreads every conforming decoder. Shortening it only when
+/// the third symbol carries no data — the window ends there, or that position
+/// holds one of the ACK/NACK symbols RCN-217 allows as padding — costs a
+/// conforming decoder nothing, because a conforming `app:ext` always carries a
+/// data symbol in third position.
+///
+/// Only that one position is examined. A control symbol there does not prove
+/// the rest of the window is padding; it proves only that the datagram cannot
+/// be the conforming three-symbol form.
+///
+/// Two cases stay out of reach, both deliberately. A short `app:ext` with
+/// another datagram behind it is indistinguishable from a conforming one: the
+/// encoding carries no length, so nothing can tell them apart. That window is
+/// lost whole, exactly as before — the three symbols read as one datagram and
+/// what follows lands mid-datagram — so the rule below neither helps nor hurts
+/// there. And a conforming `app:ext` whose third symbol was lost now reads as a
+/// short one carrying a wrong value, where it used to fail: the corruption is
+/// confined to the trailing datagram, and keeping the window preserves the CV
+/// answer in front of it. Which width was read stays visible in the
+/// [`ExtPayload`] variant, so a reader can weigh the value accordingly.
+fn resolve_symbol_count(
+    symbols: &[DecodedSymbol],
+    index: usize,
+    id: u8,
+    channel: RailcomChannel,
+) -> Result<u8, ParseError> {
+    // `decode_symbols` has already rejected the reserved and invalid codes, so
+    // these three cases are the whole of what can stand in third position.
+    let third_is_padding_or_absent = matches!(
+        symbols.get(index + 2),
+        None | Some(DecodedSymbol::Ack | DecodedSymbol::Nack)
+    );
+    if id == ID_APP_EXT && channel == RailcomChannel::Channel2 && third_is_padding_or_absent {
+        return Ok(2);
+    }
+    datagram_symbol_count(id, channel)
+}
+
+/// Turns an identifier and its payload into the datagram it stands for.
+///
+/// The channel separates the two datagrams that share identifier 3: `app:ext`
+/// in channel 2, `app:info1` in channel 1.
+fn parse_datagram(
+    id: u8,
+    payload: u64,
+    payload_bits: u8,
+    channel: RailcomChannel,
+) -> Result<RailcomDatagram, ParseError> {
+    match (id, payload_bits, channel) {
+        (0, 8, _) => Ok(RailcomDatagram::CvData(payload as u8)),
+        (1, 8, _) => Ok(RailcomDatagram::AdrHigh(payload as u8)),
+        (2, 8, _) => Ok(RailcomDatagram::AdrLow(payload as u8)),
+        (ID_APP_EXT, 8, RailcomChannel::Channel1) => Ok(RailcomDatagram::Info1(payload as u8)),
+        (ID_APP_EXT, 8, RailcomChannel::Channel2) => {
+            Ok(RailcomDatagram::Ext(ExtPayload::Short(payload as u8)))
+        }
+        (ID_APP_EXT, 14, RailcomChannel::Channel2) => {
+            Ok(RailcomDatagram::Ext(ExtPayload::Long(payload as u16)))
+        }
+        (7, 14, _) => Ok(RailcomDatagram::Dyn {
             value: (payload >> 6) as u8,
             sub_index: (payload & 0x3f) as u8,
         }),
-        (8..=11, 32) => Ok(RailcomDatagram::Xpom {
+        (8..=11, 32, _) => Ok(RailcomDatagram::Xpom {
             sequence: id - 8,
             values: [
                 ((payload >> 24) & 0xff) as u8,
@@ -486,7 +585,7 @@ fn parse_datagram(id: u8, payload: u64, payload_bits: u8) -> Result<RailcomDatag
                 (payload & 0xff) as u8,
             ],
         }),
-        (14, 8) => Ok(RailcomDatagram::Search(payload as u8)),
+        (14, 8, _) => Ok(RailcomDatagram::Search(payload as u8)),
         _ => Err(ParseError::UnsupportedDatagramId(id)),
     }
 }
@@ -604,6 +703,216 @@ mod tests {
             parsed.items.as_slice(),
             &[RailcomItem::Datagram(RailcomDatagram::CvData(0xab))]
         );
+    }
+
+    fn short_ext(value: u8) -> RailcomItem {
+        RailcomItem::Datagram(RailcomDatagram::Ext(ExtPayload::Short(value)))
+    }
+
+    fn conforming_ext(value: u16) -> RailcomItem {
+        RailcomItem::Datagram(RailcomDatagram::Ext(ExtPayload::Long(value)))
+    }
+
+    fn info1(value: u8) -> RailcomItem {
+        RailcomItem::Datagram(RailcomDatagram::Info1(value))
+    }
+
+    #[test]
+    fn test_symbol_sizes_match_the_flat_table_except_identifier_3_in_channel1() {
+        for id in 0u8..16 {
+            let by_the_book = match id {
+                0..=2 | 14 => Ok(2),
+                3 | 7 => Ok(3),
+                8..=11 => Ok(6),
+                _ => Err(ParseError::UnsupportedDatagramId(id)),
+            };
+            assert_eq!(
+                datagram_symbol_count(id, RailcomChannel::Channel2),
+                by_the_book,
+                "identifier {id} in channel 2"
+            );
+            let in_channel1 = if id == 3 { Ok(2) } else { by_the_book };
+            assert_eq!(
+                datagram_symbol_count(id, RailcomChannel::Channel1),
+                in_channel1,
+                "identifier {id} in channel 1"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_channel1_accepts_the_two_symbol_identifier_3() {
+        // Channel 1 holds two symbols, so the three-symbol channel-2 size
+        // leaves no window in which the datagram can ever be read.
+        let raw = encode_12_bit_for_test(3, 0x5a);
+        let parsed = parse_channel1(&raw).expect("channel1 id3 parse must succeed");
+
+        assert_eq!(parsed.status, RailcomParseStatus::Complete);
+        assert_eq!(parsed.items.as_slice(), &[info1(0x5a)]);
+    }
+
+    #[test]
+    fn test_parse_channel1_drops_the_break_tail_before_an_identifier_3() {
+        // The break-frame strip and the channel-1 size must compose: a glitch
+        // byte ahead of the datagram still leaves a readable window.
+        let data = encode_12_bit_for_test(3, 0x5a);
+        let parsed = parse_channel1(&[0xff, data[0], data[1]]).expect("break tail must be dropped");
+
+        assert_eq!(parsed.items.as_slice(), &[info1(0x5a)]);
+    }
+
+    #[test]
+    fn test_parse_channel2_keeps_the_conforming_identifier_3() {
+        let raw = encode_18_bit_for_test(3, 0x3fff);
+        let parsed = parse_channel2(&raw).expect("channel2 id3 parse must succeed");
+
+        assert_eq!(parsed.status, RailcomParseStatus::Complete);
+        assert_eq!(parsed.items.as_slice(), &[conforming_ext(0x3fff)]);
+    }
+
+    #[test]
+    fn test_parse_channel2_accepts_a_short_identifier_3_closing_the_window() {
+        let raw = encode_12_bit_for_test(3, 0xff);
+        let parsed = parse_channel2(&raw).expect("short id3 must parse");
+
+        assert_eq!(parsed.status, RailcomParseStatus::Complete);
+        assert_eq!(parsed.items.as_slice(), &[short_ext(0xff)]);
+    }
+
+    #[test]
+    fn test_parse_channel2_keeps_the_cv_answer_before_a_short_identifier_3() {
+        // The case that costs data. RCN-217 lets the rest of the window carry
+        // ACK padding, and a decoder may close with NACK, so these are the forms
+        // really seen: all of them used to make the trailing datagram truncated,
+        // and the truncation discarded the CV answer standing in front of it.
+        let cv = encode_12_bit_for_test(0, 0xab);
+        let ext = encode_12_bit_for_test(3, 0x5a);
+        let padded: [(&[u8], &[RailcomItem]); 4] = [
+            (&[], &[]),
+            (&[ACK_1_CODE], &[RailcomItem::Ack]),
+            (
+                &[ACK_1_CODE, ACK_2_CODE],
+                &[RailcomItem::Ack, RailcomItem::Ack],
+            ),
+            (&[NACK_CODE], &[RailcomItem::Nack]),
+        ];
+        for (padding, padding_items) in padded {
+            let mut raw = Vec::<u8, 8>::new();
+            raw.extend_from_slice(&cv).unwrap();
+            raw.extend_from_slice(&ext).unwrap();
+            raw.extend_from_slice(padding).unwrap();
+            let parsed =
+                parse_channel2(&raw).expect("cv answer must survive the short id3 and its padding");
+
+            let mut expected = Vec::<RailcomItem, 6>::new();
+            expected
+                .push(RailcomItem::Datagram(RailcomDatagram::CvData(0xab)))
+                .unwrap();
+            expected.push(short_ext(0x5a)).unwrap();
+            expected.extend_from_slice(padding_items).unwrap();
+
+            assert_eq!(parsed.status, RailcomParseStatus::Complete);
+            assert_eq!(parsed.items, expected, "padding {padding:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_channel2_keeps_the_length_when_the_third_symbol_carries_data() {
+        // The shortening turns on the third symbol, not on the symbol count: a
+        // data symbol in that position means a conforming datagram, whatever
+        // stands behind it.
+        let ext = encode_18_bit_for_test(3, 0x1234);
+        let cv = encode_12_bit_for_test(0, 0xab);
+        let raw = [ext[0], ext[1], ext[2], cv[0], cv[1]];
+        let parsed = parse_channel2(&raw).expect("conforming id3 must keep its length");
+
+        assert_eq!(parsed.status, RailcomParseStatus::Complete);
+        assert_eq!(
+            parsed.items.as_slice(),
+            &[
+                conforming_ext(0x1234),
+                RailcomItem::Datagram(RailcomDatagram::CvData(0xab)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_channel2_still_loses_a_short_identifier_3_with_data_behind_it() {
+        // The case the shortening cannot reach, pinned so nobody reads the rule
+        // as wider than it is: with a datagram behind it, the short form is
+        // indistinguishable from the conforming one, the three symbols read as
+        // one datagram, and what follows lands mid-datagram. The window is lost
+        // whole — exactly as it was before the rule existed.
+        let ext = encode_12_bit_for_test(3, 0x5a);
+        let cv = encode_12_bit_for_test(0, 0xab);
+        let raw = [ext[0], ext[1], cv[0], cv[1]];
+
+        assert!(parse_channel2(&raw).is_err());
+    }
+
+    #[test]
+    fn test_parse_channel2_reports_a_one_symbol_identifier_3_against_the_short_size() {
+        // The truncation is now measured against the size the window can really
+        // hold, not against the conforming three.
+        let ext = encode_12_bit_for_test(3, 0x5a);
+        let error = parse_channel2(&ext[..1]).expect_err("one symbol cannot hold a datagram");
+
+        assert_eq!(
+            error,
+            ParseError::TruncatedDatagram {
+                id: 3,
+                needed_symbols: 2,
+                available_symbols: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_channel2_reads_a_truncated_conforming_identifier_3_as_short() {
+        // The exchange the shortening buys, pinned down so that changing it is
+        // a deliberate act: a conforming datagram that lost its third symbol
+        // reads as a short one carrying a wrong value, where it used to fail.
+        // Only the trailing datagram is affected, and `payload_bits` says which
+        // width was read.
+        let conforming = encode_18_bit_for_test(3, 0x1234);
+        let parsed =
+            parse_channel2(&conforming[..2]).expect("a lost third symbol reads as the short form");
+
+        assert_eq!(parsed.items.as_slice(), &[short_ext(0x48)]);
+    }
+
+    #[test]
+    fn test_parse_channel2_reports_a_control_symbol_inside_a_datagram_as_such() {
+        // The shortening can put a control symbol in second position, where the
+        // datagram wanted data. That is not a truncation, and reporting it as
+        // one would print a window that needs two symbols and has two.
+        let ext = encode_12_bit_for_test(3, 0x5a);
+        let error = parse_channel2(&[ext[0], ACK_1_CODE])
+            .expect_err("a control symbol inside a datagram must not parse");
+
+        assert_eq!(
+            error,
+            ParseError::ControlSymbolInsideDatagram { id: 3, offset: 1 }
+        );
+    }
+
+    #[test]
+    fn test_every_size_the_table_gives_has_a_datagram_to_parse() {
+        // The two tables must agree: a size the first hands out with no payload
+        // width to match in the second turns a readable window into a hard
+        // error instead of a partial result.
+        for channel in [RailcomChannel::Channel1, RailcomChannel::Channel2] {
+            for id in 0u8..16 {
+                let Ok(symbol_count) = datagram_symbol_count(id, channel) else {
+                    continue;
+                };
+                let payload_bits = symbol_count * 6 - 4;
+                assert!(
+                    parse_datagram(id, 0, payload_bits, channel).is_ok(),
+                    "identifier {id} in {channel:?} has no datagram at {payload_bits} bits"
+                );
+            }
+        }
     }
 
     #[test]

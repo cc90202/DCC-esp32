@@ -358,6 +358,38 @@ mod tests {
     }
 
     #[test]
+    fn test_pom_result_survives_a_short_ext_behind_the_cv_answer() {
+        // End to end from the wire, because this is where the short `app:ext`
+        // costs data: the whole window used to fail as a truncated datagram,
+        // taking the CV answer in front of it down with it.
+        let window = [
+            0xa9, 0xc5, // app:pom, CV = 0xab
+            0x8d, 0x66, // app:ext in two symbols instead of three
+            0x0f, // the ACK padding RCN-217 allows
+        ];
+        let parsed = crate::railcom::parser::parse_channel2(&window)
+            .expect("the window must parse despite the short app:ext");
+
+        assert_eq!(
+            pom_result_from_railcom_items(
+                pom_id(7),
+                seq(42),
+                DccAddress::new_short(3),
+                true,
+                &parsed.items,
+            ),
+            Some(PomRailcomResult::Window {
+                request_id: pom_id(7),
+                packet_sequence: seq(42),
+                target_address: DccAddress::new_short(3),
+                value: Some(0xab),
+                ack: true,
+                nack: false,
+            })
+        );
+    }
+
+    #[test]
     fn test_pom_result_ignores_unrelated_datagrams() {
         let items = [RailcomItem::Datagram(RailcomDatagram::Dyn {
             value: 0x12,
