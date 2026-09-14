@@ -29,9 +29,12 @@ These are the external references used for DCC electrical/protocol and RailCom h
 ## Parser conformance review (2026-09-07)
 
 RCN-217 issue 24.11.2025, sections 2.5 and 3, is the reference for
-strict 4-of-8 decoding, prohibition of ACK/NACK in CH1, and the prohibition
-of datagrams after an initial CH2 ACK/NACK. Further control symbols and ACK
-padding after data remain supported. A one-byte `0xF8` response is invalid;
+strict 4-of-8 decoding, the prohibition of control symbols in CH1, and the
+prohibition of datagrams after an initial CH2 control symbol. Further control
+symbols and ACK padding after data remain supported. The control symbols are
+ACK and NACK from RCN-217 §2.5 plus BUSY, `0xE1`, which NMRA S-9.3.2 defines
+as the decoder being unable to answer; the two remaining codes of that family
+stay reserved. A one-byte `0xF8` response is invalid;
 the former breadboard workaround is no longer accepted as an ACK.
 
 For POM writes, an ACK followed by NACK indicates an unsupported CV and must

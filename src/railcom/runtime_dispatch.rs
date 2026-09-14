@@ -194,8 +194,11 @@ fn log_pom_window(
             }) => (*value, *ack, *nack),
             _ => (None, false, false),
         };
+        // A busy reply yields no verdict, so without this it would read exactly
+        // like a window that answered nothing at all.
+        let busy = complete_items.contains(&RailcomItem::Busy);
         info!(
-            "railcom pom ch2 seq={} req={:?} raw={=[u8]:#04x} outcome={:?} items={} value={:?} ack={} nack={}",
+            "railcom pom ch2 seq={} req={:?} raw={=[u8]:#04x} outcome={:?} items={} value={:?} ack={} nack={} busy={}",
             result.window.packet_sequence.value(),
             metadata.pom_request_id,
             result.window.raw_slice(),
@@ -203,7 +206,8 @@ fn log_pom_window(
             complete_items.len(),
             value,
             ack,
-            nack
+            nack,
+            busy
         );
     }
 }

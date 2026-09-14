@@ -48,5 +48,9 @@ pub enum RailcomDatagram {
 pub enum RailcomItem {
     Ack,
     Nack,
+    /// The decoder cannot answer right now. NMRA S-9.3.2 gives this its own
+    /// code; it is neither an acknowledgement nor a refusal, and it says
+    /// nothing about whether the command was accepted.
+    Busy,
     Datagram(RailcomDatagram),
 }

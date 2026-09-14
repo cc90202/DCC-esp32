@@ -6,10 +6,20 @@ use crate::cutout::RailcomChannel;
 use crate::dcc::DccAddress;
 use crate::railcom_data::{ExtPayload, RailcomDatagram, RailcomItem};
 
+// Reverse-table sentinels. Every one must stay above 0x3f, the largest value
+// a six-bit data symbol can decode to, or it would be read back as data.
+const SYMBOL_BUSY: u8 = 0xfb;
 const SYMBOL_NACK: u8 = 0xfc;
 const SYMBOL_ACK: u8 = 0xfd;
 const SYMBOL_RESERVED: u8 = 0xfe;
 const SYMBOL_INVALID: u8 = 0xff;
+const _: () = assert!(
+    SYMBOL_BUSY > 0x3f
+        && SYMBOL_NACK > 0x3f
+        && SYMBOL_ACK > 0x3f
+        && SYMBOL_RESERVED > 0x3f
+        && SYMBOL_INVALID > 0x3f
+);
 
 const SIX_TO_4_8: [u8; 64] = [
     0b1010_1100,
@@ -78,9 +88,17 @@ const SIX_TO_4_8: [u8; 64] = [
     0b0011_0011,
 ];
 
+/// RCN-217 §2.5: the decoder accepted the command. Two codes carry it.
 pub(crate) const ACK_1_CODE: u8 = 0b0000_1111;
 pub(crate) const ACK_2_CODE: u8 = 0b1111_0000;
+/// RCN-217 §2.5: the decoder refuses the command.
 pub(crate) const NACK_CODE: u8 = 0b0011_1100;
+/// NMRA S-9.3.2: the decoder is busy and cannot answer this request.
+pub(crate) const BUSY_CODE: u8 = 0b1110_0001;
+/// One of the two codes of weight four no standard has given a meaning yet.
+const RESERVED_1_CODE: u8 = 0b1100_0011;
+/// The other code of weight four no standard has given a meaning yet.
+const RESERVED_2_CODE: u8 = 0b1000_0111;
 
 const fn build_reverse_4_of_8() -> [u8; 256] {
     let mut table = [SYMBOL_INVALID; 256];
@@ -90,12 +108,27 @@ const fn build_reverse_4_of_8() -> [u8; 256] {
         index += 1;
     }
 
-    table[ACK_1_CODE as usize] = SYMBOL_ACK;
-    table[ACK_2_CODE as usize] = SYMBOL_ACK;
-    table[NACK_CODE as usize] = SYMBOL_NACK;
-    table[0b1110_0001usize] = SYMBOL_RESERVED;
-    table[0b1100_0011usize] = SYMBOL_RESERVED;
-    table[0b1000_0111usize] = SYMBOL_RESERVED;
+    // There are 70 codes of weight four and the data table holds 64 of them, so
+    // the six special codes must be exactly the six left over. Each must
+    // therefore weigh four, and must find its slot still unassigned: together
+    // those two checks prove that none of the six shadows a data symbol and
+    // that no two of them are the same code.
+    let special = [
+        (ACK_1_CODE, SYMBOL_ACK),
+        (ACK_2_CODE, SYMBOL_ACK),
+        (NACK_CODE, SYMBOL_NACK),
+        (BUSY_CODE, SYMBOL_BUSY),
+        (RESERVED_1_CODE, SYMBOL_RESERVED),
+        (RESERVED_2_CODE, SYMBOL_RESERVED),
+    ];
+    let mut index = 0;
+    while index < special.len() {
+        let (code, symbol) = special[index];
+        assert!(code.count_ones() == 4);
+        assert!(table[code as usize] == SYMBOL_INVALID);
+        table[code as usize] = symbol;
+        index += 1;
+    }
     table
 }
 
@@ -106,8 +139,24 @@ pub enum DecodedSymbol {
     Data6(u8),
     Ack,
     Nack,
+    Busy,
     Reserved(u8),
     Invalid(u8),
+}
+
+impl DecodedSymbol {
+    /// Whether this is a control symbol: a reply in its own right, not payload.
+    ///
+    /// Written as an exhaustive match so that giving a meaning to one of the
+    /// codes still reserved — which is exactly what happened to `0xE1` — makes
+    /// the compiler point at this one place instead of leaving the rules that
+    /// depend on it silently unchanged.
+    const fn is_control(self) -> bool {
+        match self {
+            Self::Ack | Self::Nack | Self::Busy => true,
+            Self::Data6(_) | Self::Reserved(_) | Self::Invalid(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +271,7 @@ pub fn decode_4_of_8(code: u8) -> DecodedSymbol {
     match REVERSE_4_OF_8[code as usize] {
         SYMBOL_ACK => DecodedSymbol::Ack,
         SYMBOL_NACK => DecodedSymbol::Nack,
+        SYMBOL_BUSY => DecodedSymbol::Busy,
         SYMBOL_RESERVED => DecodedSymbol::Reserved(code),
         SYMBOL_INVALID => DecodedSymbol::Invalid(code),
         value => DecodedSymbol::Data6(value),
@@ -267,6 +317,10 @@ fn parse_symbol_item(
         }),
         DecodedSymbol::Nack => Ok(ParsedSymbolItem::Item {
             item: RailcomItem::Nack,
+            consumed_symbols: 1,
+        }),
+        DecodedSymbol::Busy => Ok(ParsedSymbolItem::Item {
+            item: RailcomItem::Busy,
             consumed_symbols: 1,
         }),
         DecodedSymbol::Data6(first) => parse_symbol_datagram(symbols, index, first, channel),
@@ -315,7 +369,8 @@ fn parse_symbol_datagram(
     })
 }
 
-/// Turns already-decoded symbols into RailCom items (ACK/NACK/datagrams).
+/// Turns already-decoded symbols into RailCom items: control symbols and
+/// datagrams.
 fn items_from_symbols(
     symbols: &[DecodedSymbol],
     channel: RailcomChannel,
@@ -355,14 +410,13 @@ fn items_from_symbols(
 /// one, whenever nothing that could be its third symbol follows.
 pub fn parse_channel2(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
     let symbols = decode_symbols::<6>(raw_bytes)?;
-    // RCN-217 §3: a response starting with ACK/NACK may contain further
-    // ACK/NACK, but no datagrams. Datagrams followed by ACK padding are valid.
-    if matches!(
-        symbols.first(),
-        Some(DecodedSymbol::Ack | DecodedSymbol::Nack)
-    ) && symbols
-        .iter()
-        .any(|symbol| matches!(symbol, DecodedSymbol::Data6(_)))
+    // RCN-217 §3: a response starting with a control symbol may contain
+    // further control symbols, but no datagrams. Datagrams followed by ACK
+    // padding are valid.
+    if symbols.first().is_some_and(|symbol| symbol.is_control())
+        && symbols
+            .iter()
+            .any(|symbol| matches!(symbol, DecodedSymbol::Data6(_)))
     {
         return Err(ParseError::DatagramAfterControl);
     }
@@ -400,9 +454,9 @@ fn strip_channel1_break_tail(raw_bytes: &[u8]) -> &[u8] {
 pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError> {
     let raw_bytes = strip_channel1_break_tail(raw_bytes);
     let symbols = decode_symbols::<2>(raw_bytes)?;
-    // RCN-217 §3 prohibits ACK/NACK in CH1. Preserve the raw code in errors.
+    // RCN-217 §3 prohibits control symbols in CH1. Preserve the raw code.
     for (symbol, &raw) in symbols.iter().zip(raw_bytes) {
-        if matches!(symbol, DecodedSymbol::Ack | DecodedSymbol::Nack) {
+        if symbol.is_control() {
             return Err(ParseError::ControlSymbolNotAllowed(raw));
         }
     }
@@ -436,7 +490,7 @@ pub fn parse_logon_response_48(
             }
             DecodedSymbol::Invalid(code) => return Err(ParseError::Invalid4Of8Code(code)),
             DecodedSymbol::Reserved(code) => return Err(ParseError::Reserved4Of8Code(code)),
-            DecodedSymbol::Ack | DecodedSymbol::Nack => {
+            DecodedSymbol::Ack | DecodedSymbol::Nack | DecodedSymbol::Busy => {
                 return Err(ParseError::ControlSymbolNotAllowed(byte));
             }
         }
@@ -515,9 +569,8 @@ fn datagram_symbol_count(id: u8, channel: RailcomChannel) -> Result<u8, ParseErr
 /// RCN-217 asks for three. OpenMRN fixes its length at two for that reason,
 /// which in exchange misreads every conforming decoder. Shortening it only when
 /// the third symbol carries no data — the window ends there, or that position
-/// holds one of the ACK/NACK symbols RCN-217 allows as padding — costs a
-/// conforming decoder nothing, because a conforming `app:ext` always carries a
-/// data symbol in third position.
+/// holds a control symbol — costs a conforming decoder nothing, because a
+/// conforming `app:ext` always carries a data symbol in third position.
 ///
 /// Only that one position is examined. A control symbol there does not prove
 /// the rest of the window is padding; it proves only that the datagram cannot
@@ -540,12 +593,12 @@ fn resolve_symbol_count(
     channel: RailcomChannel,
 ) -> Result<u8, ParseError> {
     // `decode_symbols` has already rejected the reserved and invalid codes, so
-    // these three cases are the whole of what can stand in third position.
-    let third_is_padding_or_absent = matches!(
-        symbols.get(index + 2),
-        None | Some(DecodedSymbol::Ack | DecodedSymbol::Nack)
-    );
-    if id == ID_APP_EXT && channel == RailcomChannel::Channel2 && third_is_padding_or_absent {
+    // these cases are the whole of what can stand in third position without
+    // carrying data.
+    let third_carries_no_data = symbols
+        .get(index + 2)
+        .is_none_or(|symbol| symbol.is_control());
+    if id == ID_APP_EXT && channel == RailcomChannel::Channel2 && third_carries_no_data {
         return Ok(2);
     }
     datagram_symbol_count(id, channel)
@@ -659,6 +712,11 @@ mod tests {
         assert_eq!(decode_4_of_8(ACK_1_CODE), DecodedSymbol::Ack);
         assert_eq!(decode_4_of_8(ACK_2_CODE), DecodedSymbol::Ack);
         assert_eq!(decode_4_of_8(NACK_CODE), DecodedSymbol::Nack);
+        assert_eq!(decode_4_of_8(BUSY_CODE), DecodedSymbol::Busy);
+        // The other two codes of that family stay reserved.
+        for code in [RESERVED_1_CODE, RESERVED_2_CODE] {
+            assert_eq!(decode_4_of_8(code), DecodedSymbol::Reserved(code));
+        }
     }
 
     #[test]
@@ -741,6 +799,44 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_channel2_reads_busy_as_a_reply() {
+        let parsed = parse_channel2(&[BUSY_CODE]).expect("busy is a reply, not corruption");
+
+        assert_eq!(parsed.status, RailcomParseStatus::Complete);
+        assert_eq!(parsed.items.as_slice(), &[RailcomItem::Busy]);
+    }
+
+    #[test]
+    fn test_parse_channel2_keeps_the_cv_answer_before_busy() {
+        // Busy used to be a reserved code, so a decoder saying it was busy read
+        // as corruption and took the CV answer in front of it down with it.
+        let cv = encode_12_bit_for_test(0, 0xab);
+        let parsed =
+            parse_channel2(&[cv[0], cv[1], BUSY_CODE]).expect("cv answer must survive busy");
+
+        assert_eq!(parsed.status, RailcomParseStatus::Complete);
+        assert_eq!(
+            parsed.items.as_slice(),
+            &[
+                RailcomItem::Datagram(RailcomDatagram::CvData(0xab)),
+                RailcomItem::Busy,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_channel2_rejects_a_datagram_after_busy() {
+        // RCN-217 §3 treats busy like the other control symbols: a response
+        // that opens with one carries no datagrams.
+        let cv = encode_12_bit_for_test(0, 0xab);
+
+        assert_eq!(
+            parse_channel2(&[BUSY_CODE, cv[0], cv[1]]),
+            Err(ParseError::DatagramAfterControl)
+        );
+    }
+
+    #[test]
     fn test_parse_channel1_accepts_the_two_symbol_identifier_3() {
         // Channel 1 holds two symbols, so the three-symbol channel-2 size
         // leaves no window in which the datagram can ever be read.
@@ -787,7 +883,7 @@ mod tests {
         // and the truncation discarded the CV answer standing in front of it.
         let cv = encode_12_bit_for_test(0, 0xab);
         let ext = encode_12_bit_for_test(3, 0x5a);
-        let padded: [(&[u8], &[RailcomItem]); 4] = [
+        let padded: [(&[u8], &[RailcomItem]); 5] = [
             (&[], &[]),
             (&[ACK_1_CODE], &[RailcomItem::Ack]),
             (
@@ -795,6 +891,7 @@ mod tests {
                 &[RailcomItem::Ack, RailcomItem::Ack],
             ),
             (&[NACK_CODE], &[RailcomItem::Nack]),
+            (&[BUSY_CODE], &[RailcomItem::Busy]),
         ];
         for (padding, padding_items) in padded {
             let mut raw = Vec::<u8, 8>::new();
@@ -887,13 +984,16 @@ mod tests {
         // datagram wanted data. That is not a truncation, and reporting it as
         // one would print a window that needs two symbols and has two.
         let ext = encode_12_bit_for_test(3, 0x5a);
-        let error = parse_channel2(&[ext[0], ACK_1_CODE])
-            .expect_err("a control symbol inside a datagram must not parse");
+        for code in [ACK_1_CODE, ACK_2_CODE, NACK_CODE, BUSY_CODE] {
+            let error = parse_channel2(&[ext[0], code])
+                .expect_err("a control symbol inside a datagram must not parse");
 
-        assert_eq!(
-            error,
-            ParseError::ControlSymbolInsideDatagram { id: 3, offset: 1 }
-        );
+            assert_eq!(
+                error,
+                ParseError::ControlSymbolInsideDatagram { id: 3, offset: 1 },
+                "control code {code:#04x}"
+            );
+        }
     }
 
     #[test]
@@ -966,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_parse_channel1_rejects_controls_in_either_position() {
-        for code in [ACK_1_CODE, ACK_2_CODE, NACK_CODE] {
+        for code in [ACK_1_CODE, ACK_2_CODE, NACK_CODE, BUSY_CODE] {
             for raw in [
                 &[code][..],
                 &[code, SIX_TO_4_8[0]][..],
@@ -1086,6 +1186,25 @@ mod tests {
                 address: DccAddress::new_long(1001).unwrap(),
             })
         );
+    }
+
+    #[test]
+    fn test_parse_logon_response_rejects_control_symbols_anywhere() {
+        // The 48-bit logon answer is all data. Its own decode path never met a
+        // test for the control symbols it rejects.
+        let valid = encode_48_bit_for_test(15, 0x0abc_1234_5678);
+        for code in [ACK_1_CODE, ACK_2_CODE, NACK_CODE, BUSY_CODE] {
+            for position in 0..8 {
+                let mut raw = valid;
+                raw[position] = code;
+
+                assert_eq!(
+                    parse_logon_response_48(&raw[..2], &raw[2..]),
+                    Err(ParseError::ControlSymbolNotAllowed(code)),
+                    "control code {code:#04x} at position {position}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -181,7 +181,7 @@ pub(super) async fn railcom_diag_task() -> ! {
         info!("railcom uart1 raw: {:?}", uart_raw);
 
         info!(
-            "railcom diag: boundary={} rmt_isr_max_us={} rmt_cutout_request_max_us={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} stale_recovery={} invalid_state={} deadline_late_max_us={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_oversized={} rx_overflow={} pom_forwarded={} pom_dropped={} pom_tx_timeout={} pom_response_timeout={} pom_stale={} pom_wrong_target={} getdata_no_data={} loco_response_timeout={} loco_command_rejected={} status_broadcast_send_failure={} udp_receive_failure={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
+            "railcom diag: boundary={} rmt_isr_max_us={} rmt_cutout_request_max_us={} cutout_grant={} cutout_pom={} logon_sent={} search_sent={} search_throttled={} skip_budget={} skip_priority={} request={} skip_disabled={} started={} ended={} schedule_fail={} stale_recovery={} invalid_state={} deadline_late_max_us={} evt_drop={} evt_notify_fail={} rx_windows={} rx_empty={} rx_bytes={} rx_ok={} rx_err={} rx_oversized={} rx_overflow={} pom_forwarded={} pom_dropped={} pom_tx_timeout={} pom_response_timeout={} pom_stale={} pom_wrong_target={} getdata_no_data={} loco_response_timeout={} loco_command_rejected={} status_broadcast_send_failure={} udp_receive_failure={} ch1_win={} ch1_empty={} ch2_win={} ch2_empty={} ack={} nack={} busy={} adr_high={} adr_low={} loco_id_windows={} loco_id_ok={} loco_id_invalid={}",
             diag.boundary.packet_boundary_count,
             rmt_timing.max_isr_duration_us,
             rmt_timing.max_cutout_request_latency_us,
@@ -226,6 +226,7 @@ pub(super) async fn railcom_diag_task() -> ! {
             diag.rx_channels[RailcomChannel::Channel2.index()].empty_count,
             diag.rx.rx_ack_count,
             diag.rx.rx_nack_count,
+            diag.rx.rx_busy_count,
             diag.rx.rx_adr_high_count,
             diag.rx.rx_adr_low_count,
             diag.loco.identification_window_count,
