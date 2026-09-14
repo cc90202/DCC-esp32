@@ -91,7 +91,6 @@ fn refused_while_inhibited(event: FaultEvent, state: FaultManagerState) -> bool 
             FaultEvent::ResumeShortPressed
                 | FaultEvent::ResumeLongPressed
                 | FaultEvent::NetworkResume(_)
-                | FaultEvent::FaultClearedByService
         ) || (event == FaultEvent::TrackPowerArmed && state == FaultManagerState::Normal))
 }
 

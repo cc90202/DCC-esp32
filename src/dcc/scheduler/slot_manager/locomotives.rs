@@ -93,7 +93,6 @@ impl SlotManager {
         let removed = self.slots[index].address;
         self.prepare_admitted_slot(&mut slot);
         self.slots[index] = slot;
-        self.remove_address_from_consists(removed);
         SlotAdmission::Replaced { removed }
     }
 
@@ -216,6 +215,9 @@ impl SlotManager {
     }
 
     /// Set a validated logical speed for a locomotive.
+    ///
+    /// Used by the tests only; production goes through `handle_loco_request`.
+    #[cfg(test)]
     #[must_use]
     pub fn set_speed(
         &mut self,

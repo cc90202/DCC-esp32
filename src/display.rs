@@ -130,6 +130,9 @@ impl DisplayModel {
     }
 
     /// Returns the current LED-equivalent system state shown on screen.
+    ///
+    /// Exists for the tests below, which assert on the model without a screen.
+    #[cfg(test)]
     #[must_use]
     pub const fn state(&self) -> LedState {
         self.state
@@ -182,7 +185,6 @@ fn led_state_label(state: LedState) -> &'static str {
 #[cfg(target_arch = "riscv32")]
 fn fault_label(cause: FaultCause) -> &'static str {
     match cause {
-        FaultCause::CvService => "CV Service",
         FaultCause::TrackShort => "Track Short",
         FaultCause::Estop => "E-Stop",
         FaultCause::Internal => "Internal",

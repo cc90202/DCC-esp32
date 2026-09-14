@@ -17,9 +17,13 @@ diagnostic_counters! {
 
     /// Snapshot of RX pipeline counters.
     ///
+    /// Read by the host tests and by the bench dump; the counters themselves
+    /// are maintained in every build.
+    ///
     /// The persisted atomics cover only orthogonal outcomes; `rx_window_count`
     /// and `rx_windows_with_bytes_count` are derived at snapshot time so the
     /// totals stay exactly consistent with their parts regardless of ISR racing.
+    #[cfg(any(test, feature = "bench-diag"))]
     pub snapshot RailcomRxStats;
 
     @test reset;
@@ -48,6 +52,9 @@ diagnostic_counters! {
     static RX_CHANNEL: [RailcomChannelCounters; RAILCOM_CHANNEL_COUNT];
 
     /// Snapshot of one RailCom receive channel's counters.
+    ///
+    /// Read by the bench dump only.
+    #[cfg(any(test, feature = "bench-diag"))]
     pub snapshot RailcomChannelStats;
 
     @test reset;
@@ -166,6 +173,7 @@ impl RailcomRxResult {
     }
 }
 
+#[cfg(any(test, feature = "bench-diag"))]
 impl RailcomRxStats {
     #[must_use]
     pub fn rx_windows_with_bytes_count(&self) -> u32 {
@@ -179,12 +187,14 @@ impl RailcomRxStats {
 }
 
 #[must_use]
+#[cfg(any(test, feature = "bench-diag"))]
 pub fn railcom_rx_stats() -> RailcomRxStats {
     RAILCOM_RX.snapshot()
 }
 
 /// Per-channel receive counters, ordered as channel 1 followed by channel 2.
 #[must_use]
+#[cfg(any(test, feature = "bench-diag"))]
 pub fn railcom_rx_channel_stats() -> [RailcomChannelStats; RAILCOM_CHANNEL_COUNT] {
     core::array::from_fn(|index| RX_CHANNEL[index].snapshot())
 }

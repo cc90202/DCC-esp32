@@ -254,7 +254,6 @@ mod tests {
         };
 
         assert_eq!(policy.active_client(), Some(7));
-        assert_eq!(permit.epoch().get(), 1);
         assert_eq!(permit.expires_at_ms(), 30_100);
     }
 

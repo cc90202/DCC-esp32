@@ -17,11 +17,6 @@ impl LeaseEpoch {
     pub const fn new(value: u32) -> Self {
         Self(value)
     }
-
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

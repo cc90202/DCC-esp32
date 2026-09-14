@@ -58,7 +58,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum FaultCause {
-    CvService,
     TrackShort,
     Estop,
     Internal,
@@ -183,8 +182,6 @@ pub enum FaultEvent {
     NetworkResume(LeasePermit),
     /// Hardware or service fault detected (e.g. track short, CV error).
     FaultLatched(FaultCause),
-    /// Fault condition resolved by automated service logic.
-    FaultClearedByService,
 }
 
 // --- Display events ---
@@ -458,7 +455,7 @@ mod tests {
         let mut model = StatusModel::new();
         model.apply(SystemStatusEvent::BootCompleted);
 
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::CvService));
+        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
         assert!(!model.short_circuit());
         assert!(!model.track_power_on());
 
@@ -473,9 +470,9 @@ mod tests {
         assert!(!model.fault_active());
         assert_eq!(model.fault_cause(), None);
 
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::CvService));
+        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
         assert!(model.fault_active());
-        assert_eq!(model.fault_cause(), Some(FaultCause::CvService));
+        assert_eq!(model.fault_cause(), Some(FaultCause::Internal));
     }
 
     #[test]

@@ -161,17 +161,12 @@ pub use scheduler::SlotManager;
 pub use scheduler::packet_scheduler_task;
 #[doc(inline)]
 pub use scheduler::{
-    ConsistId, FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex,
-    LOCO_SLOT_CAPACITY, LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage,
-    LocoRequestResult, LocoResponse, LocoSnapshot, LogicalSpeed, SchedulerCommand,
-    SchedulerRequest, SpeedFormat,
+    FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex, LOCO_SLOT_CAPACITY,
+    LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoRequestResult,
+    LocoResponse, LocoSnapshot, LogicalSpeed, SchedulerCommand, SchedulerRequest, SpeedFormat,
 };
 #[doc(inline)]
 pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};
-#[doc(inline)]
-pub use timing::{
-    DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
-};
 #[cfg(test)]
 mod frame_tests {
     use super::*;

@@ -22,6 +22,7 @@ diagnostic_counters! {
     static POM: PomRuntimeCounters;
 
     /// Snapshot of POM actor timeout and attribution counters.
+    ///
     pub snapshot PomRuntimeStats;
 
     tx_start_timeout_count,

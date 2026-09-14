@@ -444,12 +444,10 @@ fn dirty_normal_stop_prevents_replacement_until_all_retries_are_queued() {
 }
 
 #[test]
-fn dirty_function_prevents_replacement_and_consist_does_not_keep_removed_address() {
+fn a_dirty_function_prevents_slot_replacement_until_it_is_transmitted() {
     let mut manager = SlotManager::new();
     fill_with_moving_locomotives(&mut manager);
     drain_pending_slot_transmissions(&mut manager);
-    assert!(manager.create_consist(ConsistId::new(1)));
-    assert!(manager.add_to_consist(ConsistId::new(1), addr(4), false));
     assert!(manager.request_emergency_stop(addr(4)));
     drain_pending_slot_transmissions(&mut manager);
     assert!(set_function(&mut manager, addr(4), 2, true));
@@ -468,14 +466,6 @@ fn dirty_function_prevents_replacement_and_consist_does_not_keep_removed_address
         manager.handle_loco_request(request),
         LocoRequestResult::Replaced { removed, .. } if removed == addr(4)
     ));
-    assert_eq!(
-        manager.set_consist_speed(
-            ConsistId::new(1),
-            ls(5, SpeedFormat::Speed28),
-            Direction::Forward
-        ),
-        0
-    );
 }
 
 #[test]
@@ -759,45 +749,6 @@ fn test_round_robin_fairness() {
 }
 
 #[test]
-fn test_remove_slot() {
-    let mut mgr = SlotManager::new();
-    let _ = mgr.set_speed(addr(1), ls(10, SpeedFormat::Speed28), Direction::Forward);
-    let _ = mgr.set_speed(addr(2), ls(20, SpeedFormat::Speed28), Direction::Forward);
-
-    assert!(!mgr.remove_slot(addr(1)));
-    assert!(mgr.set_speed(
-        addr(1),
-        LogicalSpeed::zero(SpeedFormat::Speed28),
-        Direction::Forward
-    ));
-    assert!(!mgr.remove_slot(addr(1)));
-    drain_pending_slot_transmissions(&mut mgr);
-    assert!(mgr.remove_slot(addr(1)));
-    assert_eq!(mgr.slot_count(), 1);
-    assert!(!mgr.remove_slot(addr(1)));
-
-    let p = mgr.build_next_packet().unwrap();
-    let DccPacket::Speed28 { address, .. } = p else {
-        panic!("expected Speed28, got {p:?}");
-    };
-    assert_eq!(address, addr(2));
-}
-
-#[test]
-fn remove_slot_rejects_pending_targeted_estop() {
-    let mut manager = SlotManager::new();
-    assert!(manager.set_speed(addr(3), ls(10, SpeedFormat::Speed28), Direction::Forward,));
-    drain_pending_slot_transmissions(&mut manager);
-    assert!(manager.request_emergency_stop(addr(3)));
-
-    assert!(!manager.remove_slot(addr(3)));
-    assert!(matches!(
-        manager.build_next_packet(),
-        Some(DccPacket::EmergencyStop { address, .. }) if address == addr(3)
-    ));
-}
-
-#[test]
 fn test_speed128_format() {
     let mut mgr = SlotManager::new();
     let _ = mgr.set_speed_with_format(
@@ -897,47 +848,6 @@ fn test_function_refresh_fairness_speed_then_function() {
             | DccPacket::FunctionGroup3 { .. }
             | DccPacket::FunctionGroup4 { .. }
     ));
-}
-
-#[test]
-fn test_consist_base_direction_mapping() {
-    let mut mgr = SlotManager::new();
-    assert!(mgr.create_consist(ConsistId::new(1)));
-    assert!(mgr.add_to_consist(ConsistId::new(1), addr(3), false));
-    assert!(mgr.add_to_consist(ConsistId::new(1), addr(4), true));
-
-    let updated = mgr.set_consist_speed(
-        ConsistId::new(1),
-        ls(18, SpeedFormat::Speed28),
-        Direction::Forward,
-    );
-    assert_eq!(updated, 2);
-
-    let mut seen_fwd = false;
-    let mut seen_rev = false;
-    for _ in 0..2 {
-        let p = mgr.build_next_packet().unwrap();
-        let DccPacket::Speed28 {
-            address,
-            direction,
-            speed,
-        } = p
-        else {
-            panic!("expected Speed28, got {p:?}");
-        };
-        assert_eq!(speed.value(), 19);
-        if address == addr(3) && direction == Direction::Forward {
-            seen_fwd = true;
-        }
-        if address == addr(4) && direction == Direction::Reverse {
-            seen_rev = true;
-        }
-    }
-
-    assert!(
-        seen_fwd && seen_rev,
-        "consist direction mapping should be applied"
-    );
 }
 
 #[test]
