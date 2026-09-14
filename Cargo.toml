@@ -19,6 +19,14 @@ embedded-storage = "0.3.1"
 heapless         = "0.9"
 sha2             = { version = "0.10", default-features = false }
 
+# Warnings are errors for this package's own code, in every build and on every
+# target. Declared here rather than through RUSTFLAGS because the environment
+# variable replaces the target rustflags in .cargo/config.toml, which carry the
+# linker scripts: setting it there silently breaks the firmware link instead of
+# tightening a lint.
+[lints.rust]
+warnings = "deny"
+
 [features]
 default = []
 

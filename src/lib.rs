@@ -18,7 +18,7 @@
 //! Over-the-air updates live in the HAL-free `dcc_ota` crate; on the device,
 //! `ota` adds tasks, locks and hardware around it, with `flash` (the shared
 //! flash handle), `liveness` (task heartbeats), `clock` (time conversions)
-//! and [`restart`] (a restart that also resets the radio).
+//! and `restart` (a restart that also resets the radio).
 #![cfg_attr(not(test), no_std)]
 #![deny(clippy::mem_forget)]
 
