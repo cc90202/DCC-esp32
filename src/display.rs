@@ -104,7 +104,11 @@ impl DisplayModel {
     /// Applies one display event, updating the relevant field.
     pub fn apply(&mut self, event: DisplayEvent) {
         match event {
-            DisplayEvent::BootProgress(s) => self.boot_step = s,
+            DisplayEvent::BootProgress(s) => {
+                if self.boot_step != BootStep::UsbRecovery {
+                    self.boot_step = s;
+                }
+            }
             DisplayEvent::IpAssigned(addr) => self.ip = Some(addr),
             DisplayEvent::ProvisioningMode { ssid, setup_url } => {
                 self.provisioning_ssid = Some(ssid);
@@ -123,6 +127,16 @@ impl DisplayModel {
     pub const fn state(&self) -> LedState {
         self.state
     }
+
+    /// Returns the final row, preserving a terminal USB-recovery instruction.
+    #[must_use]
+    pub fn footer(&self) -> &str {
+        match (self.boot_step, self.message.as_deref()) {
+            (BootStep::SystemRunning, Some(message)) => message,
+            (BootStep::SystemRunning, None) => "",
+            (step, _) => boot_step_label(step),
+        }
+    }
 }
 
 impl Default for DisplayModel {
@@ -131,7 +145,6 @@ impl Default for DisplayModel {
     }
 }
 
-#[cfg(target_arch = "riscv32")]
 fn boot_step_label(step: BootStep) -> &'static str {
     match step {
         BootStep::PeripheralsInit => "Init peripherals",
@@ -139,6 +152,7 @@ fn boot_step_label(step: BootStep) -> &'static str {
         BootStep::WifiConnected => "WiFi connected",
         BootStep::DccEngineReady => "DCC engine ready",
         BootStep::SystemRunning => "System running",
+        BootStep::UsbRecovery => "OTA: ripristino USB",
     }
 }
 
@@ -187,7 +201,9 @@ async fn render(
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let _ = display.clear(BinaryColor::Off);
 
-    if let (Some(ssid), Some(setup_url)) = (&model.provisioning_ssid, model.provisioning_setup_url)
+    if model.boot_step != BootStep::UsbRecovery
+        && let (Some(ssid), Some(setup_url)) =
+            (&model.provisioning_ssid, model.provisioning_setup_url)
     {
         let _ = Text::new("DCC WiFi Setup", Point::new(0, 10), style).draw(display);
 
@@ -246,12 +262,7 @@ async fn render(
         );
     }
 
-    // Last row: boot step during boot, or message after boot
-    if !matches!(model.boot_step, BootStep::SystemRunning) {
-        let _ = Text::new(boot_step_label(model.boot_step), Point::new(0, 63), style).draw(display);
-    } else if let Some(msg) = &model.message {
-        let _ = Text::new(msg, Point::new(0, 63), style).draw(display);
-    }
+    let _ = Text::new(model.footer(), Point::new(0, 63), style).draw(display);
 
     let _ = display.flush().await;
 }
@@ -396,5 +407,19 @@ mod tests {
         text.push_str("hello").expect("fits in 21-byte buffer");
         model.apply(DisplayEvent::Message(text));
         assert_eq!(model.message.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn recovery_instruction_survives_boot_progress_and_messages() {
+        let mut model = DisplayModel::new();
+        assert_eq!(model.footer(), "Init peripherals");
+        model.apply(DisplayEvent::BootProgress(BootStep::UsbRecovery));
+        assert_eq!(model.footer(), "OTA: ripristino USB");
+        model.apply(DisplayEvent::BootProgress(BootStep::SystemRunning));
+        model.apply(DisplayEvent::Message(
+            heapless::String::try_from("WiFi connecting").unwrap(),
+        ));
+        assert_eq!(model.footer(), "OTA: ripristino USB");
+        assert_eq!(model.state(), LedState::Booting);
     }
 }

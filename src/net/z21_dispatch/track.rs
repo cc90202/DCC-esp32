@@ -36,6 +36,9 @@ pub(super) async fn apply_power_request(
     out: &mut [u8],
     ctx: &TrackCtx<'_>,
 ) -> usize {
+    if matches!(request, TrackPowerRequest::Enable(_)) && crate::ota::runtime::inhibited() {
+        return encoded_len(z21_proto::encode_bc_track_power(false, out));
+    }
     let decision = decide_track_power(request);
     if decision.disable_output_immediately {
         crate::track_safety::disable_track_intentionally();

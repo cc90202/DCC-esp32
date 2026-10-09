@@ -54,6 +54,7 @@ pub enum NetInitError {
     WifiBringup(WifiBringupError),
     WifiRunnerSpawn,
     ConnectionSpawn,
+    HttpSpawn,
     UdpBind(UdpBindError),
 }
 
@@ -63,6 +64,7 @@ impl defmt::Format for NetInitError {
             Self::WifiBringup(error) => defmt::write!(formatter, "{:?}", error),
             Self::WifiRunnerSpawn => defmt::write!(formatter, "wifi runner spawn failed"),
             Self::ConnectionSpawn => defmt::write!(formatter, "WiFi connection spawn failed"),
+            Self::HttpSpawn => defmt::write!(formatter, "OTA HTTP spawn failed"),
             Self::UdpBind(error) => defmt::write!(formatter, "UDP bind failed: {:?}", error),
         }
     }
@@ -74,6 +76,7 @@ impl fmt::Display for NetInitError {
             Self::WifiBringup(error) => write!(formatter, "{error}"),
             Self::WifiRunnerSpawn => formatter.write_str("failed to spawn wifi_runner_task"),
             Self::ConnectionSpawn => formatter.write_str("failed to spawn connection_task"),
+            Self::HttpSpawn => formatter.write_str("failed to spawn OTA HTTP task"),
             Self::UdpBind(error) => write!(formatter, "UDP bind on Z21 port failed: {error:?}"),
         }
     }
@@ -84,7 +87,7 @@ impl core::error::Error for NetInitError {
         match self {
             Self::WifiBringup(error) => Some(error),
             Self::UdpBind(error) => Some(error),
-            Self::WifiRunnerSpawn | Self::ConnectionSpawn => None,
+            Self::WifiRunnerSpawn | Self::ConnectionSpawn | Self::HttpSpawn => None,
         }
     }
 }
@@ -126,6 +129,7 @@ pub(super) async fn connection_task(
                         state = ConnectionState::Connected;
                     }
                     Err(_) => {
+                        crate::ota::runtime::network_ready(false);
                         warn!("WiFi connect failed, retrying in 5s");
                         status_sender
                             .send(SystemStatusEvent::WifiDisconnected)
@@ -136,6 +140,7 @@ pub(super) async fn connection_task(
             }
             ConnectionState::Connected => {
                 controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                crate::ota::runtime::network_ready(false);
                 warn!("WiFi disconnected, reconnecting in 5s...");
                 status_sender
                     .send(SystemStatusEvent::WifiDisconnected)

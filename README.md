@@ -70,11 +70,17 @@ track from this README alone.
 
 ## Getting started
 
-1. Build and flash the firmware:
+1. Verify the board has **8 MB physical flash** with `espflash board-info`
+   (espflash **4.3.0**), then build and flash the firmware:
 
    ```bash
    cargo run --release
    ```
+
+   **USB migration/recovery is destructive:** the runner writes the pinned
+   bootloader/table and `ota_0`, erasing `otadata`, `ota_journal` and stale
+   `ota_1`. After layout migration, reconfigure WiFi. For subsequent updates
+   use the signed `.dccfw` workflow, not this runner; see [OTA guide](docs/ota.md).
 
 2. Configure WiFi from the ESP32 setup page.
 
@@ -127,13 +133,16 @@ Custom aliases are defined in `.cargo/config.toml` for common workflows:
 | `bash scripts/check-isr-ram.sh` | Verify RMT/cutout ISR symbols are linked in internal RAM |
 | `cargo clippy-host` | Lint for host target |
 | `cargo clippy-esp` | Lint for ESP32-C6 target |
-| `cargo run` | Flash to device via espflash and monitor |
+| `cargo ota-pack` | Host-target OTA package tool: keygen/sign/inspect/verify/extract |
+| `cargo run` | Destructive USB migration/recovery via espflash 4.3.0 and monitor |
 
 ## Cargo features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `bench-diag` | off | Bench diagnostics: per-window and per-command `defmt` logging, plus the periodic RailCom counter dump task. Off by default because every `defmt` line is written inside a critical section, which delays the DCC waveform and RailCom cutout interrupts. The counters are always maintained; only their output is gated. |
+| `ota-dev-key` | off | Bench only: embeds the development public key and dev build kind. |
+| `ota-fault-inject` | off | Bench only: includes `ota-dev-key`, embeds fault build kind; compile-time `OTA_FAULT=none\|panic\|hang\|health-timeout`. |
 
 Enable it for a bench session, then go back to the default build for normal use:
 
@@ -151,10 +160,26 @@ cargo build-esp-release    # release build (LTO, size-optimized)
 
 ## Flash
 
+USB only, **destructive migration/recovery**, with verified 8 MB hardware:
+
 ```bash
-cargo run                  # flash and monitor via espflash
-cargo run --release        # flash release build
+cargo run                  # resets OTA history and clears inactive image
+cargo run --release        # same destructive runner, release build
 ```
+
+## Firmware updates over WiFi
+
+From a trusted LAN, stop track power and open `http://<station-IP>/update`.
+Upload a signed `.dccfw` with a strictly newer version (initial baseline:
+0.1.0). Upload 100% is not flash verification or confirmation: wait for the
+post-reboot result. Track power stays off until a fresh Resume/Z21 action.
+Follow the [Italian OTA user/release guide and hardware checklist](docs/ota.md).
+Host tests and CI are not hardware validation; OTA hardware tests remain required.
+
+The signature authenticates the file, not the LAN operator. There is no TLS,
+Secure Boot or universal startup rollback guarantee; some failures require USB.
+Private signing seeds stay outside the repository and CI; see
+[key custody and rotation](keys/README.md) and [pinned bootloader](bootloader/README.md).
 
 ## Test and validation
 
@@ -166,7 +191,10 @@ cargo clippy-esp           # lint (ESP32-C6, all features)
 ```
 
 CI runs the same commands with `-D warnings`, and lints the ESP32-C6 target
-both in the default configuration and with `bench-diag` enabled.
+both in the default configuration and with all features (bench/dev/fault,
+**not a signing release**). It also tests/lints/formats the host OTA tool,
+pins public-key fingerprints and bootloader hash, and validates a real
+non-merged release image through a disposable-key package roundtrip.
 
 ## Commit conventions
 

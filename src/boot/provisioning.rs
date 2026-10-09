@@ -1,7 +1,6 @@
 //! Persistent WiFi provisioning state and the safe reboot request task.
 
 use defmt::warn;
-use embassy_time::{Duration, Timer};
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_storage::FlashStorage;
 
@@ -10,7 +9,6 @@ use crate::net::wifi_config::{
     EspWifiConfigStore, ProvisioningFlagStore, wifi_config_store_from_partition,
 };
 use crate::runtime_channels::{FaultEventSender, RuntimeReceiver};
-use crate::system_status::FaultEvent;
 
 use super::{BootError, CriticalTaskInit, WifiConfigInitError};
 
@@ -26,12 +24,9 @@ pub(super) fn open_wifi_config_store<'a, 'd>(
     })
 }
 
-const PROVISIONING_TRACK_DISABLE_GRACE: Duration = Duration::from_millis(100);
-
 /// E-stop the track, persist the next-boot flag, then reboot into setup mode.
 #[embassy_executor::task]
 pub(super) async fn provisioning_request_task(
-    mut flash: FlashStorage<'static>,
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
     fault_sender: FaultEventSender,
     receiver: RuntimeReceiver<ProvisioningRequest, 1>,
@@ -39,11 +34,18 @@ pub(super) async fn provisioning_request_task(
     loop {
         match receiver.receive().await {
             ProvisioningRequest::Requested => {
-                crate::track_safety::disable_track_intentionally();
-                fault_sender.send(FaultEvent::StopPressed).await;
-                Timer::after(PROVISIONING_TRACK_DISABLE_GRACE).await;
+                let _interlock = match crate::ota::runtime::acquire_provisioning(fault_sender).await
+                {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        warn!("WiFi setup refused: {}", error.code());
+                        continue;
+                    }
+                };
+                let mut guard = crate::ota::runtime::FLASH.lock().await;
+                let flash = guard.as_mut().expect("flash initialized");
                 warn!("WiFi provisioning requested; saving next-boot flag");
-                match set_force_provisioning_on_next_boot(&mut flash, partition_table_buffer) {
+                match set_force_provisioning_on_next_boot(flash, partition_table_buffer) {
                     Ok(()) => {
                         warn!("WiFi provisioning flag saved; rebooting");
                         esp_hal::system::software_reset();

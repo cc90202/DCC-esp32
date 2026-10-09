@@ -29,6 +29,20 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: OTA host tool format, tests and lint
+        run: |
+          cargo fmt --manifest-path tools/ota-pack/Cargo.toml -- --check
+          cargo test --manifest-path tools/ota-pack/Cargo.toml --target x86_64-unknown-linux-gnu
+          cargo clippy --manifest-path tools/ota-pack/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+
+      - name: Pin bootloader and reviewed public keys
+        run: |
+          sha256sum --check <<'EOF'
+          402c2c64761034e10b36ca8699d641e2bc0c86fd245a859d78e1aae4e2d201cd  bootloader/esp32c6-bootloader.bin
+          6ad67764ff8c8b1c85da77d91c6eab1fadb8f8ee6fa8c80d0ee97d37009ffac3  keys/ota_release.pub
+          1a7d732207b5949686904a87f6b85908652be20dcaa4184dd65b180afb361014  keys/ota_dev.pub
+          EOF
+
       - name: Host unit tests
         run: cargo test-host
 
@@ -37,6 +51,34 @@ jobs:
 
       - name: Build ESP release firmware
         run: cargo build-esp-release
+
+      - name: Install pinned image converter
+        run: cargo install espflash --version 4.3.0 --locked
+
+      # Temporary signer exercises real image validation, not release signing.
+      # Explicit rotation allows the production embedded public key while the
+      # signature belongs only to a disposable CI key. Never publish this file.
+      - name: Non-merged release image and disposable package roundtrip
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          espflash save-image --chip esp32c6 --flash-size 8mb \
+            --bootloader bootloader/esp32c6-bootloader.bin \
+            --partition-table partitions.csv --target-app-partition ota_0 \
+            target/riscv32imac-unknown-none-elf/release/dcc-esp32 "$tmp/app.bin"
+          cargo ota-pack keygen --private "$tmp/test.key" --public "$tmp/test.pub"
+          cargo ota-pack sign --key "$tmp/test.key" --rotate-to keys/ota_release.pub \
+            --image "$tmp/app.bin" --out "$tmp/test-only.dccfw"
+          cargo ota-pack inspect "$tmp/test-only.dccfw"
+          cargo ota-pack verify "$tmp/test-only.dccfw" --public "$tmp/test.pub"
+          if cargo ota-pack verify "$tmp/test-only.dccfw" --public keys/ota_release.pub; then
+            echo 'Disposable signature unexpectedly accepted by production key' >&2
+            exit 1
+          fi
+          cargo ota-pack extract "$tmp/test-only.dccfw" --out "$tmp/extracted.bin"
+          cmp "$tmp/app.bin" "$tmp/extracted.bin"
 
       - name: Verify ISR placement in internal RAM
         run: bash scripts/check-isr-ram.sh
@@ -47,7 +89,7 @@ jobs:
       - name: Clippy riscv32 lib
         run: cargo clippy --lib --target riscv32imac-unknown-none-elf -- -D warnings
 
-      # Compiles the bench-diag configuration, whose call sites all live in
-      # firmware-only modules and are therefore never built by the host jobs.
-      - name: Clippy riscv32 bench-diag
+      # Includes bench-diag and OTA fault/dev-key. This is NOT a release
+      # signing configuration; the default release above is built separately.
+      - name: Clippy riscv32 all features (bench/fault only)
         run: cargo clippy-esp -- -D warnings

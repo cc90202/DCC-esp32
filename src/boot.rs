@@ -37,7 +37,6 @@ use embassy_executor::{SpawnToken, Spawner};
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_hal::gpio::{Input, Output};
 use esp_hal::timer::timg::TimerGroup;
-use esp_storage::FlashStorage;
 use static_cell::StaticCell;
 
 use crate::control_buttons::{
@@ -61,8 +60,8 @@ use crate::net::client_watchdog::{
 use crate::net::provisioning::run_provisioning_ap;
 use crate::net::udp_control::NetTaskChannels;
 use crate::net::wifi_config::{
-    EspWifiConfigStoreError, ProvisioningDecision, WifiCredentials,
-    load_wifi_credentials_and_decision,
+    EspWifiConfigStoreError, ProvisioningDecision, ProvisioningFlagStore, StoredCredentialsState,
+    WifiCredentials, WifiCredentialsStore, decide_provisioning, load_wifi_credentials_and_decision,
 };
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
@@ -73,9 +72,7 @@ use crate::runtime_channels::{
 };
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
-use crate::system_status::{
-    BootStep, DisplayEvent, FaultEvent, FaultManagerState, SystemStatusEvent,
-};
+use crate::system_status::{BootStep, DisplayEvent, FaultManagerState, SystemStatusEvent};
 use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.
@@ -118,7 +115,6 @@ fn spawn_critical<S>(
 struct WifiBootDecision {
     decision: ProvisioningDecision,
     credentials: Option<WifiCredentials>,
-    flash: FlashStorage<'static>,
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
     resume_button: Input<'static>,
 }
@@ -165,20 +161,40 @@ fn spawn_display(
 }
 
 async fn load_boot_wifi_decision(
-    flash_peripheral: esp_hal::peripherals::FLASH<'static>,
     resume_pin: esp_hal::peripherals::GPIO21<'static>,
 ) -> Result<WifiBootDecision, BootError> {
     let mut resume_button = new_button_input(resume_pin);
     let boot_button_override = wait_for_boot_provisioning_override(&mut resume_button).await;
-    let mut flash = FlashStorage::new(flash_peripheral);
+    let mut flash = crate::ota::runtime::FLASH.lock().await;
+    let flash = flash.as_mut().expect("flash initialized before WiFi");
     let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
 
     // Single decision path: button override, persistent flag and stored
     // credentials all flow through `decide_provisioning`, which also clears
     // the persistent flag once it has been observed.
     let (decision, credentials) = {
-        let mut store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
-        load_wifi_credentials_and_decision(&mut store, boot_button_override).map_err(|error| {
+        let mut store = open_wifi_config_store(flash, partition_table_buffer)?;
+        let result = if crate::ota::runtime::pending() || crate::ota::runtime::recovery() {
+            // Do not clear a provisioning flag in a trial/recovery boot.
+            match store.load() {
+                Ok(credentials) => {
+                    let present = if credentials.is_some() {
+                        StoredCredentialsState::Present
+                    } else {
+                        StoredCredentialsState::Missing
+                    };
+                    let force = store.force_on_next_boot().unwrap_or(false);
+                    Ok((
+                        decide_provisioning(present, boot_button_override, force),
+                        credentials,
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            load_wifi_credentials_and_decision(&mut store, boot_button_override)
+        };
+        result.map_err(|error| {
             BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(WifiConfigInitError::Store(
                 error,
             )))
@@ -188,7 +204,6 @@ async fn load_boot_wifi_decision(
     Ok(WifiBootDecision {
         decision,
         credentials,
-        flash,
         partition_table_buffer,
         resume_button,
     })
@@ -380,7 +395,6 @@ async fn spawn_network_runtime(
 }
 
 struct SafetyRuntimeResources {
-    flash: FlashStorage<'static>,
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
     resume_button: Input<'static>,
     stop_pin: esp_hal::peripherals::GPIO22<'static>,
@@ -398,7 +412,6 @@ async fn activate_safe_runtime(
         track_output,
     } = core;
     let SafetyRuntimeResources {
-        flash,
         partition_table_buffer,
         resume_button,
         stop_pin,
@@ -438,7 +451,6 @@ async fn activate_safe_runtime(
     spawn_critical(
         spawner,
         provisioning_request_task(
-            flash,
             partition_table_buffer,
             FAULT_CHANNEL.sender(),
             PROVISIONING_REQUESTS.receiver(),
@@ -486,8 +498,8 @@ async fn activate_safe_runtime(
 
     info!("boot: waiting for critical task readiness");
     wait_for_runtime_ready(BOOT_READY.receiver(), BOOT_FAILURE.receiver()).await?;
-    FAULT_CHANNEL.send(FaultEvent::TrackPowerArmed).await;
-    info!("boot: track power armed after critical runtime readiness");
+    crate::ota::runtime::complete_boot(FAULT_CHANNEL.sender()).await;
+    info!("boot: runtime ready; OTA policy controls track arming");
     DISPLAY_CHANNEL
         .send(DisplayEvent::BootProgress(BootStep::SystemRunning))
         .await;
@@ -499,12 +511,28 @@ async fn activate_safe_runtime(
 
 pub async fn run(
     spawner: Spawner,
-    peripherals: esp_hal::peripherals::Peripherals,
+    mut peripherals: esp_hal::peripherals::Peripherals,
 ) -> Result<(), BootError> {
     info!("boot: starting runtime bootstrap");
 
-    start_async_runtime(peripherals.TIMG0, peripherals.SW_INTERRUPT);
-    info!("boot: Embassy runtime initialized");
+    // Hold the physical bridge LOW before any flash access or boot decision.
+    {
+        let _early_off = Output::new(
+            peripherals.GPIO18.reborrow(),
+            esp_hal::gpio::Level::Low,
+            esp_hal::gpio::OutputConfig::default(),
+        );
+        start_async_runtime(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+        info!("boot: Embassy runtime initialized");
+        crate::ota::runtime::start(
+            spawner,
+            peripherals.FLASH,
+            peripherals.LPWR,
+            FAULT_CHANNEL.sender(),
+            DISPLAY_CHANNEL.sender(),
+        )
+        .await;
+    }
 
     spawn_display(
         &spawner,
@@ -516,13 +544,20 @@ pub async fn run(
     SYSTEM_STATUS.send(SystemStatusEvent::BootStarted).await;
     NET_STATUS.send(SystemStatusEvent::BootStarted).await;
 
+    let wifi_decision = match load_boot_wifi_decision(peripherals.GPIO21).await {
+        Ok(decision) => decision,
+        Err(error) if crate::ota::runtime::recovery() => {
+            defmt::error!("Recovery WiFi unavailable: {}", error.message());
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let WifiBootDecision {
         decision,
         credentials,
-        mut flash,
         partition_table_buffer,
         resume_button,
-    } = load_boot_wifi_decision(peripherals.FLASH, peripherals.GPIO21).await?;
+    } = wifi_decision;
 
     let credentials = match decision {
         ProvisioningDecision::StationMode => {
@@ -531,6 +566,14 @@ pub async fn run(
             )))?
         }
         ProvisioningDecision::ProvisioningMode(reason) => {
+            if crate::ota::runtime::pending()
+                && let Err(error) = crate::ota::runtime::rollback().await
+            {
+                crate::ota::runtime::enter_recovery(error);
+            }
+            if crate::ota::runtime::recovery() {
+                return Ok(());
+            }
             warn!(
                 "boot: WiFi provisioning selected ({:?}); safe setup mode active",
                 reason
@@ -547,7 +590,11 @@ pub async fn run(
                 CriticalTask::ProvisioningLed,
             )?;
 
-            let store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
+            let mut flash = crate::ota::runtime::FLASH.lock().await;
+            let store = open_wifi_config_store(
+                flash.as_mut().expect("flash initialized"),
+                partition_table_buffer,
+            )?;
             return run_provisioning_ap(spawner, peripherals.WIFI, store, DISPLAY_CHANNEL.sender())
                 .await
                 .map_err(|error| {
@@ -581,7 +628,6 @@ pub async fn run(
         &spawner,
         core,
         SafetyRuntimeResources {
-            flash,
             partition_table_buffer,
             resume_button,
             stop_pin: peripherals.GPIO22,

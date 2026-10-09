@@ -1,0 +1,11 @@
+[package]
+name = "ota-pack"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dcc-esp32 = { path = "../.." }
+ed25519-dalek = "2.2"
+sha2 = "0.10"
+getrandom = "0.2"

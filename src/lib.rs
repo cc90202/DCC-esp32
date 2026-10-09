@@ -38,6 +38,7 @@ pub mod fault_manager;
 pub(crate) mod logon;
 mod macros;
 pub mod net;
+pub mod ota;
 pub mod railcom;
 #[cfg(target_arch = "riscv32")]
 #[path = "railcom/isr_capture.rs"]

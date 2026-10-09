@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Aggiorna firmware DCC</title>
+<style>
+:root{color-scheme:light;--bg:#eef3ed;--card:#fffdf7;--ink:#172019;--muted:#5a665d;--line:#d8ded6;--accent:#0f6b4f;--bad:#a62626}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#e7efe7,#dbe7df 45%,#f7f1df);color:var(--ink);font-family:Georgia,"Times New Roman",serif;padding:24px;min-height:100vh;display:grid;place-items:center}
+main{width:min(100%,520px);background:var(--card);border:1px solid var(--line);border-radius:28px;padding:28px;box-shadow:0 24px 70px #24402f2e}.badge{background:#173f32;color:white;border-radius:99px;padding:7px 12px;font:700 12px monospace;letter-spacing:.08em}h1{font-size:clamp(30px,8vw,42px);line-height:1.05;letter-spacing:-.04em}p{line-height:1.5;color:var(--muted)}label{display:block;font-weight:bold;margin:20px 0 8px}input{width:100%;padding:14px;border:1px solid var(--line);border-radius:14px;font:inherit;background:white}button{font:700 17px Georgia,serif;padding:15px;border-radius:16px;border:0;background:var(--accent);color:white;margin-top:16px;width:100%;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}button.secondary{background:#f2c14e;color:var(--ink)}:focus-visible{outline:3px solid var(--accent);outline-offset:4px}.message{padding:14px;border-radius:12px;background:#eef3ed;border-left:4px solid var(--accent);overflow-wrap:anywhere}.message.error{background:#fff1ee;border-color:var(--bad);color:#6e1616}.note{font-size:14px}progress{width:100%;height:22px;accent-color:var(--accent)}[hidden]{display:none!important}#device,#flash{font-size:14px;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<main>
+<span class="badge">DCC · Firmware</span>
+<h1>Aggiorna la centrale</h1>
+<p>Scegli una release firmata <strong>.dccfw</strong>. Prima spegni il binario dall’app Z21 o con Stop. Non togliere alimentazione durante l’aggiornamento.</p>
+<p id="device">Connessione alla centrale…</p>
+<label for="file">File firmware .dccfw</label>
+<input id="file" type="file" accept=".dccfw" aria-describedby="candidate safety">
+<p id="candidate">Nessun file scelto.</p>
+<button id="update" disabled>Aggiorna</button>
+<button id="retry" class="secondary" hidden>Riprova i controlli</button>
+<section aria-label="Avanzamento aggiornamento">
+<p id="message" class="message" role="status" aria-live="polite" aria-atomic="true">Lettura dello stato…</p>
+<label id="progress-label" for="progress" hidden>Invio dal browser (non conferma installazione)</label>
+<progress id="progress" max="100" value="0" hidden></progress>
+<p id="flash" aria-live="polite"></p>
+</section>
+<p id="safety" class="note">Il binario resta spento anche dopo il riavvio. Per ripartire serve una nuova azione Resume/Z21. Stessa versione e downgrade non sono consentiti.</p>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const errors = {
+ track_on:'Binario acceso: premi Stop nell’app Z21 o sulla centrale, poi riprova.',
+ boot_not_ready:'Avvio non ancora pronto. Attendi e riprova.',
+ pending_verify:'Nuovo firmware in prova: attendi la conferma o il ripristino prima di aggiornare.',
+ busy:'Centrale occupata da un altro aggiornamento. Attendi e riprova.',
+ ota_unavailable:'Aggiornamento Wi-Fi non disponibile. Controlla il display; può essere necessario il recupero USB.',
+ bad_package:'Pacchetto non valido. Scarica di nuovo il file .dccfw e riprova.',
+ unknown_key:'Chiave del pacchetto non riconosciuta. Usa una release compatibile; consulta le note per il percorso USB.',
+ bad_signature:'Firma non valida. Scarica la release ufficiale e riprova.',
+ same_version:'Questa versione è già installata. Scegli una release più recente.',
+ downgrade:'Versione precedente: il downgrade via Wi-Fi non è consentito.',
+ rejected_version:'Questa versione è stata ripristinata dopo un errore e non può essere riprovata. Usa una nuova release o USB.',
+ too_large:'File troppo grande per lo slot firmware. Scegli il pacchetto corretto.',
+ bad_image:'Immagine firmware non compatibile. Scarica il pacchetto per ESP32-C6 con 8 MB.',
+ digest_mismatch:'Verifica dei dati fallita. Scarica di nuovo il file e riprova.',
+ flash_error:'Errore della memoria flash. Controlla il display; se persiste usa il recupero USB.',
+ timeout:'Tempo di trasferimento scaduto. Controlla rete e centrale, poi riprova.',
+ forbidden:'Richiesta rifiutata. Apri questa pagina direttamente dall’indirizzo IP della centrale.'
+};
+const uncertain = 'Esito non determinabile. Controlla il display, l’indirizzo IP della centrale e il router: dopo il riavvio DHCP può cambiare IP. Una mancata risposta non indica successo né fallimento.';
+let selected = null, expectedDigest = '', expectedVersion = '', status = null;
+let busy = false, checked = false;
+function say(text, bad = false) { $('message').textContent = text; $('message').classList.toggle('error', bad); }
+function codeOf(data) { return typeof data.error === 'string' ? data.error : (data.code || 'bad_package'); }
+function explain(code) { return errors[code] || 'Errore di comunicazione. Controlla la centrale e riprova.'; }
+function blocked(s) {
+ if (s.track_enabled) return 'track_on';
+ if (s.pending) return 'pending_verify';
+ if (!s.ota_available) return 'ota_unavailable';
+ if (s.uploading) return 'busy';
+ return '';
+}
+function controls() {
+ $('file').disabled = busy;
+ $('update').disabled = busy || !selected || !checked || !status || !!blocked(status);
+ $('retry').disabled = busy;
+}
+function device(s) {
+ status = s;
+ $('device').textContent = 'Versione ' + s.version + ' · Slot ' + s.slot + ' · Binario ' + (s.track_enabled ? 'acceso' : 'spento') + ' · Avvio ' + s.boot_id + ' · Uptime ' + s.uptime;
+ controls();
+}
+async function jsonRequest(path, options = {}) {
+ const controller = new AbortController();
+ const timer = setTimeout(() => controller.abort(), 5000);
+ try {
+  const r = await fetch(path, {...options, cache:'no-store', signal:controller.signal});
+  const data = await r.json();
+  if (!r.ok || data.error || data.ok === false) throw new Error(explain(codeOf(data)));
+  return data;
+ } finally { clearTimeout(timer); }
+}
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Every GET completes (or aborts) before the next: never an overlapping interval.
+async function readStatus() {
+ for (let i = 0; i < 3; i++) {
+  try { return await jsonRequest('/update/status'); }
+  catch (e) { if (i === 2) throw e; await pause(1000); }
+ }
+}
+async function precheck() {
+ if (busy) return;
+ busy = true; checked = false; controls(); $('retry').hidden = true;
+ try {
+  device(await readStatus());
+  const reason = blocked(status);
+  if (reason) throw new Error(explain(reason));
+  if (!selected) { say('Pronto: binario spento. Scegli un file .dccfw.'); return; }
+  say('Controlli preliminari della firma e della versione…');
+  if (selected.size < 4352 || selected.size > 256 + 0x300000) throw new Error(explain(selected.size > 256 + 0x300000 ? 'too_large' : 'bad_package'));
+  const header = await selected.slice(0, 256).arrayBuffer();
+  const view = new DataView(header);
+  expectedDigest = Array.from(new Uint8Array(header, 32, 32), b => b.toString(16).padStart(2, '0')).join('');
+  expectedVersion = [16,18,20].map(offset => view.getUint16(offset, true)).join('.');
+  $('candidate').textContent = selected.name + ' · Versione candidata ' + expectedVersion;
+  // The extracted fields are correlation hints, not browser-side authentication.
+  await jsonRequest('/update/check', {method:'POST', headers:{'X-DCC-OTA':'1','Content-Type':'application/octet-stream'}, body:new Blob([header])});
+  // Firmware allows one signature check/second; do not offer upload too early.
+  await pause(1000);
+  checked = true;
+  say('Controlli preliminari superati. Binario spento: pronto per aggiornare alla versione ' + expectedVersion + '.');
+ } catch (e) { say(e.message, true); $('retry').hidden = false; }
+ finally { busy = false; controls(); }
+}
+function sendFile(file) {
+ return new Promise((resolve, reject) => {
+  const xhr = new XMLHttpRequest();
+  let sent = false, completedAt = 0;
+  const sentAll = () => {
+   if (sent) return;
+   sent = true;
+   completedAt = Date.now();
+   $('progress').value = 100;
+   say('Invio 100% — Verifica della memoria. Non è ancora una conferma di installazione.');
+  };
+  xhr.open('POST', '/update'); xhr.timeout = 300000;
+  xhr.setRequestHeader('X-DCC-OTA', '1');
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.upload.onprogress = e => {
+   if (!e.lengthComputable) return;
+   const percent = Math.min(100, Math.floor(e.loaded * 100 / e.total));
+   $('progress').value = percent;
+   say('Invio dal browser: ' + percent + '%. Non indica dati confermati in flash.');
+   if (e.loaded >= e.total) sentAll();
+  };
+  xhr.upload.onload = sentAll;
+  xhr.onload = () => {
+   if (xhr.status === 200) { sentAll(); resolve(completedAt); return; }
+   let message = 'Caricamento rifiutato. Controlla la centrale e riprova.';
+   try { message = explain(codeOf(JSON.parse(xhr.responseText))); } catch (_) {}
+   reject(new Error(message));
+  };
+  const disconnected = () => sent ? resolve(completedAt) : reject(new Error('Invio interrotto. Controlla rete e centrale, poi riprova; il nuovo firmware non è confermato.'));
+  xhr.onerror = disconnected; xhr.ontimeout = disconnected; xhr.onabort = disconnected;
+  xhr.send(file); // Raw Blob/File, never multipart or form data.
+ });
+}
+async function follow(initialBoot, completedAt) {
+ const deadline = completedAt + 300000;
+ let failures = 0;
+ while (Date.now() < deadline && failures < 100) {
+  try {
+   const s = await jsonRequest('/update/status');
+   if (Date.now() >= deadline) throw new Error(uncertain);
+   failures = 0; device(s);
+   const last = s.last_update;
+   if (s.fase === 'recovery') throw new Error('Ripristino USB necessario: ' + explain(last && last.reason || 'ota_unavailable'));
+   $('flash').textContent = 'Ricevuti: ' + s.received_bytes + ' / ' + s.total_bytes + ' byte · Scritti: ' + s.written_bytes + ' byte · Fase: ' + s.fase;
+   if (s.boot_id !== initialBoot) {
+    if (s.pending) { say('Verifica del nuovo firmware in corso. Il binario resta spento.'); }
+    else {
+     if (s.pending !== false || !last || last.candidate_digest !== expectedDigest || last.candidate_version !== expectedVersion) throw new Error(uncertain);
+     if (last.result === 'ok') {
+      if (last.current_version !== expectedVersion || s.version !== expectedVersion) throw new Error(uncertain);
+      say('Aggiornamento confermato: versione ' + last.current_version + '. Il binario resta spento.');
+      return;
+     }
+     if (last.result === 'rolled_back') throw new Error('Versione precedente ripristinata: ' + last.current_version + '. ' + explain(last.reason));
+     if (last.result === 'aborted' || last.result === 'not_bootable') throw new Error('Aggiornamento non installato. ' + explain(last.reason));
+     throw new Error(uncertain);
+    }
+   } else if (s.pending || s.fase === 'READY' || s.fase === 'ready') {
+    say('Riavvio in attesa. Poi verrà verificato il nuovo firmware.');
+   } else { say('Verifica della memoria. In attesa del riavvio, nessun esito confermato.'); }
+  } catch (e) {
+   // Only transport/status fetch failures are retried; terminal results escape.
+   if (e.message === uncertain || e.message.startsWith('Ripristino USB necessario:') || e.message.startsWith('Versione precedente ripristinata:') || e.message.startsWith('Aggiornamento non installato.')) throw e;
+   failures++;
+   say('Riavvio / riconnessione alla centrale… Nessun esito ancora confermato.');
+  }
+  await pause(2000);
+ }
+ throw new Error(uncertain);
+}
+$('file').addEventListener('change', () => {
+ selected = $('file').files[0] || null; expectedDigest = ''; expectedVersion = ''; checked = false;
+ $('candidate').textContent = selected ? selected.name : 'Nessun file scelto.';
+ $('flash').textContent = ''; $('progress').hidden = true; $('progress-label').hidden = true;
+ precheck();
+});
+$('retry').addEventListener('click', precheck);
+$('update').addEventListener('click', async () => {
+ if (busy || !checked || !selected) return;
+ busy = true; controls(); $('retry').hidden = true;
+ try {
+  device(await readStatus());
+  const reason = blocked(status);
+  if (reason) throw new Error(explain(reason));
+  const initialBoot = status.boot_id;
+  $('progress').hidden = false; $('progress-label').hidden = false; $('progress').value = 0;
+  say('Invio dal browser: 0%.');
+  const completedAt = await sendFile(selected);
+  await follow(initialBoot, completedAt);
+ } catch (e) { say(e.message, true); $('retry').hidden = false; }
+ finally { checked = false; busy = false; controls(); }
+});
+precheck();
+</script>
+</body>
+</html>

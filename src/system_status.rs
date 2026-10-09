@@ -199,6 +199,8 @@ pub enum BootStep {
     WifiConnected,
     DccEngineReady,
     SystemRunning,
+    /// Terminal recovery state; later boot progress must not hide it.
+    UsbRecovery,
 }
 
 /// Events that update the OLED display content.

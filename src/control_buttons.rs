@@ -125,26 +125,30 @@ async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePres
     classify_resume_press(pressed_at.elapsed().as_millis())
 }
 
-async fn send_resume_action(
+fn send_resume_action(
     action: ResumeButtonAction,
     fault_sender: FaultEventSender,
     provisioning_sender: RuntimeSender<ProvisioningRequest, 1>,
 ) {
-    match action {
-        ResumeButtonAction::ResumeShortFault => {
-            fault_sender.send(FaultEvent::ResumeShortPressed).await;
+    // Never leave a blocked Resume future that can enqueue after OTA unlocks.
+    let refused = critical_section::with(|_| {
+        if crate::ota::runtime::inhibited() {
+            return true;
         }
-        ResumeButtonAction::ResumeLongFault => {
-            fault_sender.send(FaultEvent::ResumeLongPressed).await;
-        }
-        ResumeButtonAction::RequestWifiProvisioning => {
-            if provisioning_sender
+        match action {
+            ResumeButtonAction::ResumeShortFault => fault_sender
+                .try_send(FaultEvent::ResumeShortPressed)
+                .is_err(),
+            ResumeButtonAction::ResumeLongFault => fault_sender
+                .try_send(FaultEvent::ResumeLongPressed)
+                .is_err(),
+            ResumeButtonAction::RequestWifiProvisioning => provisioning_sender
                 .try_send(ProvisioningRequest::Requested)
-                .is_err()
-            {
-                defmt::warn!("WiFi provisioning request already pending");
-            }
+                .is_err(),
         }
+    });
+    if refused {
+        defmt::warn!("Resume/setup refused: OTA/recovery or event queue full");
     }
 }
 
@@ -176,8 +180,12 @@ pub async fn resume_button_task(
     loop {
         wait_for_debounced_level(&mut resume_button, ButtonLevel::Pressed).await;
         defmt::info!("RESUME pressed");
-
+        let started_inhibited = crate::ota::runtime::inhibited();
+        let started_epoch = crate::ota::runtime::epoch();
         let press = classify_resume_button_press(&mut resume_button).await;
+        if started_inhibited || started_epoch != crate::ota::runtime::epoch() {
+            continue;
+        }
         match press {
             ResumePress::Short => defmt::info!("RESUME short press"),
             ResumePress::Long => defmt::info!("RESUME long press"),
@@ -187,8 +195,7 @@ pub async fn resume_button_task(
             resume_action_for_press(press),
             fault_sender,
             provisioning_sender,
-        )
-        .await;
+        );
     }
 }
 

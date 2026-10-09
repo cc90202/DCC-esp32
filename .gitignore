@@ -5,6 +5,12 @@ Cargo.lock
 # Build artifacts
 *.elf
 *.bin
+!/bootloader/esp32c6-bootloader.bin
+*.dccfw
+*.key
+*.seed
+/tools/ota-pack/target/
+!tools/ota-pack/.cargo/config.toml
 
 # Editor and IDE
 .vscode/

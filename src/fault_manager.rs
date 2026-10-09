@@ -98,8 +98,29 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     loop {
         let event = match pending_event.take() {
             Some(event) => event,
-            None => receiver.receive().await,
+            None => match with_timeout(Duration::from_millis(500), receiver.receive()).await {
+                Ok(event) => event,
+                Err(_) => {
+                    crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Fault);
+                    continue;
+                }
+            },
         };
+        crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Fault);
+        // Reject power-on intents before candidate policy or scheduler effects.
+        // Arming in a latched state must still complete, without powering on.
+        if crate::ota::runtime::inhibited()
+            && (matches!(
+                event,
+                FaultEvent::ResumeShortPressed
+                    | FaultEvent::ResumeLongPressed
+                    | FaultEvent::NetworkResume(_)
+                    | FaultEvent::FaultClearedByService
+            ) || (event == FaultEvent::TrackPowerArmed
+                && policy.state() == FaultManagerState::Normal))
+        {
+            continue;
+        }
         defmt::info!(
             "fault_manager: event={:?} state_before={:?}",
             event,
@@ -107,7 +128,19 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
         );
         let mut candidate_policy = policy;
         let decision = candidate_policy.handle(event);
-        let requires_fence = decision.track_enabled && !track_output.is_track_enabled();
+        let ota_stop = event == FaultEvent::StopPressed
+            && (crate::ota::runtime::busy() || crate::ota::runtime::inhibited());
+        // Stop policy and bridge-off take effect even if its drain is interrupted
+        // by a higher-priority fault or times out. Only the OTA ACK needs a fence.
+        if ota_stop {
+            track_output.set_track_enabled(false);
+            policy = candidate_policy;
+            state_sender.send(decision.state);
+            effects.apply(decision);
+            effects_signal.signal(effects);
+        }
+        let requires_fence =
+            ota_stop || (decision.track_enabled && !track_output.is_track_enabled());
         let fence_complete = if requires_fence {
             // Keep the physical bridge low until all frames queued before this
             // transition have crossed the engine fence.
@@ -146,12 +179,9 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
                         Instant::now().as_millis(),
                         || track_output.set_track_enabled(decision.track_enabled),
                     )
-                    .is_some()
+                    .is_some_and(|applied| applied)
             }
-            _ if fence_complete => {
-                track_output.set_track_enabled(decision.track_enabled);
-                true
-            }
+            _ if fence_complete => track_output.set_track_enabled(decision.track_enabled),
             _ => false,
         };
         if !enabled {
@@ -159,6 +189,13 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             continue;
         }
         policy = candidate_policy;
+        if ota_stop {
+            crate::ota::runtime::stop_ack();
+            continue;
+        }
+        if event == FaultEvent::TrackPowerArmed {
+            crate::ota::runtime::armed_ack();
+        }
 
         if decision.state != decision.previous_state {
             state_sender.send(decision.state);

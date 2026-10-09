@@ -176,6 +176,7 @@ pub async fn packet_scheduler_task(
             defmt::warn!("scheduler: POM authority expired while awaiting engine capacity");
             continue;
         }
+        crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Scheduler);
         yield_now().await;
     }
 }

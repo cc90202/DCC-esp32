@@ -85,6 +85,7 @@ pub async fn dcc_engine_task(
 
     let mut last_heartbeat = rmt_driver::isr_heartbeat();
     let mut last_progress = Instant::now();
+    let mut last_ota_stall_log = None;
 
     loop {
         while !rmt_driver::is_consumed() {
@@ -92,6 +93,7 @@ pub async fn dcc_engine_task(
             if heartbeat != last_heartbeat {
                 last_heartbeat = heartbeat;
                 last_progress = Instant::now();
+                crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Dcc);
             }
 
             // Sleep until the ISR consumes the slot, but keep the original
@@ -113,7 +115,23 @@ pub async fn dcc_engine_task(
             if heartbeat != last_heartbeat {
                 last_heartbeat = heartbeat;
                 last_progress = Instant::now();
+                crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Dcc);
             } else if !rmt_driver::is_consumed() {
+                if crate::ota::runtime::inhibited()
+                    && !crate::track_output::TrackOutput.is_track_enabled()
+                {
+                    let now = Instant::now();
+                    if last_ota_stall_log
+                        .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(5))
+                    {
+                        defmt::warn!("RMT watchdog: OTA stall with bridge off; waiting");
+                        last_ota_stall_log = Some(now);
+                    }
+                    // The expired watchdog deadline must not become a busy
+                    // loop during flash work. Do not claim DCC progress here.
+                    Timer::after(ISR_WATCHDOG_TIMEOUT).await;
+                    continue;
+                }
                 // Cut bridge power before logging, channel delivery or reset
                 // grace time. A full fault queue must not keep the track live.
                 if !crate::track_output::emergency_disable() {
@@ -140,6 +158,7 @@ pub async fn dcc_engine_task(
             // The feeder only receives after the RMT slot is consumed, and the
             // fence was appended after every preceding scheduler frame.
             fence_ack_sender.send(generation).await;
+            crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Dcc);
             continue;
         }
         let next_rmt = match encode_packet_to_rmt_data(&frame.packet()) {
@@ -161,6 +180,7 @@ pub async fn dcc_engine_task(
             frame.railcom_target_address(),
             frame.pom_request_id(),
         );
+        crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Dcc);
     }
 }
 

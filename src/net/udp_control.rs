@@ -16,7 +16,7 @@ use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Config, IpAddress, IpEndpoint, Stack, StackResources};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
-use embassy_time::Instant;
+use embassy_time::{Duration, Instant, with_timeout};
 use esp_hal::rng::Rng;
 use static_cell::StaticCell;
 
@@ -53,7 +53,7 @@ static RX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
-static NET_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static NET_RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
 static STATUS_BROADCAST_SEND_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 static UDP_RECEIVE_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -374,13 +374,21 @@ async fn run_z21_loop(mut socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
     loop {
         use embassy_futures::select::{Either3, select3};
 
-        match select3(
-            socket.recv_from(&mut recv_buf),
-            io.net_status.receive(),
-            io.lease_trip_receiver.receive(),
+        crate::ota::runtime::heartbeat(crate::ota::runtime::Heartbeat::Net);
+        let event = match with_timeout(
+            Duration::from_millis(500),
+            select3(
+                socket.recv_from(&mut recv_buf),
+                io.net_status.receive(),
+                io.lease_trip_receiver.receive(),
+            ),
         )
         .await
         {
+            Ok(event) => event,
+            Err(_) => continue,
+        };
+        match event {
             Either3::First(Ok((len, metadata))) => {
                 handle_udp_datagram(
                     &mut socket,
@@ -450,6 +458,12 @@ pub(crate) async fn net_task(
     let stack =
         start_network_stack(spawner, wifi, &credentials, status_sender, display_sender).await?;
     let socket = bind_z21_socket(stack)?;
+    crate::ota::runtime::z21_ready();
+    for _ in 0..2 {
+        spawner
+            .spawn(super::update_http::server_task(stack, fault_sender))
+            .map_err(|_| NetInitError::HttpSpawn)?;
+    }
     announce_ready(ready_sender, BootReadyEvent::Net).await;
 
     run_z21_loop(

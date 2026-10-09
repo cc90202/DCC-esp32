@@ -117,6 +117,18 @@ pub enum CutoutRuntimeEvent {
 }
 
 static TRACK_ENABLED: AtomicBool = AtomicBool::new(false);
+static TRACK_INHIBITED: AtomicBool = AtomicBool::new(true);
+
+/// Physical interlock owned beside the only GPIO enable operation.
+pub(crate) fn inhibited() -> bool {
+    TRACK_INHIBITED.load(Ordering::Acquire)
+}
+
+/// Serialize changes with the enable check; initially inhibited until boot policy agrees.
+pub(crate) fn set_inhibited(inhibit: bool) {
+    critical_section_with(|_| TRACK_INHIBITED.store(inhibit, Ordering::Release));
+}
+
 static CUTOUT_STATE: AtomicU8 = AtomicU8::new(CutoutState::Idle as u8);
 static PENDING_CUTOUT_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_METADATA: AtomicU32 = AtomicU32::new(0);
@@ -291,10 +303,13 @@ impl TrackOutput {
     }
 
     /// Applies the normal track power state.
-    pub fn set_track_enabled(&mut self, enabled: bool) {
-        TRACK_ENABLED.store(enabled, Ordering::Release);
-
+    /// Returns false if an enable is refused by the OTA interlock.
+    pub fn set_track_enabled(&mut self, enabled: bool) -> bool {
         critical_section_with(|_| {
+            if enabled && inhibited() {
+                return false;
+            }
+            TRACK_ENABLED.store(enabled, Ordering::Release);
             with_hw_mut(|hw| {
                 if !enabled {
                     stop_cutout_timer_fast(hw);
@@ -315,7 +330,8 @@ impl TrackOutput {
                     }
                 }
             });
-        });
+            true
+        })
     }
 
     #[must_use]
@@ -331,8 +347,8 @@ impl TrackOutput {
 /// waiting in a queue.
 #[must_use]
 pub fn emergency_disable() -> bool {
-    TRACK_ENABLED.store(false, Ordering::Release);
     critical_section_with(|_| {
+        TRACK_ENABLED.store(false, Ordering::Release);
         with_hw_mut(|hw| {
             stop_cutout_timer_fast(hw);
             cutout_off_fast(hw);
