@@ -108,6 +108,10 @@ pub trait WifiCredentialsStore {
 
     fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError<Self::Error>>;
     fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError<Self::Error>>;
+    /// Forgets the stored credentials.
+    ///
+    /// No caller wires it yet: the provisioning flow overwrites rather than
+    /// erasing. It is half of the store contract and the tests exercise it.
     fn clear(&mut self) -> Result<(), StoreError<Self::Error>>;
 }
 

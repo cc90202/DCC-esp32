@@ -41,14 +41,21 @@ use crate::control_logic::{
     RESUME_PROVISIONING_PRESS_MS, ResumeButtonAction, ResumePress, classify_resume_press,
     resume_action_for_press,
 };
-use crate::runtime_channels::{
-    BootReadySender, FaultEventSender, RuntimeChannel, RuntimeSender, announce_ready,
-};
+use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
+use crate::system_status::announce_ready;
+use crate::system_status::channels::{BootReadySender, FaultEventSender};
 use crate::system_status::{BootReadyEvent, FaultEvent};
 
 const DEBOUNCE_MS: u64 = 30;
 
-pub type ProvisioningRequestChannel = RuntimeChannel<ProvisioningRequest, 1>;
+/// One provisioning request at a time: the button is a single operator.
+const PROVISIONING_DEPTH: usize = 1;
+
+pub(crate) type ProvisioningRequestChannel =
+    RuntimeChannel<ProvisioningRequest, PROVISIONING_DEPTH>;
+pub(crate) type ProvisioningRequestSender = RuntimeSender<ProvisioningRequest, PROVISIONING_DEPTH>;
+pub(crate) type ProvisioningRequestReceiver =
+    RuntimeReceiver<ProvisioningRequest, PROVISIONING_DEPTH>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -128,7 +135,7 @@ async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePres
 fn send_resume_action(
     action: ResumeButtonAction,
     fault_sender: FaultEventSender,
-    provisioning_sender: RuntimeSender<ProvisioningRequest, 1>,
+    provisioning_sender: ProvisioningRequestSender,
 ) {
     // Never leave a blocked Resume future that can enqueue after OTA unlocks.
     let outcome = critical_section::with(|_| {
@@ -195,7 +202,7 @@ pub async fn stop_button_task(
 pub async fn resume_button_task(
     mut resume_button: Input<'static>,
     fault_sender: FaultEventSender,
-    provisioning_sender: RuntimeSender<ProvisioningRequest, 1>,
+    provisioning_sender: ProvisioningRequestSender,
     ready_sender: BootReadySender,
 ) -> ! {
     announce_ready(ready_sender, BootReadyEvent::ResumeButton).await;

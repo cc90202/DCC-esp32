@@ -8,8 +8,6 @@ extern crate alloc;
 use alloc::string::ToString;
 use core::fmt;
 use defmt::{info, warn};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Sender;
 use embassy_time::{Duration, Timer};
 use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
@@ -18,6 +16,7 @@ use esp_radio::wifi::{
 use super::radio::WifiBringupError;
 use crate::net::wifi_config::WifiCredentials;
 use crate::system_status::SystemStatusEvent;
+use crate::system_status::channels::SystemStatusSender;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
@@ -114,7 +113,7 @@ pub(super) async fn wifi_runner_task(
 #[embassy_executor::task]
 pub(super) async fn connection_task(
     mut controller: WifiController<'static>,
-    status_sender: Sender<'static, CriticalSectionRawMutex, SystemStatusEvent, 16>,
+    status_sender: SystemStatusSender,
 ) {
     let mut state = ConnectionState::Connecting;
 

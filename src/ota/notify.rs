@@ -6,7 +6,7 @@ use dcc_ota::notice::{NOTICE_COLUMNS, Notice};
 
 use crate::{
     display::{ROW_COLUMNS, RowText},
-    runtime_channels::DisplaySender,
+    system_status::channels::DisplaySender,
     system_status::{BootStep, DisplayEvent},
 };
 

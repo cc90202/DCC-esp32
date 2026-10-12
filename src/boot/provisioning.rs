@@ -4,12 +4,11 @@ use defmt::warn;
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_storage::FlashStorage;
 
-use crate::control_buttons::ProvisioningRequest;
+use crate::control_buttons::{ProvisioningRequest, ProvisioningRequestReceiver};
 use crate::flash::FlashGuard;
 use crate::net::wifi_config::{
     EspWifiConfigStore, ProvisioningFlagStore, wifi_config_store_from_partition,
 };
-use crate::runtime_channels::RuntimeReceiver;
 
 use super::{BootError, CriticalTaskInit, WifiConfigInitError};
 
@@ -38,7 +37,7 @@ pub(super) fn open_wifi_config_store<'a, 'd>(
 #[embassy_executor::task]
 pub(super) async fn provisioning_request_task(
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
-    receiver: RuntimeReceiver<ProvisioningRequest, 1>,
+    receiver: ProvisioningRequestReceiver,
 ) -> ! {
     loop {
         match receiver.receive().await {

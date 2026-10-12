@@ -41,13 +41,10 @@ mod runtime;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod slot_manager;
 
-#[cfg(any(test, target_arch = "riscv32"))]
+#[cfg(any(test, all(target_arch = "riscv32", feature = "bench-diag")))]
 pub use railcom_policy::{RailcomSchedulerStats, railcom_scheduler_stats};
 #[cfg(target_arch = "riscv32")]
-pub use runtime::{
-    LocoRequestChannel, LocoResponseChannel, PowerQuiesceChannel, SchedulerCommandChannel,
-    packet_scheduler_task,
-};
+pub use runtime::packet_scheduler_task;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) use slot_manager::PENDING_POM_CAPACITY;
 #[cfg(any(test, target_arch = "riscv32"))]
@@ -151,24 +148,6 @@ impl FunctionIndex {
     }
 }
 
-/// Identifies one software-managed locomotive consist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-#[repr(transparent)]
-pub struct ConsistId(u8);
-
-impl ConsistId {
-    #[must_use]
-    pub const fn new(value: u8) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn value(self) -> u8 {
-        self.0
-    }
-}
-
 /// State of locomotive functions F0 through F28.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -184,6 +163,9 @@ impl FunctionState {
     }
 
     /// Build a function state when no bits above F28 are set.
+    ///
+    /// Used by the tests only; production builds state through `FunctionChange`.
+    #[cfg(test)]
     #[must_use]
     pub const fn from_bits(bits: u32) -> Option<Self> {
         if bits & !Self::VALID_BITS == 0 {
@@ -204,6 +186,8 @@ impl FunctionState {
         self.0
     }
 
+    /// Read only by the bench-diagnostic log line for function commands.
+    #[cfg(any(test, feature = "bench-diag"))]
     #[must_use]
     pub const fn is_enabled(self, function: FunctionIndex) -> bool {
         self.0 & (1u32 << function.get()) != 0
@@ -389,6 +373,12 @@ pub enum SchedulerCommand {
     ///
     /// Discovery is useful while idle, but during POM reads CH2 must be left
     /// free for app:pom instead of logon/search responses.
+    ///
+    /// TODO: nothing sends this today. The mechanism is complete down to
+    /// `RailcomDiscovery::suspend`, and only a sender is missing — the POM
+    /// actor, which already knows when a read burst starts and ends, is the
+    /// natural one. Decide whether to wire it or drop it: if POM reads prove
+    /// reliable without it, this and its outcome can go.
     SuspendRailcomDiscovery,
     /// Start a fresh discovery window after track power is physically enabled.
     RestartRailcomDiscovery,
@@ -397,26 +387,6 @@ pub enum SchedulerCommand {
     /// Send one RailCom-related packet with a telemetry cutout.
     RailcomTelemetry {
         packet: DccPacket,
-    },
-    CreateConsist {
-        id: ConsistId,
-    },
-    AddToConsist {
-        id: ConsistId,
-        address: DccAddress,
-        reverse_in_consist: bool,
-    },
-    RemoveFromConsist {
-        id: ConsistId,
-        address: DccAddress,
-    },
-    SetConsistSpeed {
-        id: ConsistId,
-        speed: LogicalSpeed,
-        direction: Direction,
-    },
-    RemoveSlot {
-        address: DccAddress,
     },
     /// Pause packet emission (stop total, preserve state)
     /// Used by programming track service to halt main track output

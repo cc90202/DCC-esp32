@@ -26,6 +26,11 @@ diagnostic_counters! {
     static RAILCOM_SCHEDULER: RailcomSchedulerCounters;
 
     /// Snapshot of scheduler-side RailCom cutout decisions.
+    ///
+    /// Read by the host tests and by the bench dump, and by nobody else: the
+    /// counters keep being maintained in every build, only this reading side
+    /// follows its consumers.
+    #[cfg(any(test, feature = "bench-diag"))]
     pub snapshot RailcomSchedulerStats;
 
     @test reset;
@@ -112,7 +117,7 @@ pub(super) fn record_track_search_throttled() {
 
 /// Returns a copy of the scheduler-side RailCom decision counters.
 #[must_use]
-#[cfg(any(test, target_arch = "riscv32"))]
+#[cfg(any(test, all(target_arch = "riscv32", feature = "bench-diag")))]
 pub fn railcom_scheduler_stats() -> RailcomSchedulerStats {
     RAILCOM_SCHEDULER.snapshot()
 }

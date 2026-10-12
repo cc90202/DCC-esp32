@@ -5,8 +5,8 @@
 //! Address, speed, service-mode CV, POM CV, and binary-state address fields use
 //! validated newtypes so invalid ranges are rejected before packet construction.
 //!
-//! ```
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! ```ignore
+//! use crate::dcc::{DccAddress, DccPacket, Direction};
 //!
 //! let addr = DccAddress::new_short(42).expect("42 is a valid short address");
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
@@ -239,6 +239,30 @@ impl DccAddress {
         }
     }
 
+    /// Create an address from the two bytes that carry one on the wire.
+    ///
+    /// The high byte is read by [`HighFragment`], and its form decides: a
+    /// stated long address is taken at its word, a plain fragment leaves the
+    /// mode to magnitude, and a byte of no known form yields nothing.
+    ///
+    /// Returns `None` for a malformed high byte, for zero, for a value above
+    /// 10239, and for a stated long address below 128 — legal on the wire, but
+    /// outside what this type can hold. Reading that last one as the short
+    /// address of the same number would name a different decoder.
+    ///
+    /// This is not the Z21 wire rule in `wire.rs::parse_loco_address`, which
+    /// reads the same two bytes for the host protocol: there any value below
+    /// 128 is a short address whatever the flag bits say, because the Z21
+    /// clients encode it that way.
+    #[must_use]
+    pub(crate) fn from_address_fragments(high: u8, low: u8) -> Option<Self> {
+        match HighFragment::read(high) {
+            HighFragment::Long(value) => Self::new_long(HighFragment::compose(value, low)),
+            HighFragment::Plain(value) => Self::from_magnitude(HighFragment::compose(value, low)),
+            HighFragment::Malformed => None,
+        }
+    }
+
     /// Returns `true` if this is a short address
     pub fn is_short(&self) -> bool {
         matches!(self.kind, AddressKind::Short(_))
@@ -278,7 +302,7 @@ impl DccAddress {
                 // Long address format: 11AAAAAA AAAAAAAA
                 // Top 6 bits in first byte (with 0xC0 prefix)
                 // Bottom 8 bits in second byte
-                let high = 0xC0 | ((addr >> 8) as u8);
+                let high = HighFragment::FLAG_MASK | ((addr >> 8) as u8);
                 let low = (addr & 0xFF) as u8;
                 bytes
                     .push(high)
@@ -289,6 +313,57 @@ impl DccAddress {
             }
         }
         bytes
+    }
+}
+
+/// The high byte of a two-byte address, read by its flag bits.
+///
+/// A long address travels as `0b11AAAAAA AAAAAAAA`; a short one is carried in
+/// the low byte alone, behind a zero high byte. The two flag bits are read
+/// together, because that is the pattern the standard defines and the only one
+/// this crate emits: a byte carrying just one of them belongs to neither form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HighFragment {
+    /// Both flag bits set: the fragment states a long address.
+    Long(u8),
+    /// Neither flag bit set: six value bits and no statement about the mode.
+    Plain(u8),
+    /// One flag bit alone: a byte of no known form.
+    Malformed,
+}
+
+impl HighFragment {
+    const FLAG_MASK: u8 = 0b1100_0000;
+    const VALUE_MASK: u8 = 0b0011_1111;
+
+    /// Reads the flag bits of a high address byte and tells which form it has.
+    #[must_use]
+    pub(crate) fn read(high: u8) -> Self {
+        match high & Self::FLAG_MASK {
+            Self::FLAG_MASK => Self::Long(high & Self::VALUE_MASK),
+            0 => Self::Plain(high & Self::VALUE_MASK),
+            _ => Self::Malformed,
+        }
+    }
+
+    /// The six value bits an address puts in its high fragment.
+    #[must_use]
+    pub(crate) fn value_bits_of(address: DccAddress) -> u8 {
+        ((address.value() >> 8) as u8) & Self::VALUE_MASK
+    }
+
+    const fn compose(value: u8, low: u8) -> u16 {
+        ((value as u16) << 8) | low as u16
+    }
+
+    /// The address value this fragment carries together with `low`, or `None`
+    /// when the fragment has no known form.
+    #[must_use]
+    pub(crate) fn address_value(self, low: u8) -> Option<u16> {
+        match self {
+            Self::Long(value) | Self::Plain(value) => Some(Self::compose(value, low)),
+            Self::Malformed => None,
+        }
     }
 }
 
@@ -946,6 +1021,45 @@ impl DccPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_high_fragment_reads_each_form_of_the_byte() {
+        assert_eq!(HighFragment::read(0x00), HighFragment::Plain(0x00));
+        assert_eq!(HighFragment::read(0x03), HighFragment::Plain(0x03));
+        assert_eq!(HighFragment::read(0xc3), HighFragment::Long(0x03));
+        assert_eq!(HighFragment::read(0x40), HighFragment::Malformed);
+        assert_eq!(HighFragment::read(0x80), HighFragment::Malformed);
+        assert_eq!(HighFragment::Malformed.address_value(0x12), None);
+        assert_eq!(HighFragment::Long(0x03).address_value(0xe8), Some(1000));
+        assert_eq!(HighFragment::Plain(0x03).address_value(0xe8), Some(1000));
+    }
+
+    #[test]
+    fn test_from_address_fragments_reads_every_form_of_high_byte() {
+        // A stated long address is taken at its word, a plain fragment leaves
+        // magnitude to decide, and half a marker names nothing. The refusal at
+        // the end is the one the wire allows and this type cannot hold.
+        let cases = [
+            (0x00, 0x03, DccAddress::new_short(3)),
+            (0x00, 0xff, DccAddress::new_long(255)),
+            (0x03, 0xe8, DccAddress::new_long(1000)),
+            (0xc3, 0xe8, DccAddress::new_long(1000)),
+            (0xc0, 0x80, DccAddress::new_long(128)),
+            (0xc0, 0x03, None),
+            (0x40, 0x03, None),
+            (0x80, 0x03, None),
+            (0x00, 0x00, None),
+            (0xff, 0xff, None),
+        ];
+
+        for (high, low, expected) in cases {
+            assert_eq!(
+                DccAddress::from_address_fragments(high, low),
+                expected,
+                "fragments {high:#04x} {low:#04x}"
+            );
+        }
+    }
 
     fn variant_name(packet: DccPacket) -> &'static str {
         match packet {

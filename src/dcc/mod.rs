@@ -10,8 +10,8 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! use dcc_esp32::dcc::{DccPacket, DccAddress, Direction};
+//! ```ignore
+//! use crate::dcc::{DccAddress, DccPacket, Direction};
 //!
 //! let addr = DccAddress::new_short(3).unwrap();
 //! let packet = DccPacket::speed_28step(addr, 15, Direction::Forward).expect("valid speed");
@@ -28,6 +28,8 @@
 //! This module generates electrical signals. Always use proper current limiting
 //! and overcurrent protection when connecting to model railroad track.
 
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod channels;
 pub(crate) mod cv;
 pub(crate) mod encoder;
 pub(crate) mod packet;
@@ -133,13 +135,13 @@ impl DccFrame {
 }
 
 // Re-exports
+
 #[doc(inline)]
 pub use cv::PomRequestId;
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
 pub use cv::{
-    PomRailcomResult, PomRailcomResultChannel, PomRequest, PomRequestChannel, PomResponse,
-    PomResponseChannel, PomRuntimeStats, PomTxStarted, PomTxStartedChannel, pom_actor_task,
+    PomRailcomResult, PomRequest, PomResponse, PomRuntimeStats, PomTxStarted, pom_actor_task,
     pom_result_from_railcom_items, pom_runtime_stats,
 };
 #[doc(inline)]
@@ -159,22 +161,12 @@ pub use scheduler::SlotManager;
 pub use scheduler::packet_scheduler_task;
 #[doc(inline)]
 pub use scheduler::{
-    ConsistId, FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex,
-    LOCO_SLOT_CAPACITY, LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage,
-    LocoRequestResult, LocoResponse, LocoSnapshot, LogicalSpeed, SchedulerCommand,
-    SchedulerRequest, SpeedFormat,
-};
-#[cfg(target_arch = "riscv32")]
-#[doc(inline)]
-pub use scheduler::{
-    LocoRequestChannel, LocoResponseChannel, PowerQuiesceChannel, SchedulerCommandChannel,
+    FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex, LOCO_SLOT_CAPACITY,
+    LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoRequestResult,
+    LocoResponse, LocoSnapshot, LogicalSpeed, SchedulerCommand, SchedulerRequest, SpeedFormat,
 };
 #[doc(inline)]
 pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};
-#[doc(inline)]
-pub use timing::{
-    DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
-};
 #[cfg(test)]
 mod frame_tests {
     use super::*;

@@ -15,7 +15,7 @@
 //! Spawning the LED task (in main.rs):
 //!
 //! ```no_run
-//! use dcc_esp32::status_led::status_led_task;
+//! use crate::status_led::status_led_task;
 //! use esp_hal::gpio::Output;
 //!
 //! // Assuming GPIO14 and GPIO15 were already split from `peripherals.GPIO`
@@ -37,9 +37,8 @@
 //! Add 200Ω current-limiting resistors in series if using >5mA LEDs.
 
 use crate::application::StatusModel;
-use crate::runtime_channels::{
-    BootReadySender, DisplaySender, SystemStatusReceiver, announce_ready,
-};
+use crate::system_status::announce_ready;
+use crate::system_status::channels::{BootReadySender, DisplaySender, SystemStatusReceiver};
 use crate::system_status::{BootReadyEvent, DisplayEvent, LedState, SystemStatusEvent};
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::gpio::{Level, Output};

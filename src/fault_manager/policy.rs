@@ -128,19 +128,12 @@ impl FaultPolicy {
                 self.state = FaultManagerState::FaultLatched(cause);
                 status_effects[0] = Some(StatusEffect::FaultLatched(cause));
             }
-            (FaultManagerState::FaultLatched(_), FaultEvent::FaultClearedByService) => {
-                self.state = FaultManagerState::Normal;
-                scheduler_effects[0] = Some(SchedulerEffect::Resume);
-                status_effects[0] = Some(StatusEffect::FaultCleared);
-            }
             (FaultManagerState::Normal, FaultEvent::ResumeShortPressed)
             | (FaultManagerState::Normal, FaultEvent::NetworkResume(_))
             | (FaultManagerState::Normal, FaultEvent::ResumeLongPressed) => {
                 scheduler_effects[0] = Some(SchedulerEffect::Resume);
             }
-            (FaultManagerState::Normal, FaultEvent::FaultClearedByService)
-            | (FaultManagerState::EstopLatched, FaultEvent::StopPressed)
-            | (FaultManagerState::EstopLatched, FaultEvent::FaultClearedByService)
+            (FaultManagerState::EstopLatched, FaultEvent::StopPressed)
             | (FaultManagerState::FaultLatched(_), FaultEvent::NetworkResume(_))
             | (FaultManagerState::FaultLatched(_), FaultEvent::StopPressed) => {}
         }
@@ -247,12 +240,12 @@ mod tests {
     #[test]
     fn resume_short_is_ignored_while_fault_latched() {
         let mut policy = FaultPolicy::new();
-        policy.handle(FaultEvent::FaultLatched(FaultCause::CvService));
+        policy.handle(FaultEvent::FaultLatched(FaultCause::Internal));
         let decision = policy.handle(FaultEvent::ResumeShortPressed);
 
         assert_eq!(
             decision.state,
-            FaultManagerState::FaultLatched(FaultCause::CvService)
+            FaultManagerState::FaultLatched(FaultCause::Internal)
         );
         assert_eq!(decision.scheduler_effects, [None, None]);
     }
@@ -266,19 +259,6 @@ mod tests {
 
         assert_eq!(decision.state, FaultManagerState::Normal);
         assert!(decision.track_enabled);
-        assert_eq!(
-            decision.status_effects,
-            [Some(StatusEffect::FaultCleared), None]
-        );
-    }
-
-    #[test]
-    fn fault_cleared_by_service_returns_to_normal() {
-        let mut policy = FaultPolicy::new();
-        policy.handle(FaultEvent::FaultLatched(FaultCause::TrackShort));
-        let decision = policy.handle(FaultEvent::FaultClearedByService);
-
-        assert_eq!(decision.state, FaultManagerState::Normal);
         assert_eq!(
             decision.status_effects,
             [Some(StatusEffect::FaultCleared), None]

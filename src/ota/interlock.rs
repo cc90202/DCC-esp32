@@ -9,8 +9,8 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use crate::{
     clock::timed,
     fault_manager::{INTERLOCK_STOP_DONE, TRACK_POWER_ARMED},
-    runtime_channels::FaultEventSender,
     system_status::FaultEvent,
+    system_status::channels::FaultEventSender,
 };
 
 /// Longest wait for the fault manager to apply a stop or an arming.

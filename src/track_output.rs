@@ -68,6 +68,10 @@ diagnostic_counters! {
     static CUTOUT: TrackOutputCounters;
 
     /// Snapshot of track-output cutout counters.
+    ///
+    /// Read only by the bench dump; the counters themselves are maintained in
+    /// every build.
+    #[cfg(any(test, feature = "bench-diag"))]
     pub snapshot TrackOutputStats;
 
     cutout_request_count,
@@ -657,6 +661,7 @@ pub fn request_cutout_from_isr(request: CutoutRequest) -> bool {
 
 /// Returns a copy of the current cutout statistics.
 #[must_use]
+#[cfg(any(test, feature = "bench-diag"))]
 pub fn stats() -> TrackOutputStats {
     CUTOUT.snapshot()
 }

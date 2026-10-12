@@ -8,17 +8,17 @@
 //! projections. [`dcc`] covers packet encoding, RMT pulse generation, the
 //! scheduler and CV programming, while [`z21`] is the pure protocol contract
 //! and [`net`] the adapters around it: Z21 wiring, WiFi and UDP transport.
-//! Runtime state lives in [`system_status`] and [`fault_manager`], which react
+//! Runtime state lives in [`system_status`] and `fault_manager`, which react
 //! to boot, e-stop and fault events.
 //!
-//! [`display`] is split: the `DisplayModel` reducer is host-testable, the I2C
+//! `display` is split: the `DisplayModel` reducer is host-testable, the I2C
 //! rendering task is not. `status_led`, `control_buttons` and `short_detector`
 //! are peripheral tasks and only build for the ESP32 target.
 //!
 //! Over-the-air updates live in the HAL-free `dcc_ota` crate; on the device,
 //! `ota` adds tasks, locks and hardware around it, with `flash` (the shared
 //! flash handle), `liveness` (task heartbeats), `clock` (time conversions)
-//! and [`restart`] (a restart that also resets the radio).
+//! and `restart` (a restart that also resets the radio).
 #![cfg_attr(not(test), no_std)]
 #![deny(clippy::mem_forget)]
 
@@ -30,7 +30,8 @@ pub mod boot;
 pub(crate) mod clock;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod control_buttons;
-pub mod control_logic;
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod control_logic;
 pub(crate) mod cutout;
 pub mod dcc;
 // ESP runtime adapters live beside their DCC/RailCom feature code on disk, but
@@ -41,7 +42,7 @@ pub mod dcc;
 pub(crate) mod dcc_runtime;
 pub(crate) mod diagnostics;
 pub mod display;
-pub mod fault_manager;
+pub(crate) mod fault_manager;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod flash;
 #[cfg(target_arch = "riscv32")]

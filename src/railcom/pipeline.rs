@@ -17,9 +17,13 @@ diagnostic_counters! {
 
     /// Snapshot of RX pipeline counters.
     ///
+    /// Read by the host tests and by the bench dump; the counters themselves
+    /// are maintained in every build.
+    ///
     /// The persisted atomics cover only orthogonal outcomes; `rx_window_count`
     /// and `rx_windows_with_bytes_count` are derived at snapshot time so the
     /// totals stay exactly consistent with their parts regardless of ISR racing.
+    #[cfg(any(test, feature = "bench-diag"))]
     pub snapshot RailcomRxStats;
 
     @test reset;
@@ -32,6 +36,7 @@ diagnostic_counters! {
     // Within-parsed counters (not mutually exclusive; derived from items).
     rx_ack_count,
     rx_nack_count,
+    rx_busy_count,
     rx_adr_high_count,
     rx_adr_low_count,
     // Capture-level overflow counter (dropped ring entries or oversized windows).
@@ -48,6 +53,9 @@ diagnostic_counters! {
     static RX_CHANNEL: [RailcomChannelCounters; RAILCOM_CHANNEL_COUNT];
 
     /// Snapshot of one RailCom receive channel's counters.
+    ///
+    /// Read by the bench dump only.
+    #[cfg(any(test, feature = "bench-diag"))]
     pub snapshot RailcomChannelStats;
 
     @test reset;
@@ -166,6 +174,7 @@ impl RailcomRxResult {
     }
 }
 
+#[cfg(any(test, feature = "bench-diag"))]
 impl RailcomRxStats {
     #[must_use]
     pub fn rx_windows_with_bytes_count(&self) -> u32 {
@@ -179,12 +188,14 @@ impl RailcomRxStats {
 }
 
 #[must_use]
+#[cfg(any(test, feature = "bench-diag"))]
 pub fn railcom_rx_stats() -> RailcomRxStats {
     RAILCOM_RX.snapshot()
 }
 
 /// Per-channel receive counters, ordered as channel 1 followed by channel 2.
 #[must_use]
+#[cfg(any(test, feature = "bench-diag"))]
 pub fn railcom_rx_channel_stats() -> [RailcomChannelStats; RAILCOM_CHANNEL_COUNT] {
     core::array::from_fn(|index| RX_CHANNEL[index].snapshot())
 }
@@ -295,13 +306,23 @@ fn record_parsed_items(items: &[RailcomItem]) {
             RailcomItem::Nack => {
                 RAILCOM_RX.rx_nack_count.fetch_add(1, Ordering::Relaxed);
             }
+            RailcomItem::Busy => {
+                RAILCOM_RX.rx_busy_count.fetch_add(1, Ordering::Relaxed);
+            }
             RailcomItem::Datagram(RailcomDatagram::AdrHigh(_)) => {
                 RAILCOM_RX.rx_adr_high_count.fetch_add(1, Ordering::Relaxed);
             }
             RailcomItem::Datagram(RailcomDatagram::AdrLow(_)) => {
                 RAILCOM_RX.rx_adr_low_count.fetch_add(1, Ordering::Relaxed);
             }
-            RailcomItem::Datagram(_) => {}
+            RailcomItem::Datagram(
+                RailcomDatagram::CvData(_)
+                | RailcomDatagram::Ext(_)
+                | RailcomDatagram::Info1(_)
+                | RailcomDatagram::Dyn { .. }
+                | RailcomDatagram::Xpom { .. }
+                | RailcomDatagram::Search(_),
+            ) => {}
         }
     }
 }
@@ -310,7 +331,7 @@ fn record_parsed_items(items: &[RailcomItem]) {
 mod tests {
     use super::*;
     use crate::railcom::RailcomDatagram;
-    use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE};
+    use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE, BUSY_CODE};
     use std::sync::Mutex;
 
     const TEST_ID0_CODE_0X42: [u8; 2] = [0b1010_1010, 0b1010_1001];
@@ -359,6 +380,83 @@ mod tests {
         assert_eq!(stats.rx_windows_with_bytes_count(), 1);
         assert_eq!(stats.rx_parse_ok_count, 1);
         assert_eq!(stats.rx_ack_count, 1);
+    }
+
+    #[test]
+    fn test_process_rx_window_counts_a_busy_reply() {
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
+        reset_railcom_rx_stats();
+        let raw = [TEST_ID0_CODE_0X42[0], TEST_ID0_CODE_0X42[1], BUSY_CODE];
+        let window = RailcomRxWindow::try_new(12, RailcomChannel::Channel2, &raw)
+            .expect("raw window must fit");
+        let result = process_rx_window(window);
+
+        assert_eq!(result.outcome, RailcomRxOutcome::Parsed);
+        assert_eq!(
+            result.items.as_slice(),
+            &[
+                RailcomItem::Datagram(RailcomDatagram::CvData(0x42)),
+                RailcomItem::Busy,
+            ]
+        );
+        let stats = railcom_rx_stats();
+        assert_eq!(stats.rx_parse_ok_count, 1);
+        assert_eq!(stats.rx_busy_count, 1);
+        assert_eq!(stats.rx_ack_count, 0);
+        assert_eq!(stats.rx_nack_count, 0);
+    }
+
+    #[test]
+    fn test_process_rx_window_hides_a_verdict_cut_short_before_a_busy() {
+        // The guard that makes the busy rule hold. A window truncated at an
+        // unsupported identifier keeps its prefix for diagnostics, and that
+        // prefix can end in an ACK while the BUSY that would have cancelled it
+        // sits past the cut. Only `complete_items` keeps such a prefix away
+        // from the POM path; without it the ACK would speak for a decoder that
+        // went on to say it could not answer.
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
+        reset_railcom_rx_stats();
+        let raw = [
+            TEST_ID0_CODE_0X42[0],
+            TEST_ID0_CODE_0X42[1],
+            ACK_1_CODE,
+            0b0110_0110, // identifier 6, which nothing decodes
+            BUSY_CODE,
+        ];
+        let window = RailcomRxWindow::try_new(14, RailcomChannel::Channel2, &raw)
+            .expect("raw window must fit");
+        let result = process_rx_window(window);
+
+        assert_eq!(
+            result.items.as_slice(),
+            &[
+                RailcomItem::Datagram(RailcomDatagram::CvData(0x42)),
+                RailcomItem::Ack,
+            ]
+        );
+        assert!(result.complete_items().is_empty());
+    }
+
+    #[test]
+    fn test_process_rx_window_does_not_count_a_rejected_channel1_busy() {
+        // Channel 1 forbids control symbols, so the window is an error and the
+        // busy counter must stay put: it counts replies, not rejected bytes.
+        let _guard = RAILCOM_RX_STATS_TEST_LOCK
+            .lock()
+            .expect("test lock poisoned");
+        reset_railcom_rx_stats();
+        let window = RailcomRxWindow::try_new(13, RailcomChannel::Channel1, &[BUSY_CODE])
+            .expect("raw window must fit");
+        let result = process_rx_window(window);
+
+        assert_ne!(result.outcome, RailcomRxOutcome::Parsed);
+        let stats = railcom_rx_stats();
+        assert_eq!(stats.rx_busy_count, 0);
+        assert_eq!(stats.rx_parse_err_count, 1);
     }
 
     #[test]

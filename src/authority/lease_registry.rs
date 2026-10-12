@@ -3,7 +3,7 @@
 //! `ClientSafetyPolicy` decides ownership.  This registry publishes only the
 //! currently accepted epoch so consumers can reject stale queued work.
 
-use super::client_safety::{LeaseEpoch, LeasePermit};
+use super::{LeaseEpoch, LeasePermit};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct LeaseRegistry {

@@ -19,6 +19,14 @@ embedded-storage = "0.3.1"
 heapless         = "0.9"
 sha2             = { version = "0.10", default-features = false }
 
+# Warnings are errors for this package's own code, in every build and on every
+# target. Declared here rather than through RUSTFLAGS because the environment
+# variable replaces the target rustflags in .cargo/config.toml, which carry the
+# linker scripts: setting it there silently breaks the firmware link instead of
+# tightening a lint.
+[lints.rust]
+warnings = "deny"
+
 [features]
 default = []
 
@@ -88,8 +96,11 @@ esp-radio         = { version = "0.17.0", features = ["esp32c6", "wifi", "unstab
 embassy-net       = { version = "0.8.0",  features = ["dhcpv4", "medium-ethernet", "tcp", "udp"] }
 embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 
-[dev-dependencies]
-# For running tests on host platform
+# Host-only: these are for the unit tests, which run on the development machine.
+# Declared under a target cfg because embassy-time here carries the `std`
+# feature: unconditional dev-dependencies are pulled in whenever any tool builds
+# test targets for riscv32, and `std` does not exist on a bare-metal target.
+[target.'cfg(not(target_arch = "riscv32"))'.dev-dependencies]
 heapless = { workspace = true }
 embassy-futures = "0.1.2"
 embassy-sync = "0.7.2"

@@ -1,10 +1,11 @@
 //! OLED display event types and async task.
 
-#[cfg(target_arch = "riscv32")]
-use crate::runtime_channels::{BootReadySender, DisplayReceiver, announce_ready};
-#[cfg(target_arch = "riscv32")]
-use crate::system_status::BootReadyEvent;
 use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
+
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::channels::{BootReadySender, DisplayReceiver};
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::{BootReadyEvent, announce_ready};
 #[cfg(target_arch = "riscv32")]
 use defmt::warn;
 #[cfg(target_arch = "riscv32")]
@@ -129,6 +130,9 @@ impl DisplayModel {
     }
 
     /// Returns the current LED-equivalent system state shown on screen.
+    ///
+    /// Exists for the tests below, which assert on the model without a screen.
+    #[cfg(test)]
     #[must_use]
     pub const fn state(&self) -> LedState {
         self.state
@@ -181,7 +185,6 @@ fn led_state_label(state: LedState) -> &'static str {
 #[cfg(target_arch = "riscv32")]
 fn fault_label(cause: FaultCause) -> &'static str {
     match cause {
-        FaultCause::CvService => "CV Service",
         FaultCause::TrackShort => "Track Short",
         FaultCause::Estop => "E-Stop",
         FaultCause::Internal => "Internal",

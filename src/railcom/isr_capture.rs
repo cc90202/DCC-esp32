@@ -15,7 +15,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
+use embassy_sync::channel::Receiver;
 use esp_hal::Async;
 use esp_hal::uart::UartRx;
 
@@ -24,7 +24,7 @@ use crate::railcom::pipeline::{
     MAX_RAILCOM_WINDOW_BYTES, RailcomRxWindow, RailcomRxWindowError, process_rx_window,
     record_oversized_window, record_rx_overflows,
 };
-use crate::railcom::uart_reader::{RailcomRxOutput, RailcomUartWindowError};
+use crate::railcom::uart_reader::{RailcomRxOutput, RailcomRxOutputSender, RailcomUartWindowError};
 use crate::railcom::{PacketSequence, RailcomChannel};
 
 const CAPTURE_RING_CAPACITY: usize = 64;
@@ -255,10 +255,7 @@ fn log_raw_window(window: &CapturedWindow) {
     }
 }
 
-async fn send_captured_window(
-    sender: &Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
-    window: CapturedWindow,
-) {
+async fn send_captured_window(sender: &RailcomRxOutputSender, window: CapturedWindow) {
     log_raw_window(&window);
     if window.len > MAX_RAILCOM_WINDOW_BYTES {
         record_rx_overflows(1);
@@ -312,7 +309,7 @@ fn capture_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1
 
 pub async fn railcom_isr_capture_task(
     uart_rx: UartRx<'static, Async>,
-    result_sender: Sender<'static, CriticalSectionRawMutex, RailcomRxOutput, 8>,
+    result_sender: RailcomRxOutputSender,
 ) -> ! {
     let _uart_owner = RailcomIsrCaptureUart::new(uart_rx);
     let capture_receiver = capture_notify_receiver();

@@ -22,7 +22,6 @@
 //! for observers. State transitions and their required effects remain private
 //! to the pure policy so callers cannot bypass the fault manager's application
 //! rules.
-
 mod policy;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod power_fence;
@@ -40,11 +39,11 @@ use embassy_time::{Duration, Instant, with_timeout};
 #[cfg(target_arch = "riscv32")]
 use crate::dcc::PowerGeneration;
 #[cfg(target_arch = "riscv32")]
-use crate::runtime_channels::{
-    BootReadySender, FaultEventReceiver, RuntimeReceiver, RuntimeSender, announce_ready,
-};
+use crate::dcc::channels::{PowerFenceAckReceiver, PowerQuiesceSender};
 #[cfg(target_arch = "riscv32")]
-use crate::system_status::{BootReadyEvent, FaultEvent, FaultManagerState};
+use crate::system_status::channels::{BootReadySender, FaultEventReceiver};
+#[cfg(target_arch = "riscv32")]
+use crate::system_status::{BootReadyEvent, FaultEvent, FaultManagerState, announce_ready};
 #[cfg(target_arch = "riscv32")]
 use crate::track_output::TrackOutput;
 #[cfg(target_arch = "riscv32")]
@@ -59,8 +58,8 @@ pub type FaultStateWatch =
 #[cfg(target_arch = "riscv32")]
 pub(crate) struct FaultManagerTaskContext {
     pub(crate) receiver: FaultEventReceiver,
-    pub(crate) power_quiesce_sender: RuntimeSender<PowerGeneration, 1>,
-    pub(crate) power_fence_ack_receiver: RuntimeReceiver<PowerGeneration, 1>,
+    pub(crate) power_quiesce_sender: PowerQuiesceSender,
+    pub(crate) power_fence_ack_receiver: PowerFenceAckReceiver,
     pub(crate) track_output: TrackOutput,
     pub(crate) state_sender: watch::Sender<
         'static,
@@ -92,7 +91,6 @@ fn refused_while_inhibited(event: FaultEvent, state: FaultManagerState) -> bool 
             FaultEvent::ResumeShortPressed
                 | FaultEvent::ResumeLongPressed
                 | FaultEvent::NetworkResume(_)
-                | FaultEvent::FaultClearedByService
         ) || (event == FaultEvent::TrackPowerArmed && state == FaultManagerState::Normal))
 }
 
@@ -148,8 +146,8 @@ fn signal_completion(event: FaultEvent, interlock_stop: bool) -> bool {
 async fn wait_for_fence(
     generation: PowerGeneration,
     receiver: &FaultEventReceiver,
-    quiesce_sender: &RuntimeSender<PowerGeneration, 1>,
-    ack_receiver: &RuntimeReceiver<PowerGeneration, 1>,
+    quiesce_sender: &PowerQuiesceSender,
+    ack_receiver: &PowerFenceAckReceiver,
 ) -> Result<(), Option<FaultEvent>> {
     match with_timeout(
         FENCE_TIMEOUT,

@@ -8,8 +8,8 @@ use core::cell::RefCell;
 
 use critical_section::Mutex;
 
-use crate::application::lease_registry::LeaseRegistry;
 use crate::authority::LeasePermit;
+use crate::authority::lease_registry::LeaseRegistry;
 
 static REGISTRY: Mutex<RefCell<LeaseRegistry>> = Mutex::new(RefCell::new(LeaseRegistry::new()));
 

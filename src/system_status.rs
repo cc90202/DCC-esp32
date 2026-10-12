@@ -16,9 +16,9 @@
 //!
 //! Apply events to the model:
 //!
-//! ```
-//! use dcc_esp32::application::StatusModel;
-//! use dcc_esp32::system_status::{SystemStatusEvent, LedState};
+//! ```ignore
+//! use crate::application::StatusModel;
+//! use crate::system_status::{LedState, SystemStatusEvent};
 //!
 //! let mut model = StatusModel::new();
 //! assert_eq!(model.led_state(), LedState::Booting);
@@ -38,9 +38,9 @@
 //!
 //! Fault handling:
 //!
-//! ```
-//! use dcc_esp32::application::StatusModel;
-//! use dcc_esp32::system_status::{SystemStatusEvent, FaultCause, LedState};
+//! ```ignore
+//! use crate::application::StatusModel;
+//! use crate::system_status::{FaultCause, LedState, SystemStatusEvent};
 //!
 //! let mut model = StatusModel::new();
 //! model.apply(SystemStatusEvent::BootCompleted);
@@ -58,7 +58,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum FaultCause {
-    CvService,
     TrackShort,
     Estop,
     Internal,
@@ -157,7 +156,12 @@ pub enum BootReadyEvent {
 // imported by task modules across the crate (dcc engine, boot, short
 // detector, control buttons, net) that must not depend on `fault_manager`
 // itself, which also depends on `dcc::SchedulerCommand`. Keeping the event
-// type in this pure, dependency-free hub breaks that cycle.
+// type in a hub that depends on nothing they do breaks that cycle.
+//
+// The hub is no longer dependency-free in the strict sense: the `channels`
+// submodule below names Embassy types and `announce_ready` logs. Both are
+// gated to the target, and neither points back at a module that imports this
+// one, so the direction that matters is unchanged.
 
 use crate::authority::LeasePermit;
 
@@ -178,8 +182,6 @@ pub enum FaultEvent {
     NetworkResume(LeasePermit),
     /// Hardware or service fault detected (e.g. track short, CV error).
     FaultLatched(FaultCause),
-    /// Fault condition resolved by automated service logic.
-    FaultClearedByService,
 }
 
 // --- Display events ---
@@ -222,8 +224,91 @@ pub enum DisplayEvent {
     MessageCleared,
 }
 
+/// Embassy transport aliases for system status events.
+///
+/// Gated as a whole rather than item by item: this module is not target-only
+/// but `runtime_channels` is, so without the gate the host build would look for
+/// a module that does not exist there.
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod channels {
+    use super::{BootReadyEvent, DisplayEvent, FaultEvent, SystemStatusEvent};
+    use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
+
+    /// Status events fanned out to the display, the LED and the network task.
+    const STATUS_DEPTH: usize = 16;
+    /// Dedicated fan-out to the net task, which drains more slowly.
+    const NET_STATUS_DEPTH: usize = 8;
+    /// Readiness acknowledgements at boot. Ten tasks announce into nine slots,
+    /// which works because the barrier drains continuously while they announce:
+    /// see `boot::readiness::wait_for_runtime_ready`, which owns the reasoning.
+    const BOOT_READY_DEPTH: usize = 9;
+    /// Fault reports, which may arrive in bursts while the track is cut.
+    const FAULT_DEPTH: usize = 16;
+    /// Display updates, coalesced by the display task.
+    const DISPLAY_DEPTH: usize = 8;
+
+    pub(crate) type SystemStatusChannel = RuntimeChannel<SystemStatusEvent, STATUS_DEPTH>;
+    pub(crate) type SystemStatusSender = RuntimeSender<SystemStatusEvent, STATUS_DEPTH>;
+    pub(crate) type SystemStatusReceiver = RuntimeReceiver<SystemStatusEvent, STATUS_DEPTH>;
+
+    pub(crate) type NetStatusChannel = RuntimeChannel<SystemStatusEvent, NET_STATUS_DEPTH>;
+    pub(crate) type NetStatusReceiver = RuntimeReceiver<SystemStatusEvent, NET_STATUS_DEPTH>;
+
+    pub(crate) type BootReadyChannel = RuntimeChannel<BootReadyEvent, BOOT_READY_DEPTH>;
+    pub(crate) type BootReadySender = RuntimeSender<BootReadyEvent, BOOT_READY_DEPTH>;
+    pub(crate) type BootReadyReceiver = RuntimeReceiver<BootReadyEvent, BOOT_READY_DEPTH>;
+
+    pub(crate) type FaultEventChannel = RuntimeChannel<FaultEvent, FAULT_DEPTH>;
+    pub(crate) type FaultEventSender = RuntimeSender<FaultEvent, FAULT_DEPTH>;
+    pub(crate) type FaultEventReceiver = RuntimeReceiver<FaultEvent, FAULT_DEPTH>;
+
+    pub(crate) type DisplayChannel = RuntimeChannel<DisplayEvent, DISPLAY_DEPTH>;
+    pub(crate) type DisplaySender = RuntimeSender<DisplayEvent, DISPLAY_DEPTH>;
+    pub(crate) type DisplayReceiver = RuntimeReceiver<DisplayEvent, DISPLAY_DEPTH>;
+}
+
+/// Publishes one readiness acknowledgement and records it consistently.
+///
+/// This lives with the event it publishes rather than in the boot adapter:
+/// `boot` already depends on every module that calls it, so putting it there
+/// would close a cycle with each of them.
+#[cfg(target_arch = "riscv32")]
+pub(crate) async fn announce_ready(sender: channels::BootReadySender, event: BootReadyEvent) {
+    sender.send(event).await;
+    defmt::info!("boot: ready ack from {:?}", event);
+}
+
 #[cfg(test)]
 mod tests {
+    /// The first module-level example, as a test that actually runs.
+    #[test]
+    fn the_model_walks_boot_to_running_through_wifi() {
+        let mut model = StatusModel::new();
+        assert_eq!(model.led_state(), LedState::Booting);
+
+        model.apply(SystemStatusEvent::BootCompleted);
+        assert_eq!(model.led_state(), LedState::Running);
+
+        model.apply(SystemStatusEvent::WifiConnecting);
+        assert_eq!(model.led_state(), LedState::WifiConnecting);
+
+        model.apply(SystemStatusEvent::WifiConnected);
+        assert_eq!(model.led_state(), LedState::Running);
+    }
+
+    /// The second module-level example, as a test that actually runs.
+    #[test]
+    fn a_latched_fault_holds_the_led_until_it_is_cleared() {
+        let mut model = StatusModel::new();
+        model.apply(SystemStatusEvent::BootCompleted);
+
+        model.apply(SystemStatusEvent::FaultLatched(FaultCause::TrackShort));
+        assert_eq!(model.led_state(), LedState::FaultLatched);
+
+        model.apply(SystemStatusEvent::FaultCleared);
+        assert_eq!(model.led_state(), LedState::Running);
+    }
+
     use super::*;
     use crate::application::StatusModel;
 
@@ -399,7 +484,7 @@ mod tests {
         let mut model = StatusModel::new();
         model.apply(SystemStatusEvent::BootCompleted);
 
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::CvService));
+        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
         assert!(!model.short_circuit());
         assert!(!model.track_power_on());
 
@@ -414,9 +499,9 @@ mod tests {
         assert!(!model.fault_active());
         assert_eq!(model.fault_cause(), None);
 
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::CvService));
+        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
         assert!(model.fault_active());
-        assert_eq!(model.fault_cause(), Some(FaultCause::CvService));
+        assert_eq!(model.fault_cause(), Some(FaultCause::Internal));
     }
 
     #[test]

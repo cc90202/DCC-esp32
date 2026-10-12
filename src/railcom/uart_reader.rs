@@ -1,7 +1,5 @@
 use core::fmt;
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(target_arch = "riscv32")]
 use esp_hal::uart::{Config, Parity, RxConfig, StopBits};
 
 use crate::railcom::pipeline::RailcomRxResult;
@@ -46,9 +44,18 @@ impl fmt::Display for RailcomUartWindowError {
 
 impl core::error::Error for RailcomUartWindowError {}
 
-#[cfg(target_arch = "riscv32")]
-pub type RailcomUartRuntimeResultChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, RailcomRxOutput, 8>;
+/// Captured receive windows queued between the capture ISR and the dispatch
+/// task. The depth is a concurrency invariant: it decides when the capture side
+/// blocks. The channel and the sender below share this constant; the receiver
+/// side is still spelled out by hand in `runtime_dispatch`.
+const RX_WINDOW_DEPTH: usize = 8;
+
+pub(crate) type RailcomUartRuntimeResultChannel =
+    crate::runtime_channels::RuntimeChannel<RailcomRxOutput, RX_WINDOW_DEPTH>;
+pub(crate) type RailcomRxOutputSender =
+    crate::runtime_channels::RuntimeSender<RailcomRxOutput, RX_WINDOW_DEPTH>;
+pub(crate) type RailcomRxOutputReceiver =
+    crate::runtime_channels::RuntimeReceiver<RailcomRxOutput, RX_WINDOW_DEPTH>;
 
 #[cfg(target_arch = "riscv32")]
 #[must_use]

@@ -10,19 +10,14 @@ use crate::dcc::speed28::logical_to_nmra_packet_speed;
 
 use super::railcom_policy::PacketClass;
 use super::{
-    ConsistId, FunctionIndex, FunctionState, LOCO_SLOT_CAPACITY, LocoSnapshot, LogicalSpeed,
-    SchedulerCommand, SpeedFormat,
+    FunctionIndex, FunctionState, LOCO_SLOT_CAPACITY, LocoSnapshot, LogicalSpeed, SchedulerCommand,
+    SpeedFormat,
 };
 
-mod consists;
 mod emission;
 mod locomotives;
 mod pom;
 
-/// Maximum number of consists managed in software.
-const MAX_CONSISTS: usize = 8;
-/// Maximum members per consist.
-const MAX_CONSIST_MEMBERS: usize = 8;
 /// Scheduler target period to revisit one slot in normal conditions.
 const TARGET_SLOT_PERIOD_MS: u64 = 120;
 /// Minimum scheduler tick to avoid tight loops under high slot count.
@@ -40,19 +35,6 @@ pub(super) const DIRTY_STOP_RETRY_COUNT: u8 = 4;
 /// follow-up packet to the same address where decoders such as the ZIMO
 /// reference implementation can emit app:pom in the RailCom cutout.
 pub(crate) const PENDING_POM_CAPACITY: usize = 4;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ConsistMember {
-    address: DccAddress,
-    reverse_in_consist: bool,
-}
-
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone, PartialEq, Eq))]
-struct Consist {
-    id: ConsistId,
-    members: Vec<ConsistMember, MAX_CONSIST_MEMBERS>,
-}
 
 /// A locomotive slot holding the current command state.
 #[derive(Debug)]
@@ -394,7 +376,6 @@ mod invariant_recovery_tests {
 #[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
 pub struct SlotManager {
     slots: Vec<Slot, LOCO_SLOT_CAPACITY>,
-    consists: Vec<Consist, MAX_CONSISTS>,
     pending_broadcast_estop: bool,
     pending_estop_targets: Vec<DccAddress, LOCO_SLOT_CAPACITY>,
     pending_pom: Vec<PendingPomPacket, PENDING_POM_CAPACITY>,
@@ -465,7 +446,6 @@ impl SlotManager {
     pub fn new() -> Self {
         Self {
             slots: Vec::new(),
-            consists: Vec::new(),
             pending_broadcast_estop: false,
             pending_estop_targets: Vec::new(),
             pending_pom: Vec::new(),
@@ -563,21 +543,6 @@ impl SlotManager {
             SchedulerCommand::SuspendRailcomDiscovery
             | SchedulerCommand::RestartRailcomDiscovery => true,
             SchedulerCommand::RailcomTelemetry { packet } => self.railcom_telemetry_packet(packet),
-            SchedulerCommand::CreateConsist { id } => self.create_consist(id),
-            SchedulerCommand::AddToConsist {
-                id,
-                address,
-                reverse_in_consist,
-            } => self.add_to_consist(id, address, reverse_in_consist),
-            SchedulerCommand::RemoveFromConsist { id, address } => {
-                self.remove_from_consist(id, address)
-            }
-            SchedulerCommand::SetConsistSpeed {
-                id,
-                speed,
-                direction,
-            } => self.set_consist_speed(id, speed, direction) > 0,
-            SchedulerCommand::RemoveSlot { address } => self.remove_slot(address),
             SchedulerCommand::Pause => {
                 self.pause();
                 true

@@ -12,7 +12,8 @@ use embassy_time::{Instant, Timer};
 use crate::application::client_safety::{
     ClientSafetyPolicy, LeaseDecision, LeaseRequest, TripReason,
 };
-use crate::system_status::{BootReadyEvent, FaultEvent};
+use crate::system_status::channels::{BootReadySender, FaultEventSender};
+use crate::system_status::{BootReadyEvent, FaultEvent, announce_ready};
 
 const Z21_KEEPALIVE_TIMEOUT_MS: u64 = 30_000;
 
@@ -35,8 +36,8 @@ pub(crate) struct ClientWatchdogContext {
     pub(crate) response_sender:
         Sender<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
     pub(crate) trip_sender: Sender<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
-    pub(crate) fault_sender: Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
-    pub(crate) ready_sender: Sender<'static, CriticalSectionRawMutex, BootReadyEvent, 9>,
+    pub(crate) fault_sender: FaultEventSender,
+    pub(crate) ready_sender: BootReadySender,
 }
 
 #[embassy_executor::task]
@@ -51,7 +52,7 @@ pub(crate) async fn client_watchdog_task(context: ClientWatchdogContext) -> ! {
     let mut policy = ClientSafetyPolicy::new(Z21_KEEPALIVE_TIMEOUT_MS);
 
     crate::track_authority::invalidate_and_disable();
-    ready_sender.send(BootReadyEvent::LeaseWatchdog).await;
+    announce_ready(ready_sender, BootReadyEvent::LeaseWatchdog).await;
 
     loop {
         let fallback_wake = Instant::now()
@@ -82,7 +83,7 @@ pub(crate) async fn client_watchdog_task(context: ClientWatchdogContext) -> ! {
 
 async fn apply_decision(
     decision: LeaseDecision<IpAddress>,
-    fault_sender: &Sender<'static, CriticalSectionRawMutex, FaultEvent, 16>,
+    fault_sender: &FaultEventSender,
     trip_sender: &Sender<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
 ) {
     match decision {

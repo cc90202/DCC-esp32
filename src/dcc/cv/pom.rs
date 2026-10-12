@@ -13,11 +13,6 @@ use crate::railcom_data::{RailcomDatagram, RailcomItem};
 use crate::diagnostics::diagnostic_counters;
 
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::Receiver;
-
-#[cfg(target_arch = "riscv32")]
 mod actor;
 #[cfg(target_arch = "riscv32")]
 pub use actor::pom_actor_task;
@@ -27,6 +22,7 @@ diagnostic_counters! {
     static POM: PomRuntimeCounters;
 
     /// Snapshot of POM actor timeout and attribution counters.
+    ///
     pub snapshot PomRuntimeStats;
 
     tx_start_timeout_count,
@@ -161,18 +157,6 @@ pub struct PomTxStarted {
     pub packet_sequence: PacketSequence,
 }
 
-#[cfg(target_arch = "riscv32")]
-pub type PomRequestChannel = embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRequest, 1>;
-#[cfg(target_arch = "riscv32")]
-pub type PomResponseChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomResponse, 1>;
-#[cfg(target_arch = "riscv32")]
-pub type PomTxStartedChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomTxStarted, 4>;
-#[cfg(target_arch = "riscv32")]
-pub type PomRailcomResultChannel =
-    embassy_sync::channel::Channel<CriticalSectionRawMutex, PomRailcomResult, 4>;
-
 /// Drain any pending items from a `Receiver` without awaiting.
 ///
 /// Used before dispatching a new request on a single-slot channel to make sure
@@ -181,7 +165,7 @@ pub type PomRailcomResultChannel =
 /// types that flow through these channels.
 #[cfg(target_arch = "riscv32")]
 pub(crate) fn drain_channel<T: Copy, const N: usize>(
-    receiver: &Receiver<'static, CriticalSectionRawMutex, T, N>,
+    receiver: &crate::runtime_channels::RuntimeReceiver<T, N>,
 ) {
     while receiver.try_receive().is_ok() {}
 }
@@ -243,6 +227,16 @@ fn match_pom_result(
     }
 }
 
+/// Turns one channel-2 receive window into a POM outcome, if it carries one.
+///
+/// `items` must come from a window that parsed whole — in the runtime, from
+/// [`RailcomRxResult::complete_items`], which yields nothing for a partial
+/// parse. The rules below read the window as a complete statement: a prefix cut
+/// short at an unsupported identifier could hide the very symbol that decides
+/// the outcome, and would let an ACK standing before the cut speak for a
+/// decoder that went on to say something else.
+///
+/// [`RailcomRxResult::complete_items`]: crate::railcom::pipeline::RailcomRxResult::complete_items
 #[cfg(any(test, target_arch = "riscv32"))]
 pub fn pom_result_from_railcom_items(
     request_id: PomRequestId,
@@ -261,13 +255,27 @@ pub fn pom_result_from_railcom_items(
     };
     let mut ack = false;
     let mut nack = false;
+    let mut busy = false;
 
     for item in items {
         match item {
             RailcomItem::Ack => ack = include_ack,
             RailcomItem::Nack => nack = true,
+            RailcomItem::Busy => busy = true,
             RailcomItem::Datagram(_) => {}
         }
+    }
+
+    // NMRA S-9.3.2: a busy decoder has not answered, so it cannot have agreed
+    // or refused either. Busy therefore suppresses both verdicts and leaves the
+    // request unresolved: a read repeats its burst until the deadline, a write
+    // waits the deadline out. Reporting a write as accepted on the strength of
+    // an ACK standing beside a BUSY would claim an answer the decoder said it
+    // could not give. A value is different: a CV datagram is data that did
+    // arrive, and it stands whatever follows it.
+    if busy {
+        ack = false;
+        nack = false;
     }
 
     (value.is_some() || ack || nack).then_some(PomRailcomResult::Window {
@@ -283,6 +291,7 @@ pub fn pom_result_from_railcom_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::railcom::parser::{ACK_1_CODE, BUSY_CODE, NACK_CODE, parse_channel2};
 
     fn permit() -> crate::authority::LeasePermit {
         crate::authority::LeasePermit::new(crate::authority::LeaseEpoch::new(1), u64::MAX)
@@ -371,6 +380,120 @@ mod tests {
                 nack: false,
             })
         );
+    }
+
+    #[test]
+    fn test_pom_result_survives_a_short_ext_behind_the_cv_answer() {
+        // End to end from the wire, because this is where the short `app:ext`
+        // costs data: the whole window used to fail as a truncated datagram,
+        // taking the CV answer in front of it down with it.
+        let window = [
+            0xa9, 0xc5, // app:pom, CV = 0xab
+            0x8d, 0x66, // app:ext in two symbols instead of three
+            0x0f, // the ACK padding RCN-217 allows
+        ];
+        let parsed =
+            parse_channel2(&window).expect("the window must parse despite the short app:ext");
+
+        assert_eq!(
+            pom_result_from_railcom_items(
+                pom_id(7),
+                seq(42),
+                DccAddress::new_short(3),
+                true,
+                &parsed.items,
+            ),
+            Some(PomRailcomResult::Window {
+                request_id: pom_id(7),
+                packet_sequence: seq(42),
+                target_address: DccAddress::new_short(3),
+                value: Some(0xab),
+                ack: true,
+                nack: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_pom_result_leaves_a_read_pending_when_the_decoder_is_busy() {
+        // A busy decoder has not refused, so the read must stay open for the
+        // retry rather than resolve as a NACK. End to end from the wire,
+        // because the window used to fail as a reserved code.
+        let parsed =
+            parse_channel2(&[BUSY_CODE]).expect("busy must parse as a reply, not as corruption");
+
+        assert_eq!(parsed.items.as_slice(), &[RailcomItem::Busy]);
+        assert_eq!(
+            pom_result_from_railcom_items(
+                pom_id(9),
+                seq(11),
+                DccAddress::new_short(3),
+                false,
+                &parsed.items,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_pom_result_survives_a_busy_behind_the_cv_answer() {
+        // The window the fix is for: the busy reply used to read as a reserved
+        // code and take the CV answer in front of it down with it.
+        let window = [
+            0xa9, 0xc5, // app:pom, CV = 0xab
+            BUSY_CODE,
+        ];
+        let parsed =
+            parse_channel2(&window).expect("the cv answer must survive a busy reply behind it");
+
+        assert_eq!(
+            pom_result_from_railcom_items(
+                pom_id(9),
+                seq(11),
+                DccAddress::new_short(3),
+                true,
+                &parsed.items,
+            ),
+            Some(PomRailcomResult::Window {
+                request_id: pom_id(9),
+                packet_sequence: seq(11),
+                target_address: DccAddress::new_short(3),
+                value: Some(0xab),
+                ack: false,
+                nack: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_pom_result_lets_busy_suppress_a_verdict_beside_it() {
+        // A decoder that says it cannot answer has neither agreed nor refused,
+        // so the window must carry no verdict at all: nothing then reaches the
+        // POM actor, and the request waits out its deadline instead of being
+        // reported as accepted, or closed as a refusal never given. Before busy
+        // was decoded this window failed as a reserved code and was retried;
+        // the outcome must not get worse.
+        for window in [
+            [BUSY_CODE, ACK_1_CODE],
+            [ACK_1_CODE, BUSY_CODE],
+            [BUSY_CODE, NACK_CODE],
+            [NACK_CODE, BUSY_CODE],
+        ] {
+            let parsed = parse_channel2(&window)
+                .expect("busy beside a verdict is a valid control-only response");
+
+            assert_eq!(
+                pom_result_from_railcom_items(
+                    pom_id(9),
+                    seq(11),
+                    DccAddress::new_short(3),
+                    true,
+                    &parsed.items,
+                ),
+                None,
+                "window {window:#04x?}"
+            );
+        }
     }
 
     #[test]
