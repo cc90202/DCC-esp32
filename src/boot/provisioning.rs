@@ -46,7 +46,7 @@ pub(super) async fn provisioning_request_task(
                 match set_force_provisioning_on_next_boot(&mut flash, partition_table_buffer) {
                     Ok(()) => {
                         warn!("WiFi provisioning flag saved; rebooting");
-                        esp_hal::system::software_reset();
+                        crate::restart::restart();
                     }
                     Err(error) => {
                         defmt::error!("WiFi provisioning flag save failed: {}", error);

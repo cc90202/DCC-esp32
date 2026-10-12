@@ -90,7 +90,7 @@ where
                         // unsaved credentials is impossible by construction.
                         Timer::after(REBOOT_DELAY).await;
                         info!("WiFi credentials saved; rebooting into station mode");
-                        esp_hal::system::software_reset();
+                        crate::restart::restart();
                     }
                     Err(_) => {
                         warn!("WiFi credential save succeeded but success response failed");

@@ -26,13 +26,13 @@ mod firmware {
 
     #[defmt::panic_handler]
     fn defmt_panic() -> ! {
-        esp_hal::system::software_reset()
+        dcc_esp32::restart::restart()
     }
 
     #[panic_handler]
     fn panic(info: &core::panic::PanicInfo) -> ! {
         defmt::error!("PANIC: {}", defmt::Display2Format(info));
-        esp_hal::system::software_reset()
+        dcc_esp32::restart::restart()
     }
 
     // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -47,7 +47,7 @@ mod firmware {
             error,
             error.message()
         );
-        esp_hal::system::software_reset()
+        dcc_esp32::restart::restart()
     }
 
     #[esp_rtos::main]

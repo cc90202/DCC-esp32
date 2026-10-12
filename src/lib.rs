@@ -40,6 +40,8 @@ mod macros;
 pub mod net;
 pub mod railcom;
 #[cfg(target_arch = "riscv32")]
+pub mod restart;
+#[cfg(target_arch = "riscv32")]
 #[path = "railcom/isr_capture.rs"]
 pub(crate) mod railcom_capture;
 mod railcom_data;

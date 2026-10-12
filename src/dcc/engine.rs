@@ -131,7 +131,7 @@ pub async fn dcc_engine_task(
                     defmt::error!("RMT watchdog: fault queue full; track disabled, resetting");
                 }
                 Timer::after(ISR_RESET_GRACE_PERIOD).await;
-                esp_hal::system::software_reset();
+                crate::restart::restart();
             }
         }
 
