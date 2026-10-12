@@ -895,7 +895,6 @@ and physically gated. This is acceptable for the project scope.
 - captive portal DNS;
 - WiFi network scanning;
 - admin password management;
-- OTA firmware upload;
 - editing credentials while normal Z21 runtime is active;
 - HTTPS.
 
