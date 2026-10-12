@@ -163,6 +163,12 @@ fn fault_label(cause: FaultCause) -> &'static str {
     }
 }
 
+/// Title row: the station and the firmware version it runs.
+#[cfg(target_arch = "riscv32")]
+const TITLE: &str = concat!("DCC Station v", env!("CARGO_PKG_VERSION"));
+#[cfg(target_arch = "riscv32")]
+const _: () = assert!(TITLE.len() <= 21, "title wider than the display");
+
 /// Format an IPv4 address into a heapless string (max "255.255.255.255" = 15 chars).
 #[cfg(target_arch = "riscv32")]
 fn format_ip(addr: [u8; 4]) -> heapless::String<15> {
@@ -211,7 +217,7 @@ async fn render(
     }
 
     // Yellow zone (pixels 0-15): title
-    let _ = Text::new("DCC Command Station", Point::new(0, 10), style).draw(display);
+    let _ = Text::new(TITLE, Point::new(0, 10), style).draw(display);
 
     // Blue zone (pixels 16-63): skip gap, start content at Y=26
     let mut line: heapless::String<21> = heapless::String::new();
