@@ -1,0 +1,14 @@
+[package]
+edition      = "2024"
+name         = "ota-pack"
+publish      = false
+rust-version = "1.88"
+version      = "0.1.0"
+
+[dependencies]
+anyhow         = "1"
+clap           = { version = "4.5", features = ["derive"] }
+dcc-ota-format = { workspace = true }
+ed25519-dalek  = { workspace = true, features = ["fast", "std", "zeroize"] }
+getrandom      = { version = "0.3", features = ["std"] }
+zeroize        = "1.8"

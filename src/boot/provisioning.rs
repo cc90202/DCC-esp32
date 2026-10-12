@@ -1,18 +1,26 @@
 //! Persistent WiFi provisioning state and the safe reboot request task.
 
 use defmt::warn;
-use embassy_time::{Duration, Timer};
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_storage::FlashStorage;
 
 use crate::control_buttons::ProvisioningRequest;
+use crate::flash::FlashGuard;
 use crate::net::wifi_config::{
     EspWifiConfigStore, ProvisioningFlagStore, wifi_config_store_from_partition,
 };
-use crate::runtime_channels::{FaultEventSender, RuntimeReceiver};
-use crate::system_status::FaultEvent;
+use crate::runtime_channels::RuntimeReceiver;
 
 use super::{BootError, CriticalTaskInit, WifiConfigInitError};
+
+/// Locks the shared flash for the WiFi configuration store.
+pub(super) async fn lock_flash() -> Result<FlashGuard, BootError> {
+    crate::flash::lock()
+        .await
+        .ok_or(BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+            WifiConfigInitError::FlashUnavailable,
+        )))
+}
 
 /// Open the `dcc_cfg` flash partition as the WiFi configuration store.
 pub(super) fn open_wifi_config_store<'a, 'd>(
@@ -26,27 +34,34 @@ pub(super) fn open_wifi_config_store<'a, 'd>(
     })
 }
 
-const PROVISIONING_TRACK_DISABLE_GRACE: Duration = Duration::from_millis(100);
-
 /// E-stop the track, persist the next-boot flag, then reboot into setup mode.
 #[embassy_executor::task]
 pub(super) async fn provisioning_request_task(
-    mut flash: FlashStorage<'static>,
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
-    fault_sender: FaultEventSender,
     receiver: RuntimeReceiver<ProvisioningRequest, 1>,
 ) -> ! {
     loop {
         match receiver.receive().await {
             ProvisioningRequest::Requested => {
-                crate::track_safety::disable_track_intentionally();
-                fault_sender.send(FaultEvent::StopPressed).await;
-                Timer::after(PROVISIONING_TRACK_DISABLE_GRACE).await;
+                // The update lock stops the track and keeps updates out
+                // while the flag is written.
+                let _interlock =
+                    match crate::ota::acquire(dcc_ota::admission::Operation::Provisioning).await {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            warn!("WiFi setup refused: {}", error.code());
+                            continue;
+                        }
+                    };
+                let Some(mut flash) = crate::flash::lock().await else {
+                    defmt::error!("WiFi setup refused: flash not open");
+                    continue;
+                };
                 warn!("WiFi provisioning requested; saving next-boot flag");
                 match set_force_provisioning_on_next_boot(&mut flash, partition_table_buffer) {
                     Ok(()) => {
                         warn!("WiFi provisioning flag saved; rebooting");
-                        esp_hal::system::software_reset();
+                        crate::restart::restart();
                     }
                     Err(error) => {
                         defmt::error!("WiFi provisioning flag save failed: {}", error);

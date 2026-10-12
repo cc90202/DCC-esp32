@@ -37,7 +37,6 @@ use embassy_executor::{SpawnToken, Spawner};
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_hal::gpio::{Input, Output};
 use esp_hal::timer::timg::TimerGroup;
-use esp_storage::FlashStorage;
 use static_cell::StaticCell;
 
 use crate::control_buttons::{
@@ -61,7 +60,7 @@ use crate::net::client_watchdog::{
 use crate::net::provisioning::run_provisioning_ap;
 use crate::net::udp_control::NetTaskChannels;
 use crate::net::wifi_config::{
-    EspWifiConfigStoreError, ProvisioningDecision, WifiCredentials,
+    EspWifiConfigStoreError, ProvisioningDecision, SetupFlag, WifiCredentials,
     load_wifi_credentials_and_decision,
 };
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
@@ -73,9 +72,7 @@ use crate::runtime_channels::{
 };
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
-use crate::system_status::{
-    BootStep, DisplayEvent, FaultEvent, FaultManagerState, SystemStatusEvent,
-};
+use crate::system_status::{BootStep, DisplayEvent, FaultManagerState, SystemStatusEvent};
 use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.
@@ -118,7 +115,6 @@ fn spawn_critical<S>(
 struct WifiBootDecision {
     decision: ProvisioningDecision,
     credentials: Option<WifiCredentials>,
-    flash: FlashStorage<'static>,
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
     resume_button: Input<'static>,
 }
@@ -165,30 +161,35 @@ fn spawn_display(
 }
 
 async fn load_boot_wifi_decision(
-    flash_peripheral: esp_hal::peripherals::FLASH<'static>,
     resume_pin: esp_hal::peripherals::GPIO21<'static>,
 ) -> Result<WifiBootDecision, BootError> {
     let mut resume_button = new_button_input(resume_pin);
     let boot_button_override = wait_for_boot_provisioning_override(&mut resume_button).await;
-    let mut flash = FlashStorage::new(flash_peripheral);
+    let mut flash = provisioning::lock_flash().await?;
     let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
+    // A trial or recovery boot must not use up a pending setup request.
+    let flag = if crate::ota::on_trial() || crate::ota::in_recovery() {
+        SetupFlag::Keep
+    } else {
+        SetupFlag::Consume
+    };
 
     // Single decision path: button override, persistent flag and stored
-    // credentials all flow through `decide_provisioning`, which also clears
-    // the persistent flag once it has been observed.
+    // credentials all flow through `decide_provisioning`.
     let (decision, credentials) = {
         let mut store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
-        load_wifi_credentials_and_decision(&mut store, boot_button_override).map_err(|error| {
-            BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(WifiConfigInitError::Store(
-                error,
-            )))
-        })?
+        load_wifi_credentials_and_decision(&mut store, boot_button_override, flag).map_err(
+            |error| {
+                BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
+                    WifiConfigInitError::Store(error),
+                ))
+            },
+        )?
     };
 
     Ok(WifiBootDecision {
         decision,
         credentials,
-        flash,
         partition_table_buffer,
         resume_button,
     })
@@ -380,7 +381,6 @@ async fn spawn_network_runtime(
 }
 
 struct SafetyRuntimeResources {
-    flash: FlashStorage<'static>,
     partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
     resume_button: Input<'static>,
     stop_pin: esp_hal::peripherals::GPIO22<'static>,
@@ -398,7 +398,6 @@ async fn activate_safe_runtime(
         track_output,
     } = core;
     let SafetyRuntimeResources {
-        flash,
         partition_table_buffer,
         resume_button,
         stop_pin,
@@ -437,12 +436,7 @@ async fn activate_safe_runtime(
 
     spawn_critical(
         spawner,
-        provisioning_request_task(
-            flash,
-            partition_table_buffer,
-            FAULT_CHANNEL.sender(),
-            PROVISIONING_REQUESTS.receiver(),
-        ),
+        provisioning_request_task(partition_table_buffer, PROVISIONING_REQUESTS.receiver()),
         CriticalTask::ProvisioningRequest,
     )?;
     info!("boot: provisioning request task spawned");
@@ -486,8 +480,8 @@ async fn activate_safe_runtime(
 
     info!("boot: waiting for critical task readiness");
     wait_for_runtime_ready(BOOT_READY.receiver(), BOOT_FAILURE.receiver()).await?;
-    FAULT_CHANNEL.send(FaultEvent::TrackPowerArmed).await;
-    info!("boot: track power armed after critical runtime readiness");
+    crate::ota::complete_boot().await;
+    info!("boot: runtime ready; OTA policy controls track arming");
     DISPLAY_CHANNEL
         .send(DisplayEvent::BootProgress(BootStep::SystemRunning))
         .await;
@@ -497,32 +491,111 @@ async fn activate_safe_runtime(
     Ok(())
 }
 
+struct SetupHardware {
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    green_led_pin: esp_hal::peripherals::GPIO14<'static>,
+    red_led_pin: esp_hal::peripherals::GPIO15<'static>,
+}
+
+/// Runs the Wi-Fi setup access point; DCC, RailCom, Z21 and the track stay
+/// off. Returns only on failure, or at once in update recovery.
+async fn run_setup_mode(
+    spawner: Spawner,
+    hardware: SetupHardware,
+    partition_table_buffer: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
+) -> Result<(), BootError> {
+    // A candidate cannot prove itself without the network: leave its trial
+    // without blaming it; that restart keeps the setup request for the
+    // confirmed image.
+    if crate::ota::on_trial()
+        && let Err(error) = crate::ota::withdraw_trial().await
+    {
+        crate::ota::enter_recovery(error);
+    }
+    if crate::ota::in_recovery() {
+        return Ok(());
+    }
+    warn!("boot: DCC, RailCom, Z21, and track output remain disabled");
+
+    // Setup-mode LED feedback: red blink, same pattern as WiFi connecting.
+    spawn_critical(
+        &spawner,
+        provisioning_led_task(
+            new_led_output(hardware.green_led_pin),
+            new_led_output(hardware.red_led_pin),
+        ),
+        CriticalTask::ProvisioningLed,
+    )?;
+
+    // Setup mode is terminal and ends in a restart, and no update runs in it:
+    // holding the flash for its whole life is intended.
+    let mut flash = provisioning::lock_flash().await?;
+    let store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
+    run_provisioning_ap(spawner, hardware.wifi, store, DISPLAY_CHANNEL.sender())
+        .await
+        .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)))
+}
+
+/// The Wi-Fi boot decision. In update recovery a failure ends the boot
+/// quietly instead: the recovery screen must stay, and a reset loop caused
+/// by a boot error would hide it.
+async fn wifi_decision_unless_recovery(
+    resume_pin: esp_hal::peripherals::GPIO21<'static>,
+) -> Result<Option<WifiBootDecision>, BootError> {
+    match load_boot_wifi_decision(resume_pin).await {
+        Ok(decision) => Ok(Some(decision)),
+        Err(error) if crate::ota::in_recovery() => {
+            defmt::error!("Recovery WiFi unavailable: {}", error.message());
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub async fn run(
     spawner: Spawner,
-    peripherals: esp_hal::peripherals::Peripherals,
+    mut peripherals: esp_hal::peripherals::Peripherals,
 ) -> Result<(), BootError> {
     info!("boot: starting runtime bootstrap");
 
+    // Hold the physical bridge LOW before any flash access or boot decision,
+    // until `TrackOutput` takes the pin over in `start_dcc_core`.
+    let early_off = Output::new(
+        peripherals.GPIO18.reborrow(),
+        esp_hal::gpio::Level::Low,
+        esp_hal::gpio::OutputConfig::default(),
+    );
     start_async_runtime(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     info!("boot: Embassy runtime initialized");
-
+    // The display starts first, so it can show an update rolling back
+    // during the boot check below.
     spawn_display(
         &spawner,
         peripherals.I2C0,
         peripherals.GPIO19,
         peripherals.GPIO20,
     )?;
+    crate::ota::start(
+        spawner,
+        peripherals.FLASH,
+        peripherals.LPWR,
+        FAULT_CHANNEL.sender(),
+        DISPLAY_CHANNEL.sender(),
+    )
+    .await;
 
     SYSTEM_STATUS.send(SystemStatusEvent::BootStarted).await;
     NET_STATUS.send(SystemStatusEvent::BootStarted).await;
 
+    let Some(wifi_decision) = wifi_decision_unless_recovery(peripherals.GPIO21).await? else {
+        return Ok(());
+    };
     let WifiBootDecision {
         decision,
         credentials,
-        mut flash,
         partition_table_buffer,
         resume_button,
-    } = load_boot_wifi_decision(peripherals.FLASH, peripherals.GPIO21).await?;
+    } = wifi_decision;
 
     let credentials = match decision {
         ProvisioningDecision::StationMode => {
@@ -535,27 +608,24 @@ pub async fn run(
                 "boot: WiFi provisioning selected ({:?}); safe setup mode active",
                 reason
             );
-            warn!("boot: DCC, RailCom, Z21, and track output remain disabled");
-
-            // Setup-mode LED feedback: red blink, same pattern as WiFi connecting.
-            spawn_critical(
-                &spawner,
-                provisioning_led_task(
-                    new_led_output(peripherals.GPIO14),
-                    new_led_output(peripherals.GPIO15),
-                ),
-                CriticalTask::ProvisioningLed,
-            )?;
-
-            let store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
-            return run_provisioning_ap(spawner, peripherals.WIFI, store, DISPLAY_CHANNEL.sender())
-                .await
-                .map_err(|error| {
-                    BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error))
-                });
+            return run_setup_mode(
+                spawner,
+                SetupHardware {
+                    wifi: peripherals.WIFI,
+                    green_led_pin: peripherals.GPIO14,
+                    red_led_pin: peripherals.GPIO15,
+                },
+                partition_table_buffer,
+            )
+            .await;
         }
     };
 
+    // `Output` has no `Drop`, so the pin stays LOW after this line; the drop
+    // keeps GPIO18 borrowed until here, so nothing else can claim it before
+    // `TrackOutput` takes it over.
+    #[expect(clippy::drop_non_drop, reason = "ends the borrow of GPIO18 here")]
+    drop(early_off);
     let core = start_dcc_core(
         &spawner,
         DccCoreHardware {
@@ -581,7 +651,6 @@ pub async fn run(
         &spawner,
         core,
         SafetyRuntimeResources {
-            flash,
             partition_table_buffer,
             resume_button,
             stop_pin: peripherals.GPIO22,

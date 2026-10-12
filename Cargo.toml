@@ -5,6 +5,20 @@ publish      = false
 rust-version = "1.88"
 version      = "0.1.0"
 
+[workspace]
+members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "tools/ota-pack"]
+default-members = ["."]
+resolver        = "3"
+
+# Versions shared by the firmware and the update crates.
+[workspace.dependencies]
+dcc-ota          = { path = "crates/dcc-ota" }
+dcc-ota-format   = { path = "crates/dcc-ota-format" }
+ed25519-dalek    = { version = "2.2", default-features = false }
+embedded-storage = "0.3.1"
+heapless         = "0.9"
+sha2             = { version = "0.10", default-features = false }
+
 [features]
 default = []
 
@@ -20,6 +34,9 @@ default = []
 #
 #     cargo run --release --features bench-diag
 bench-diag = []
+# Bench only: a build that fails on purpose during its trial, to exercise
+# the rollback. Not additive; never enable it for a release build.
+ota-fault-inject = []
 
 [[bin]]
 name = "dcc-esp32"
@@ -27,8 +44,10 @@ path = "./src/bin/main.rs"
 
 [dependencies]
 # Platform-independent dependencies (available in tests)
-heapless         = "0.9"
-embedded-storage = "0.3.1"
+dcc-ota          = { workspace = true }
+dcc-ota-format   = { workspace = true }
+heapless         = { workspace = true }
+embedded-storage = { workspace = true }
 smoltcp          = { version = "0.12.0", default-features = false, features = ["medium-ethernet", "proto-dhcpv4", "socket-dhcpv4"] }
 
 [target.'cfg(not(target_arch = "riscv32"))'.dependencies]
@@ -37,10 +56,11 @@ critical-section = { version = "1.2.0", features = ["std"] }
 # ESP32-specific dependencies (only compiled for RISC-V target, not for host tests)
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 critical-section = "1.2.0"
+ed25519-dalek    = { workspace = true }
 esp-hal = { version = "~1.0", features = ["defmt", "esp32c6", "unstable"] }
 ssd1306 = { version = "0.10", features = ["async"] }
 embedded-graphics = "0.8"
-heapless = { version = "0.9", features = ["defmt"] }
+heapless = { workspace = true, features = ["defmt"] }
 
 esp-rtos = { version = "0.2.0", features = [
   "defmt",
@@ -70,7 +90,7 @@ embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 
 [dev-dependencies]
 # For running tests on host platform
-heapless = "0.9"
+heapless = { workspace = true }
 embassy-futures = "0.1.2"
 embassy-sync = "0.7.2"
 embassy-time = { version = "0.5.0", features = ["std", "generic-queue-8"] }

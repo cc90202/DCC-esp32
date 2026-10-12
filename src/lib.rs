@@ -14,6 +14,11 @@
 //! [`display`] is split: the `DisplayModel` reducer is host-testable, the I2C
 //! rendering task is not. `status_led`, `control_buttons` and `short_detector`
 //! are peripheral tasks and only build for the ESP32 target.
+//!
+//! Over-the-air updates live in the HAL-free `dcc_ota` crate; on the device,
+//! `ota` adds tasks, locks and hardware around it, with `flash` (the shared
+//! flash handle), `liveness` (task heartbeats), `clock` (time conversions)
+//! and [`restart`] (a restart that also resets the radio).
 #![cfg_attr(not(test), no_std)]
 #![deny(clippy::mem_forget)]
 
@@ -21,6 +26,8 @@ pub mod application;
 mod authority;
 #[cfg(target_arch = "riscv32")]
 pub mod boot;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod clock;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod control_buttons;
 pub mod control_logic;
@@ -35,14 +42,22 @@ pub(crate) mod dcc_runtime;
 pub(crate) mod diagnostics;
 pub mod display;
 pub mod fault_manager;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod flash;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod liveness;
 pub(crate) mod logon;
 mod macros;
 pub mod net;
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod ota;
 pub mod railcom;
 #[cfg(target_arch = "riscv32")]
 #[path = "railcom/isr_capture.rs"]
 pub(crate) mod railcom_capture;
 mod railcom_data;
+#[cfg(target_arch = "riscv32")]
+pub mod restart;
 #[cfg(target_arch = "riscv32")]
 #[path = "dcc/rmt_driver.rs"]
 pub(crate) mod rmt_dcc;

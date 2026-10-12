@@ -23,7 +23,7 @@
 # DCC-esp32
 
 `no_std` Rust firmware for a DCC command station built on the ESP32-C6, using
-`esp-hal`, Embassy async tasks and `esp-wifi`. Together with its companion
+`esp-hal`, Embassy async tasks and `esp-radio`. Together with its companion
 hardware it drives up to 12 locomotives at once, controlled from the Roco Z21
 app over a Z21-compatible UDP layer.
 
@@ -48,6 +48,10 @@ WiFi credentials are configured at runtime from a setup page the board serves
 itself, so nothing is baked in at build time. Protocol, encoder and scheduler
 logic is pure and covered by host-side tests; the rest runs on the target.
 
+The firmware is updated over WiFi by uploading a signed file from the browser.
+If the new version does not work, the station goes back to the previous one
+on its own.
+
 ## Hardware documentation
 
 Read this before wiring or powering anything:
@@ -70,11 +74,15 @@ track from this README alone.
 
 ## Getting started
 
-1. Build and flash the firmware:
+1. Check with `espflash board-info` (espflash **4.3.0**) that the board has
+   8 MB of flash. Then build the firmware and write it over USB:
 
    ```bash
    cargo run --release
    ```
+
+   The first installation is done over USB. Later updates go over WiFi, as
+   described in [Firmware updates over WiFi](#firmware-updates-over-wifi).
 
 2. Configure WiFi from the ESP32 setup page.
 
@@ -114,59 +122,45 @@ ZIMO decoders. Service-mode programming on a separate track is not available,
 because the hardware it needs (track relay and acknowledgement detection) has
 not been built yet.
 
-## Cargo aliases
+## Build and flash
 
-Custom aliases are defined in `.cargo/config.toml` for common workflows:
+| Command | What it does |
+|---------|--------------|
+| `cargo build-esp` | Debug build for the ESP32-C6 |
+| `cargo build-esp-release` | Release build (LTO, size-optimized) |
+| `cargo check-esp` | Type-check for the ESP32-C6, without building an image |
+| `cargo test-host` | Run the unit tests on the PC |
+| `cargo run --release` | Write the firmware over USB and open the serial monitor |
 
-| Alias | Description |
-|-------|-------------|
-| `cargo test-host` | Run host-side unit tests (protocol logic, fast feedback) |
-| `cargo check-esp` | Type-check for ESP32-C6 target (no flash) |
-| `cargo build-esp` | Build firmware for ESP32-C6 |
-| `cargo build-esp-release` | Release build (LTO enabled) |
-| `bash scripts/check-isr-ram.sh` | Verify RMT/cutout ISR symbols are linked in internal RAM |
-| `cargo clippy-host` | Lint for host target |
-| `cargo clippy-esp` | Lint for ESP32-C6 target |
-| `cargo run` | Flash to device via espflash and monitor |
+The aliases are defined in `.cargo/config.toml`. Writing over USB erases the
+update history and the previous version kept in memory.
 
-## Cargo features
+## Firmware updates over WiFi
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `bench-diag` | off | Bench diagnostics: per-window and per-command `defmt` logging, plus the periodic RailCom counter dump task. Off by default because every `defmt` line is written inside a critical section, which delays the DCC waveform and RailCom cutout interrupts. The counters are always maintained; only their output is gated. |
+The firmware is updated over WiFi, without a USB cable. The new firmware
+comes in a signed file with the `.dccfw` extension.
 
-Enable it for a bench session, then go back to the default build for normal use:
+Download the `.dccfw` file to a folder on the PC. Turn the track off from
+Z21. Open `http://<station-address>/update` in the browser; the station
+address is shown on the display. Upload the file from the web page.
 
-```bash
-cargo run --release --features bench-diag   # verbose, bench only
-cargo run --release                         # normal: boot, heartbeat, warnings and errors
-```
+Before writing the file to memory, the station checks its signature, hash,
+chip, flash layout and project name. It also checks that the file's version
+is newer than the installed one and has not been rejected before. If a check
+fails, the station refuses the file and the page explains why. If every check
+passes, the station writes the new firmware to a partition of the ESP32.
 
-## Build
+The station then runs the new firmware on trial for one minute. During the
+trial the two LEDs alternate, the display counts down the seconds left, the
+track stays off and Z21 cannot turn it on. If the new firmware was installed
+correctly, the station confirms the new version and the display asks to turn
+the track on from Z21. The update is then complete.
 
-```bash
-cargo build-esp            # debug build
-cargo build-esp-release    # release build (LTO, size-optimized)
-```
-
-## Flash
-
-```bash
-cargo run                  # flash and monitor via espflash
-cargo run --release        # flash release build
-```
-
-## Test and validation
-
-```bash
-cargo test-host            # host-side unit tests
-cargo check-esp            # fast embedded compile check
-cargo clippy-host          # lint (host)
-cargo clippy-esp           # lint (ESP32-C6, all features)
-```
-
-CI runs the same commands with `-D warnings`, and lints the ESP32-C6 target
-both in the default configuration and with `bench-diag` enabled.
+If during the trial the new firmware hangs, restarts on its own or fails a
+check, the station goes back to the previous version. The new version is
+marked as rejected and the station will not accept it again. If instead the
+trial is cut short by a power loss, the new version is not rejected and can
+be uploaded again.
 
 ## Commit conventions
 
@@ -188,12 +182,15 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 - `src/z21/`: pure Z21 wire protocol, independent of transport
 - `src/fault_manager.rs` and `src/fault_manager/`: track-safety policy, power fence, and effect relay
 - `src/track_*.rs`: physical output, authorization, and safety boundaries
+- `src/ota/`: firmware side of the WiFi update: flash, watchdog, track interlock and display
+- `crates/dcc-ota/`: update logic with no hardware access: journal, trial, rollback and status page data
+- `crates/dcc-ota-format/`: signed package and firmware image formats
 - `docs/specs/`: protocol and standards references
 - `docs/hardware/`: the breadboard as it is wired today, inventory and assembly notes
 
 ## Safety notes
 
-- Current output/control behavior must match the external amplifier and protection hardware.
+- The firmware is written for the power stage and the protection circuits described in the hardware documentation. With different hardware its behaviour is not guaranteed.
 - For protocol, power-stage, or GPIO wiring changes, re-check the hardware documentation before flashing.
 - DCC track power can damage decoders or hardware if the power stage is wired incorrectly.
 
@@ -202,7 +199,8 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 - [ ] Service-mode programming on a separate track. The packet encoder already
       builds the verify and write packets; what is missing is hardware.
 - [ ] Z21 multi-client support (multiple apps controlling the same station)
-- [ ] PCB design for a standalone command station board
+- [ ] PCB for a standalone command station board (in progress)
+- [x] Firmware updates over WiFi
 
 ## License
 

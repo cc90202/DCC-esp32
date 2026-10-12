@@ -10,15 +10,26 @@ use super::provisioning_policy::{
 };
 use super::store::{ProvisioningFlagStore, StoreError, WifiCredentialsStore};
 
+/// What a boot does with the persistent "enter setup" flag once read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupFlag {
+    /// Clear it: this boot acts on it.
+    Consume,
+    /// Leave it set: a trial or recovery boot must not use up the request.
+    Keep,
+}
+
 /// Load credentials and compute the boot provisioning decision.
 ///
 /// Corrupt stored credentials become `StoredCredentialsState::Invalid`
 /// (entering provisioning) instead of a boot error; a corrupt flag read is
-/// treated as "not forced". The persistent flag is cleared as soon as it is
+/// treated as "not forced"; any other storage error is returned. With
+/// [`SetupFlag::Consume`] the persistent flag is cleared as soon as it is
 /// observed set, regardless of which provisioning reason wins.
 pub fn load_wifi_credentials_and_decision<S>(
     store: &mut S,
     button_override: bool,
+    flag: SetupFlag,
 ) -> Result<
     (ProvisioningDecision, Option<WifiCredentials>),
     StoreError<<S as WifiCredentialsStore>::Error>,
@@ -40,7 +51,7 @@ where
     };
 
     let decision = decide_provisioning(stored_state, button_override, persistent_override);
-    if persistent_override {
+    if persistent_override && flag == SetupFlag::Consume {
         store.clear_force_on_next_boot()?;
     }
 
@@ -114,7 +125,7 @@ mod tests {
         };
 
         let (decision, credentials) =
-            load_wifi_credentials_and_decision(&mut store, false).unwrap();
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Consume).unwrap();
 
         assert_eq!(decision, ProvisioningDecision::StationMode);
         assert_eq!(credentials.unwrap().ssid(), "DCC-Lab");
@@ -126,7 +137,7 @@ mod tests {
         let mut store = FakeStore::default();
 
         let (decision, credentials) =
-            load_wifi_credentials_and_decision(&mut store, false).unwrap();
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Consume).unwrap();
 
         assert_eq!(
             decision,
@@ -143,7 +154,7 @@ mod tests {
         };
 
         let (decision, credentials) =
-            load_wifi_credentials_and_decision(&mut store, false).unwrap();
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Consume).unwrap();
 
         assert_eq!(
             decision,
@@ -160,7 +171,8 @@ mod tests {
             ..FakeStore::default()
         };
 
-        let (decision, _) = load_wifi_credentials_and_decision(&mut store, false).unwrap();
+        let (decision, _) =
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Consume).unwrap();
 
         assert_eq!(decision, ProvisioningDecision::StationMode);
         assert_eq!(store.flag_clears, 0);
@@ -174,7 +186,8 @@ mod tests {
             ..FakeStore::default()
         };
 
-        let (decision, _) = load_wifi_credentials_and_decision(&mut store, false).unwrap();
+        let (decision, _) =
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Consume).unwrap();
 
         assert_eq!(
             decision,
@@ -192,7 +205,8 @@ mod tests {
             ..FakeStore::default()
         };
 
-        let (decision, _) = load_wifi_credentials_and_decision(&mut store, true).unwrap();
+        let (decision, _) =
+            load_wifi_credentials_and_decision(&mut store, true, SetupFlag::Consume).unwrap();
 
         assert_eq!(
             decision,
@@ -209,7 +223,34 @@ mod tests {
         };
 
         assert_eq!(
-            load_wifi_credentials_and_decision(&mut store, false),
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Consume),
+            Err(StoreError::FlashRead(NorFlashErrorKind::Other))
+        );
+    }
+
+    #[test]
+    fn a_trial_boot_keeps_the_flag_but_still_reports_flash_errors() {
+        let mut store = FakeStore {
+            stored: STORED,
+            flag: true,
+            ..FakeStore::default()
+        };
+        let (decision, _) =
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Keep).unwrap();
+        assert_eq!(
+            decision,
+            ProvisioningDecision::ProvisioningMode(ProvisioningReason::PersistentOverride)
+        );
+        assert_eq!(store.flag_clears, 0);
+        assert!(store.flag);
+
+        let mut store = FakeStore {
+            stored: STORED,
+            flag_error: Some(StoreError::FlashRead(NorFlashErrorKind::Other)),
+            ..FakeStore::default()
+        };
+        assert_eq!(
+            load_wifi_credentials_and_decision(&mut store, false, SetupFlag::Keep),
             Err(StoreError::FlashRead(NorFlashErrorKind::Other))
         );
     }

@@ -10,7 +10,7 @@ mod esp_flash_store;
 mod provisioning_policy;
 mod store;
 
-pub use boot_decision::load_wifi_credentials_and_decision;
+pub use boot_decision::{SetupFlag, load_wifi_credentials_and_decision};
 pub use credentials::{CredentialError, WifiCredentials};
 #[cfg(target_arch = "riscv32")]
 pub use esp_flash_store::{

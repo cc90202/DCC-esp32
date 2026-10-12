@@ -4,10 +4,11 @@
 //! GPIO14 (green LED) and GPIO15 (red LED) to indicate system state.
 //!
 //! Booting shows brief green pulses on a 125ms period, and WiFi connection
-//! shows red blinking on a 500ms period. Once the station is ready to control
-//! trains the green LED goes solid. Solid red means either the operator pressed
-//! the stop button or a hardware fault is latched, such as a track short or a
-//! CV error.
+//! shows red blinking on a 500ms period. While a new firmware is on trial the
+//! green and red LEDs alternate every 500ms. A running station whose track is
+//! off blinks green once a second; the green LED goes solid only while the
+//! track is powered. Solid red means either the operator pressed the stop
+//! button or a hardware fault is latched, such as a track short or a CV error.
 //!
 //! # Examples
 //!
@@ -51,14 +52,54 @@ fn set_both_off(green: &mut Output<'static>, red: &mut Output<'static>) {
     red.set_low();
 }
 
+/// What the LEDs show: the system state, refined while the station runs by
+/// the update trial and by whether the track is actually powered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    State(LedState),
+    /// A new firmware is on trial; the track stays off until it is confirmed.
+    Trial,
+    /// The station runs but the track is off, waiting for the operator.
+    TrackOff,
+}
+
+fn shown(state: LedState) -> Shown {
+    if state != LedState::Running {
+        Shown::State(state)
+    } else if crate::ota::on_trial() {
+        Shown::Trial
+    } else if !crate::track_output::TrackOutput.is_track_enabled() {
+        Shown::TrackOff
+    } else {
+        Shown::State(state)
+    }
+}
+
 fn apply_led_output(
-    state: LedState,
+    shown: Shown,
     blink_on: bool,
     green: &mut Output<'static>,
     red: &mut Output<'static>,
 ) {
     set_both_off(green, red);
 
+    let state = match shown {
+        Shown::State(state) => state,
+        Shown::Trial => {
+            if blink_on {
+                green.set_high();
+            } else {
+                red.set_high();
+            }
+            return;
+        }
+        Shown::TrackOff => {
+            if blink_on {
+                green.set_high();
+            }
+            return;
+        }
+    };
     match state {
         LedState::Booting => {
             if blink_on {
@@ -85,12 +126,20 @@ fn apply_led_output(
 }
 
 const WIFI_BLINK_MS: u64 = 500;
+const TRIAL_BLINK_MS: u64 = 500;
+const TRACK_OFF_BLINK_MS: u64 = 1000;
+/// How often a running station checks the trial and the track, which
+/// change without a status event.
+const RUNNING_POLL_MS: u64 = 250;
 
-fn blink_period_for(state: LedState) -> Option<Duration> {
-    match state {
-        LedState::Booting => Some(Duration::from_millis(BOOT_BLINK_MS)),
-        LedState::WifiConnecting => Some(Duration::from_millis(WIFI_BLINK_MS)),
-        LedState::Running | LedState::EstopActive | LedState::FaultLatched => None,
+fn blink_period_for(shown: Shown) -> Option<Duration> {
+    match shown {
+        Shown::State(LedState::Booting) => Some(Duration::from_millis(BOOT_BLINK_MS)),
+        Shown::State(LedState::WifiConnecting) => Some(Duration::from_millis(WIFI_BLINK_MS)),
+        Shown::Trial => Some(Duration::from_millis(TRIAL_BLINK_MS)),
+        Shown::TrackOff => Some(Duration::from_millis(TRACK_OFF_BLINK_MS)),
+        Shown::State(LedState::Running) => Some(Duration::from_millis(RUNNING_POLL_MS)),
+        Shown::State(LedState::EstopActive | LedState::FaultLatched) => None,
     }
 }
 
@@ -124,11 +173,16 @@ pub async fn status_led_task(
     set_both_off(&mut green_led, &mut red_led);
     announce_ready(ready_sender, BootReadyEvent::StatusLed).await;
 
+    let mut prev_shown = shown(model.led_state());
     loop {
-        let state = model.led_state();
-        apply_led_output(state, blink_on, &mut green_led, &mut red_led);
+        let now_shown = shown(model.led_state());
+        if now_shown != prev_shown {
+            prev_shown = now_shown;
+            blink_on = true;
+        }
+        apply_led_output(now_shown, blink_on, &mut green_led, &mut red_led);
 
-        if let Some(period) = blink_period_for(state) {
+        if let Some(period) = blink_period_for(now_shown) {
             if let Ok(event) = with_timeout(period, status_receiver.receive()).await {
                 blink_on = true;
                 apply_status_event(&mut model, &mut prev_state, event, &display_sender);

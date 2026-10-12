@@ -4,10 +4,10 @@
 target = "riscv32imac-unknown-none-elf"
 
 [target.riscv32imac-unknown-none-elf]
-# --partition-table is required: without it espflash writes its default
-# 3-entry table and the firmware fails at boot with MissingPartition
-# because the dcc_cfg partition (WiFi credentials) does not exist.
-runner = "espflash flash --monitor --partition-table partitions.csv"
+# USB migration/recovery ONLY: destroys OTA history and the inactive image.
+# Requires espflash 4.3.0 and verified physical 8 MB flash; reconfigure WiFi
+# after layout migration. Never use this runner for an OTA update.
+runner = "espflash flash --monitor --chip esp32c6 --flash-size 8mb --bootloader bootloader/esp32c6-bootloader.bin --partition-table partitions.csv --target-app-partition ota_0 --erase-parts otadata,ota_journal,ota_1"
 rustflags = [
   "-C",
   "link-arg=-Tlinkall.x",
@@ -24,9 +24,9 @@ ESP_HAL_CONFIG_PLACE_RMT_DRIVER_IN_RAM = "true"
 
 [alias]
 # Host-side unit tests for protocol logic (fast feedback).
-test-host = "test --lib --target x86_64-unknown-linux-gnu -- --test-threads=1"
+test-host = "test --lib --target x86_64-unknown-linux-gnu -p dcc-esp32 -p dcc-ota -p dcc-ota-format -- --test-threads=1"
 # Host-side linting for library/tests plus host-safe bin stub.
-clippy-host = "clippy --all-targets --all-features --target x86_64-unknown-linux-gnu"
+clippy-host = "clippy --workspace --all-targets --all-features --target x86_64-unknown-linux-gnu"
 # Embedded target compile checks (no flashing required).
 check-esp = "check --target riscv32imac-unknown-none-elf"
 # Embedded linting for the real firmware target.
@@ -34,3 +34,5 @@ clippy-esp = "clippy --all-features --target riscv32imac-unknown-none-elf --lib 
 # Firmware builds for ESP32-C6.
 build-esp = "build --target riscv32imac-unknown-none-elf"
 build-esp-release = "build --release --target riscv32imac-unknown-none-elf"
+# Explicit host target is essential when invoked from the repository root.
+ota-pack = "run --quiet -p ota-pack --target x86_64-unknown-linux-gnu --"
