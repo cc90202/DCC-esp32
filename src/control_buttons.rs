@@ -125,25 +125,51 @@ async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePres
     classify_resume_press(pressed_at.elapsed().as_millis())
 }
 
-async fn send_resume_action(
+fn send_resume_action(
     action: ResumeButtonAction,
     fault_sender: FaultEventSender,
     provisioning_sender: RuntimeSender<ProvisioningRequest, 1>,
 ) {
-    match action {
-        ResumeButtonAction::ResumeShortFault => {
-            fault_sender.send(FaultEvent::ResumeShortPressed).await;
+    // Never leave a blocked Resume future that can enqueue after OTA unlocks.
+    let outcome = critical_section::with(|_| {
+        if crate::track_output::inhibited() {
+            return Err(Refused::Inhibited);
         }
-        ResumeButtonAction::ResumeLongFault => {
-            fault_sender.send(FaultEvent::ResumeLongPressed).await;
-        }
-        ResumeButtonAction::RequestWifiProvisioning => {
-            if provisioning_sender
-                .try_send(ProvisioningRequest::Requested)
-                .is_err()
-            {
-                defmt::warn!("WiFi provisioning request already pending");
+        let queued = match action {
+            ResumeButtonAction::ResumeShortFault => fault_sender
+                .try_send(FaultEvent::ResumeShortPressed)
+                .is_ok(),
+            ResumeButtonAction::ResumeLongFault => {
+                fault_sender.try_send(FaultEvent::ResumeLongPressed).is_ok()
             }
+            ResumeButtonAction::RequestWifiProvisioning => provisioning_sender
+                .try_send(ProvisioningRequest::Requested)
+                .is_ok(),
+        };
+        if !queued {
+            return Err(Refused::QueueFull);
+        }
+        Ok(())
+    });
+    if let Err(reason) = outcome {
+        defmt::warn!("Resume/setup refused: {}", reason.message());
+    }
+}
+
+/// Why a resume or setup press was dropped.
+#[derive(Clone, Copy)]
+enum Refused {
+    /// An update or recovery keeps the track off.
+    Inhibited,
+    /// The receiving queue is full.
+    QueueFull,
+}
+
+impl Refused {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Inhibited => "track inhibited by an update or recovery",
+            Self::QueueFull => "event queue full",
         }
     }
 }
@@ -176,8 +202,13 @@ pub async fn resume_button_task(
     loop {
         wait_for_debounced_level(&mut resume_button, ButtonLevel::Pressed).await;
         defmt::info!("RESUME pressed");
-
+        let started_inhibited = crate::track_output::inhibited();
+        let started_epoch = crate::track_output::inhibit_epoch();
         let press = classify_resume_button_press(&mut resume_button).await;
+        if started_inhibited || started_epoch != crate::track_output::inhibit_epoch() {
+            defmt::info!("RESUME press ignored: track inhibited by an update or recovery");
+            continue;
+        }
         match press {
             ResumePress::Short => defmt::info!("RESUME short press"),
             ResumePress::Long => defmt::info!("RESUME long press"),
@@ -187,8 +218,7 @@ pub async fn resume_button_task(
             resume_action_for_press(press),
             fault_sender,
             provisioning_sender,
-        )
-        .await;
+        );
     }
 }
 

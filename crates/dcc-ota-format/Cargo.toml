@@ -1,0 +1,15 @@
+[package]
+edition      = "2024"
+name         = "dcc-ota-format"
+publish      = false
+rust-version = "1.88"
+version      = "0.1.0"
+description  = "The signed firmware package of the DCC command station: release versions, ESP-IDF application images and the Ed25519-signed header."
+
+[features]
+# Fixtures for the tests of the crates built on this one; host only.
+test-support = []
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+sha2          = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+edition      = "2024"
+name         = "dcc-ota"
+publish      = false
+rust-version = "1.88"
+version      = "0.1.0"
+description  = "Signed over-the-air update logic for the DCC command station, free of any HAL."
+
+[dependencies]
+dcc-ota-format   = { workspace = true }
+ed25519-dalek    = { workspace = true }
+embedded-storage = { workspace = true }
+heapless         = { workspace = true }
+
+[dev-dependencies]
+dcc-ota-format = { workspace = true, features = ["test-support"] }
+serde_json     = "1"

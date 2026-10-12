@@ -199,6 +199,8 @@ pub enum BootStep {
     WifiConnected,
     DccEngineReady,
     SystemRunning,
+    /// Terminal recovery state; later boot progress must not hide it.
+    UsbRecovery,
 }
 
 /// Events that update the OLED display content.
@@ -215,7 +217,9 @@ pub enum DisplayEvent {
     ActiveLocoCount(u8),
     Fault(FaultCause),
     FaultCleared,
-    Message(heapless::String<21>),
+    Message(crate::display::RowText),
+    /// Removes the last [`Self::Message`] from the footer.
+    MessageCleared,
 }
 
 #[cfg(test)]

@@ -1,11 +1,10 @@
 //! OLED display event types and async task.
 
-use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
-
 #[cfg(target_arch = "riscv32")]
 use crate::runtime_channels::{BootReadySender, DisplayReceiver, announce_ready};
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::BootReadyEvent;
+use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
 #[cfg(target_arch = "riscv32")]
 use defmt::warn;
 #[cfg(target_arch = "riscv32")]
@@ -68,6 +67,12 @@ fn draw_throbber<D: DrawTarget<Color = BinaryColor>>(target: &mut D, origin: Poi
     }
 }
 
+/// Characters that fit on one row: a 6-pixel font on a 128-pixel panel.
+pub const ROW_COLUMNS: usize = 21;
+
+/// One display row, never wider than the panel.
+pub type RowText = heapless::String<ROW_COLUMNS>;
+
 /// Aggregated OLED display state, updated one [`DisplayEvent`] at a time.
 ///
 /// Mirrors the reducer pattern used by [`crate::application::StatusModel`]:
@@ -82,7 +87,7 @@ pub struct DisplayModel {
     state: LedState,
     loco_count: u8,
     fault: Option<FaultCause>,
-    message: Option<heapless::String<21>>,
+    message: Option<RowText>,
 }
 
 impl DisplayModel {
@@ -104,7 +109,11 @@ impl DisplayModel {
     /// Applies one display event, updating the relevant field.
     pub fn apply(&mut self, event: DisplayEvent) {
         match event {
-            DisplayEvent::BootProgress(s) => self.boot_step = s,
+            DisplayEvent::BootProgress(s) => {
+                if self.boot_step != BootStep::UsbRecovery {
+                    self.boot_step = s;
+                }
+            }
             DisplayEvent::IpAssigned(addr) => self.ip = Some(addr),
             DisplayEvent::ProvisioningMode { ssid, setup_url } => {
                 self.provisioning_ssid = Some(ssid);
@@ -115,6 +124,7 @@ impl DisplayModel {
             DisplayEvent::Fault(f) => self.fault = Some(f),
             DisplayEvent::FaultCleared => self.fault = None,
             DisplayEvent::Message(m) => self.message = Some(m),
+            DisplayEvent::MessageCleared => self.message = None,
         }
     }
 
@@ -122,6 +132,21 @@ impl DisplayModel {
     #[must_use]
     pub const fn state(&self) -> LedState {
         self.state
+    }
+
+    /// Returns the final row, preserving a terminal USB-recovery instruction.
+    ///
+    /// A message wins over the boot step: the network reports `WifiConnected`
+    /// after boot has already reached `SystemRunning`, and keying messages on
+    /// the step hid every one of them behind "WiFi connected".
+    #[must_use]
+    pub fn footer(&self) -> &str {
+        match (self.boot_step, self.message.as_deref()) {
+            (BootStep::UsbRecovery, _) => boot_step_label(BootStep::UsbRecovery),
+            (_, Some(message)) => message,
+            (BootStep::SystemRunning, None) => "",
+            (step, None) => boot_step_label(step),
+        }
     }
 }
 
@@ -131,7 +156,6 @@ impl Default for DisplayModel {
     }
 }
 
-#[cfg(target_arch = "riscv32")]
 fn boot_step_label(step: BootStep) -> &'static str {
     match step {
         BootStep::PeripheralsInit => "Init peripherals",
@@ -139,6 +163,7 @@ fn boot_step_label(step: BootStep) -> &'static str {
         BootStep::WifiConnected => "WiFi connected",
         BootStep::DccEngineReady => "DCC engine ready",
         BootStep::SystemRunning => "System running",
+        BootStep::UsbRecovery => "OTA: USB recovery",
     }
 }
 
@@ -167,7 +192,7 @@ fn fault_label(cause: FaultCause) -> &'static str {
 #[cfg(target_arch = "riscv32")]
 const TITLE: &str = concat!("DCC Station v", env!("CARGO_PKG_VERSION"));
 #[cfg(target_arch = "riscv32")]
-const _: () = assert!(TITLE.len() <= 21, "title wider than the display");
+const _: () = assert!(TITLE.len() <= ROW_COLUMNS, "title wider than the display");
 
 /// Format an IPv4 address into a heapless string (max "255.255.255.255" = 15 chars).
 #[cfg(target_arch = "riscv32")]
@@ -193,23 +218,25 @@ async fn render(
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let _ = display.clear(BinaryColor::Off);
 
-    if let (Some(ssid), Some(setup_url)) = (&model.provisioning_ssid, model.provisioning_setup_url)
+    if model.boot_step != BootStep::UsbRecovery
+        && let (Some(ssid), Some(setup_url)) =
+            (&model.provisioning_ssid, model.provisioning_setup_url)
     {
         let _ = Text::new("DCC WiFi Setup", Point::new(0, 10), style).draw(display);
 
-        let mut line: heapless::String<21> = heapless::String::new();
+        let mut line = RowText::new();
         let _ = write!(line, "AP: {}", ssid);
         let _ = Text::new(&line, Point::new(0, 26), style).draw(display);
 
         let _ = Text::new(setup_url, Point::new(0, 36), style).draw(display);
-        let _ = Text::new("Binario spento", Point::new(0, 46), style).draw(display);
+        let _ = Text::new("Track off", Point::new(0, 46), style).draw(display);
 
         if let Some(cause) = model.fault {
             line.clear();
             let _ = write!(line, "Fault: {}", fault_label(cause));
             let _ = Text::new(&line, Point::new(0, 56), style).draw(display);
         } else {
-            let _ = Text::new("Salva e riavvia", Point::new(0, 56), style).draw(display);
+            let _ = Text::new("Save and restart", Point::new(0, 56), style).draw(display);
         }
 
         let _ = display.flush().await;
@@ -220,7 +247,7 @@ async fn render(
     let _ = Text::new(TITLE, Point::new(0, 10), style).draw(display);
 
     // Blue zone (pixels 16-63): skip gap, start content at Y=26
-    let mut line: heapless::String<21> = heapless::String::new();
+    let mut line = RowText::new();
     let _ = write!(line, "State: {}", led_state_label(model.state));
     let _ = Text::new(&line, Point::new(0, 26), style).draw(display);
 
@@ -252,12 +279,7 @@ async fn render(
         );
     }
 
-    // Last row: boot step during boot, or message after boot
-    if !matches!(model.boot_step, BootStep::SystemRunning) {
-        let _ = Text::new(boot_step_label(model.boot_step), Point::new(0, 63), style).draw(display);
-    } else if let Some(msg) = &model.message {
-        let _ = Text::new(msg, Point::new(0, 63), style).draw(display);
-    }
+    let _ = Text::new(model.footer(), Point::new(0, 63), style).draw(display);
 
     let _ = display.flush().await;
 }
@@ -398,9 +420,50 @@ mod tests {
         model.apply(DisplayEvent::FaultCleared);
         assert_eq!(model.fault, None);
 
-        let mut text: heapless::String<21> = heapless::String::new();
+        let mut text = RowText::new();
         text.push_str("hello").expect("fits in 21-byte buffer");
         model.apply(DisplayEvent::Message(text));
         assert_eq!(model.message.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn message_shows_after_wifi_reports_late() {
+        // Real order on the board: boot completes, then DHCP finishes.
+        let mut model = DisplayModel::new();
+        model.apply(DisplayEvent::BootProgress(BootStep::SystemRunning));
+        model.apply(DisplayEvent::BootProgress(BootStep::WifiConnected));
+        assert_eq!(model.footer(), "WiFi connected");
+        model.apply(DisplayEvent::Message(
+            heapless::String::try_from("OTA: testing 0.1.3").unwrap(),
+        ));
+        assert_eq!(model.footer(), "OTA: testing 0.1.3");
+        model.apply(DisplayEvent::MessageCleared);
+        assert_eq!(model.footer(), "WiFi connected");
+    }
+
+    #[test]
+    fn cleared_message_empties_the_running_footer() {
+        let mut model = DisplayModel::new();
+        model.apply(DisplayEvent::BootProgress(BootStep::SystemRunning));
+        model.apply(DisplayEvent::Message(
+            heapless::String::try_from("OK 0.1.1: enable Z21").unwrap(),
+        ));
+        assert_eq!(model.footer(), "OK 0.1.1: enable Z21");
+        model.apply(DisplayEvent::MessageCleared);
+        assert_eq!(model.footer(), "");
+    }
+
+    #[test]
+    fn recovery_instruction_survives_boot_progress_and_messages() {
+        let mut model = DisplayModel::new();
+        assert_eq!(model.footer(), "Init peripherals");
+        model.apply(DisplayEvent::BootProgress(BootStep::UsbRecovery));
+        assert_eq!(model.footer(), "OTA: USB recovery");
+        model.apply(DisplayEvent::BootProgress(BootStep::SystemRunning));
+        model.apply(DisplayEvent::Message(
+            heapless::String::try_from("WiFi connecting").unwrap(),
+        ));
+        assert_eq!(model.footer(), "OTA: USB recovery");
+        assert_eq!(model.state(), LedState::Booting);
     }
 }

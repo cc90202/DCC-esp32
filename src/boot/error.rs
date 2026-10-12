@@ -136,6 +136,8 @@ pub enum WifiConfigInitError {
     Partition(EspFlashStoreError),
     /// The configuration store could not be read.
     Store(EspWifiConfigStoreError),
+    /// The shared flash handle was not open; a boot-order bug.
+    FlashUnavailable,
 }
 
 /// Channel used by critical tasks to report asynchronous initialization failures.
@@ -345,6 +347,7 @@ impl fmt::Display for WifiConfigInitError {
         match self {
             Self::Partition(error) => write!(formatter, "WiFi flash partition failed: {error}"),
             Self::Store(error) => write!(formatter, "WiFi configuration store failed: {error}"),
+            Self::FlashUnavailable => formatter.write_str("flash not open before WiFi setup"),
         }
     }
 }
@@ -354,6 +357,7 @@ impl core::error::Error for WifiConfigInitError {
         match self {
             Self::Partition(error) => Some(error),
             Self::Store(error) => Some(error),
+            Self::FlashUnavailable => None,
         }
     }
 }

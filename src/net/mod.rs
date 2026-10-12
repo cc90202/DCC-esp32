@@ -20,6 +20,8 @@ pub(crate) mod udp_control;
 mod wifi;
 #[cfg(target_arch = "riscv32")]
 pub use wifi::{NetInitError, UdpBindError};
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod update_http;
 pub mod wifi_config;
 #[cfg(target_arch = "riscv32")]
 mod z21_context;

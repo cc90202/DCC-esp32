@@ -117,6 +117,32 @@ pub enum CutoutRuntimeEvent {
 }
 
 static TRACK_ENABLED: AtomicBool = AtomicBool::new(false);
+static TRACK_INHIBITED: AtomicBool = AtomicBool::new(true);
+static INHIBIT_EPOCH: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the update interlock refuses to power the track; set from power-on
+/// until boot policy agrees.
+pub(crate) fn inhibited() -> bool {
+    TRACK_INHIBITED.load(Ordering::Acquire)
+}
+
+/// Counts how many times the interlock was engaged, so an operator action
+/// that started before an engagement can be recognised as stale.
+pub(crate) fn inhibit_epoch() -> u32 {
+    INHIBIT_EPOCH.load(Ordering::Acquire)
+}
+
+/// Engages or lifts the interlock, serialized with the enable check in
+/// [`TrackOutput::set_track_enabled`].
+pub(crate) fn set_inhibited(inhibit: bool) {
+    critical_section_with(|_| {
+        if inhibit {
+            INHIBIT_EPOCH.fetch_add(1, Ordering::AcqRel);
+        }
+        TRACK_INHIBITED.store(inhibit, Ordering::Release);
+    });
+}
+
 static CUTOUT_STATE: AtomicU8 = AtomicU8::new(CutoutState::Idle as u8);
 static PENDING_CUTOUT_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_METADATA: AtomicU32 = AtomicU32::new(0);
@@ -290,11 +316,23 @@ impl TrackOutput {
         Self
     }
 
-    /// Applies the normal track power state.
-    pub fn set_track_enabled(&mut self, enabled: bool) {
-        TRACK_ENABLED.store(enabled, Ordering::Release);
+    /// Turns the track off; never refused, so the result is only checked
+    /// in debug builds.
+    pub fn disable(&mut self) {
+        let disabled = self.set_track_enabled(false);
+        debug_assert!(disabled);
+    }
 
+    /// Applies the normal track power state.
+    ///
+    /// Returns false if an enable is refused by the update interlock.
+    #[must_use]
+    pub fn set_track_enabled(&mut self, enabled: bool) -> bool {
         critical_section_with(|_| {
+            if enabled && inhibited() {
+                return false;
+            }
+            TRACK_ENABLED.store(enabled, Ordering::Release);
             with_hw_mut(|hw| {
                 if !enabled {
                     stop_cutout_timer_fast(hw);
@@ -315,7 +353,8 @@ impl TrackOutput {
                     }
                 }
             });
-        });
+            true
+        })
     }
 
     #[must_use]
@@ -331,8 +370,8 @@ impl TrackOutput {
 /// waiting in a queue.
 #[must_use]
 pub fn emergency_disable() -> bool {
-    TRACK_ENABLED.store(false, Ordering::Release);
     critical_section_with(|_| {
+        TRACK_ENABLED.store(false, Ordering::Release);
         with_hw_mut(|hw| {
             stop_cutout_timer_fast(hw);
             cutout_off_fast(hw);
