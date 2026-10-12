@@ -109,14 +109,16 @@ fn commands_roundtrip_and_safety() {
             assert!(!cli(&dir, &["extract", "package", "--out", "extracted"]));
             fs::remove_file(dir.join("package")).unwrap();
         }
-        for kind in [BuildKind::Dev, BuildKind::Fault] {
-            fs::write(dir.join("image"), fixture(public, kind, "1.2.3")).unwrap();
-            assert!(!cli(&dir, &sign));
-            let mut dev = sign.to_vec();
-            dev.push("--development");
-            assert!(cli(&dir, &dev));
-            fs::remove_file(dir.join("package")).unwrap();
-        }
+        fs::write(
+            dir.join("image"),
+            fixture(public, BuildKind::Fault, "1.2.3"),
+        )
+        .unwrap();
+        assert!(!cli(&dir, &sign));
+        let mut bench = sign.to_vec();
+        bench.push("--development");
+        assert!(cli(&dir, &bench));
+        fs::remove_file(dir.join("package")).unwrap();
         let new = SigningKey::from_bytes(&[98; 32]).verifying_key().to_bytes();
         fs::write(dir.join("new"), new).unwrap();
         fs::write(dir.join("image"), fixture(new, BuildKind::Release, "1.2.3")).unwrap();

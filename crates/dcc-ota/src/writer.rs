@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn a_release_device_refuses_a_bench_image() {
-        let image = release_image(9120, BuildKind::Dev);
+        let image = release_image(9120, BuildKind::Fault);
         let mut flash = SimFlash::new(0, FLASH_SIZE);
         let mut buffers = Buffers::new();
         let mut writer = Writer::new(
@@ -529,7 +529,7 @@ mod tests {
         let mut bench = Writer::new(
             manifest(&image),
             Slot::A,
-            BuildKind::Dev,
+            BuildKind::Fault,
             &mut buffers,
             &mut flash,
         )

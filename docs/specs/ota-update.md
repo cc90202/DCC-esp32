@@ -361,10 +361,9 @@ nome/versione uguali al manifest. Tool verifica anche segmenti, checksum e
 digest ESP, immagine non merged. Versione solo major.minor.patch canonico.
 
 Firma locale privata fuori repo. Pubkey incorporata in sezione identificabile
-con marker, insieme a build_kind release/dev/fault. `ota-pack sign` rifiuta
-release signing di dev/fault e controlla pubkey immagine == pubkey firmatario.
+con marker, insieme a build_kind release/fault. `ota-pack sign` rifiuta
+release signing di fault e controlla pubkey immagine == pubkey firmatario.
 Rotazione esplicita `--rotate-to PUBKEY`, controllando nuovo embedded key.
-Dev key privata fuori repo, usata solo su dispositivo bench con firmware dev.
 CI di verifica key fingerprint e review su keys/; niente firma automatica CI
 o pubblicazione senza autorizzazione. Unknown key → messaggio generico, nessuna
 versione ponte inventata; release notes documentano percorso rotazione.
@@ -422,7 +421,7 @@ specificare **--target host**; config annidata da sola non viene letta da Cargo
 invocato alla root. CI build/test/fmt/clippy tool espliciti, fixture bin reale.
 Build release + `espflash save-image --chip esp32c6 --flash-size 8mb
 --partition-table partitions.csv` senza --merge, tool sign/inspect/verify/extract.
-Fault injection feature unica con selector env (default none), dev build_kind;
+Fault injection feature unica con selector env (default none), fault build_kind;
 --all-features deve compilare ma NON produrre release firmabile.
 
 Host: journal codec e power-cut ad ogni erase/write/commit; stati otadata
@@ -432,7 +431,7 @@ cut prima/dopo READY/TRYING/CONFIRMED. Invarianti: mai write running slot,
 mai conferma per sola otadata, mai target RECEIVING usato come corrente,
 mai flash con bridge on, lock fino a reboot, stato policy == stato fisico.
 HTTP origine normalizzata, framing/limiti, deadlines, body 256 /check; key
-release/dev/fault/rotation; CLI roundtrip; browser upload/errore/reboot/rollback.
+release/fault/rotation; CLI roundtrip; browser upload/errore/reboot/rollback.
 
 Hardware indispensabile prima delivery: artefatto **esatto** `.dccfw` su bench
 via OTA (o extract + write-bin raw, non rigenerazione ELF); N→N+1→N+2;

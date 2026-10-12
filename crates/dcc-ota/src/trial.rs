@@ -176,7 +176,11 @@ mod tests {
         assert_eq!(w.left(ms(20_000)), Some(Duration::from_secs(42)));
         assert_eq!(w.left(ms(90_000)), Some(Duration::ZERO));
         w.observe(ms(30_000), health(true, 1));
-        assert_eq!(w.left(ms(30_000)), Some(HEALTHY_SPAN), "an outage restarts it");
+        assert_eq!(
+            w.left(ms(30_000)),
+            Some(HEALTHY_SPAN),
+            "an outage restarts it"
+        );
     }
 
     #[test]

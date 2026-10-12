@@ -86,7 +86,7 @@ l'OLED mostra `OTA: USB recovery` anche se l'avvio della rete non termina.
 ## Creare una release (operatore autorizzato, locale)
 
 Incrementare prima la versione canonica `major.minor.patch` in `Cargo.toml`.
-Non usare `--all-features`: include dev/fault, non una release firmabile.
+Non usare `--all-features`: include fault, non una release firmabile.
 Usare un nome output nuovo: il tool rifiuta di sovrascrivere file.
 
 ```bash
@@ -124,21 +124,21 @@ con la chiave produzione e non pubblicato. Nessuna firma release automatica.
 
 ## Bench e fault injection
 
-Solo dispositivo bench con chiave dev già installata via USB:
+Solo su un dispositivo da banco, con una build fault già installata via USB
+(una centrale di produzione rifiuta le immagini fault):
 
 ```bash
 OTA_FAULT=panic cargo build-esp-release --features ota-fault-inject
-# Convertire l'ELF come sopra, poi usare seed dev e --development:
-cargo ota-pack sign --key ~/.config/dcc-esp32/ota_dev.key --development \
+# Convertire l'ELF come sopra, poi firmare con --development:
+cargo ota-pack sign --key ~/.config/dcc-esp32/ota_release_main.key --development \
   --image target/ota/app.bin --out target/ota/bench.dccfw
 ```
 
 Riconvertire sempre l'ELF appena compilato, senza riutilizzare un vecchio app.bin.
 `OTA_FAULT` è selezionato **a compilazione**, solo con `ota-fault-inject`:
-`none` (default), `panic`, `hang`, `health-timeout`. La feature include
-`ota-dev-key`; `ota-dev-key` da sola produce build dev, `ota-fault-inject`
-produce build fault anche con selector none. Tornare a build default e seed
-release per produzione; `--development` non autorizza una release pubblica.
+`none` (default), `panic`, `hang`, `health-timeout`; la feature produce una
+build fault anche con selector none. Tornare alla build default per la
+produzione; `--development` non autorizza una release pubblica.
 
 ## Limiti di sicurezza e recupero
 

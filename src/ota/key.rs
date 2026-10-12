@@ -7,16 +7,11 @@ use dcc_ota::Error;
 use dcc_ota_format::image::{BUILD_METADATA_LEN, BuildKind, BuildMetadata, EmbeddedKey};
 use ed25519_dalek::VerifyingKey;
 
-#[cfg(feature = "ota-dev-key")]
-const KEY: [u8; 32] = *include_bytes!("../../keys/ota_dev.pub");
-#[cfg(not(feature = "ota-dev-key"))]
 const KEY: [u8; 32] = *include_bytes!("../../keys/ota_release.pub");
 /// The kind of this build; updates must be images it accepts.
 #[cfg(feature = "ota-fault-inject")]
 pub(super) const BUILD_KIND: BuildKind = BuildKind::Fault;
-#[cfg(all(feature = "ota-dev-key", not(feature = "ota-fault-inject")))]
-pub(super) const BUILD_KIND: BuildKind = BuildKind::Dev;
-#[cfg(not(feature = "ota-dev-key"))]
+#[cfg(not(feature = "ota-fault-inject"))]
 pub(super) const BUILD_KIND: BuildKind = BuildKind::Release;
 
 /// Kept in the linked image even though only [`trusted_key`] reads it.

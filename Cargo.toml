@@ -34,10 +34,9 @@ default = []
 #
 #     cargo run --release --features bench-diag
 bench-diag = []
-# Bench only: trust keys/ota_dev.pub instead of the release key. Not
-# additive; never enable it for a release build.
-ota-dev-key = []
-ota-fault-inject = ["ota-dev-key"]
+# Bench only: a build that fails on purpose during its trial, to exercise
+# the rollback. Not additive; never enable it for a release build.
+ota-fault-inject = []
 
 [[bin]]
 name = "dcc-esp32"

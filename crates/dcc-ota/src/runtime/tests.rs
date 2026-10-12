@@ -144,7 +144,10 @@ fn an_update_is_tried_after_the_restart_and_confirmed_after_a_healthy_minute() {
     let next = device.restarted("1.1.0");
     assert_eq!(next.start(ResetCause::PowerLoss), None);
     assert_eq!(next.lifecycle(), Lifecycle::Running);
-    assert!(next.inhibited.get(), "the boot after an update holds the track");
+    assert!(
+        next.inhibited.get(),
+        "the boot after an update holds the track"
+    );
     assert_eq!(next.last_shown(), Some(Notice::TrackOff));
     assert!(!stored(&next).holds_track_off());
     let later = next.restarted("1.1.0");

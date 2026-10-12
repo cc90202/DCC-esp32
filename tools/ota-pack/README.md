@@ -21,7 +21,7 @@ Use the non-merged application output of `espflash save-image` for ESP32-C6,
 8 MB flash, and the approved partition table; never a merged flash image.
 Signing validates the full ESP image and unique build metadata, reads the
 canonical version from app_desc, and signs the manifest plus image digest.
-Dev/fault images require `--development` **for bench devices only**.
+Fault-injection images require `--development` **for bench devices only**.
 
 Ordinarily the embedded key must equal the signing key. For intentional
 rotation, add `--rotate-to /secure/new.pub`; it must match the new embedded

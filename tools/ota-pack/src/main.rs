@@ -56,7 +56,7 @@ enum Command {
         /// New public key the image embeds, for a key rotation.
         #[arg(long)]
         rotate_to: Option<PathBuf>,
-        /// Allow a bench (dev or fault) build.
+        /// Allow a bench build with injected failures.
         #[arg(long)]
         development: bool,
     },
@@ -184,7 +184,7 @@ fn sign(
     let build = EmbeddedKey::find(image)?;
     ensure!(
         build.kind() == BuildKind::Release || policy == BuildPolicy::AllowBench,
-        "dev/fault image requires explicit --development (bench only)"
+        "fault image requires explicit --development (bench only)"
     );
     let signer = key.verifying_key();
     let embedded = rotate_to.unwrap_or(signer);

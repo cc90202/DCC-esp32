@@ -63,7 +63,10 @@ impl<D: Device> Runtime<'_, D> {
         let (changed, version) = self.device.state(|s| {
             let changed = seconds(s.trial_left) != seconds(left);
             s.trial_left = left;
-            (changed, s.record.and_then(|r| r.candidate()).map(|c| c.version()))
+            (
+                changed,
+                s.record.and_then(|r| r.candidate()).map(|c| c.version()),
+            )
         });
         if changed && let Some(version) = version {
             self.device.show(Notice::Trial { version, left });

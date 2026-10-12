@@ -41,11 +41,10 @@ fn starts_with_marker(bytes: &[u8]) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum BuildKind {
-    /// Production build, trusting the release key.
+    /// Production build.
     Release = 0,
-    /// Bench build, trusting the development key.
-    Dev = 1,
-    /// Bench build with injected failures.
+    /// Bench build with injected failures; value 1 was once a bench build
+    /// without them and is no longer valid.
     Fault = 2,
 }
 
@@ -57,7 +56,7 @@ impl BuildKind {
     pub const fn accepts(self, kind: Self) -> bool {
         match self {
             Self::Release => matches!(kind, Self::Release),
-            Self::Dev | Self::Fault => true,
+            Self::Fault => true,
         }
     }
 }
@@ -68,7 +67,6 @@ impl TryFrom<u32> for BuildKind {
     fn try_from(value: u32) -> Result<Self, ImageError> {
         match value {
             0 => Ok(Self::Release),
-            1 => Ok(Self::Dev),
             2 => Ok(Self::Fault),
             _ => Err(ImageError::BadBuild),
         }
@@ -232,7 +230,7 @@ mod tests {
             }
             .encode()
         };
-        for kind in [BuildKind::Release, BuildKind::Dev, BuildKind::Fault] {
+        for kind in [BuildKind::Release, BuildKind::Fault] {
             assert_eq!(
                 EmbeddedKey::find(&record(kind)),
                 Ok(EmbeddedKey { kind, key })
@@ -242,11 +240,13 @@ mod tests {
             }
             assert!(EmbeddedKey::find(&[record(kind), record(kind)].concat()).is_err());
         }
-        let mut unknown_kind = record(BuildKind::Dev);
-        unknown_kind[BUILD_KIND_AT] = 3;
-        assert!(EmbeddedKey::find(&unknown_kind).is_err());
+        for unknown in [1, 3] {
+            let mut unknown_kind = record(BuildKind::Fault);
+            unknown_kind[BUILD_KIND_AT] = unknown;
+            assert!(EmbeddedKey::find(&unknown_kind).is_err());
+        }
         let weak = BuildMetadata {
-            kind: BuildKind::Dev,
+            kind: BuildKind::Fault,
             public_key: [0; 32],
         }
         .encode();
@@ -257,7 +257,7 @@ mod tests {
     fn the_record_is_found_across_any_chunking() {
         let key = signing_key().verifying_key();
         let record = BuildMetadata {
-            kind: BuildKind::Dev,
+            kind: BuildKind::Fault,
             public_key: key.to_bytes(),
         }
         .encode();
@@ -269,7 +269,7 @@ mod tests {
             assert_eq!(
                 scanner.finish(),
                 Ok(EmbeddedKey {
-                    kind: BuildKind::Dev,
+                    kind: BuildKind::Fault,
                     key
                 }),
                 "chunk {chunk}"
@@ -284,8 +284,8 @@ mod tests {
         truncated.feed(&record[..20]);
         assert_eq!(truncated.finish(), Err(ImageError::BadBuild));
         assert!(BuildKind::Release.accepts(BuildKind::Release));
-        assert!(!BuildKind::Release.accepts(BuildKind::Dev));
         assert!(!BuildKind::Release.accepts(BuildKind::Fault));
-        assert!(BuildKind::Dev.accepts(BuildKind::Release));
+        assert!(BuildKind::Fault.accepts(BuildKind::Release));
+        assert!(BuildKind::Fault.accepts(BuildKind::Fault));
     }
 }

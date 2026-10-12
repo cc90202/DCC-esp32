@@ -5,16 +5,14 @@ Questi file contengono **solo chiavi pubbliche Ed25519**, 32 byte raw:
 | File | SHA-256 completo (fingerprint) |
 |---|---|
 | `ota_release.pub` | `333d21df8f456306b81716b63ce1be59d6d974d41b3d28dc7dce21d78394d052` |
-| `ota_dev.pub` | `9c2ea726b2b9179abe9313c85ac8909b61dea698f0b5bfda788194f4079a76cf` |
 
 `key_id` nel pacchetto è costituito dai primi 8 byte del fingerprint. Non è una
 firma. La CI fissa i fingerprint: ogni modifica va revisionata insieme alla
 procedura di rotazione e alla nuova chiave incorporata nel firmware.
 
-I seed privati corrispondenti stanno fuori dal repository, sul PC di chi
-firma: `~/.config/dcc-esp32/ota_release_main.key` e
-`~/.config/dcc-esp32/ota_dev.key`, 32 byte raw con permessi `0600`. **Non
-visualizzarli, committarli, inviarli in log o chat, né caricarli in CI.** Va
+Il seed privato corrispondente sta fuori dal repository, sul PC di chi
+firma: `~/.config/dcc-esp32/ota_release_main.key`, 32 byte raw con permessi `0600`. **Non
+visualizzarlo, committarlo, inviarlo in log o chat, né caricarlo in CI.** Va
 tenuta una copia cifrata del seed release in un posto sicuro: perso il seed,
 le schede non accettano più aggiornamenti firmati e serve la USB, perché non
 si ricostruisce dalla chiave pubblica.
@@ -27,9 +25,8 @@ cargo ota-pack keygen --private ~/.config/dcc-esp32/ota_next.key \
   --public ~/.config/dcc-esp32/ota_next.pub
 ```
 
-La chiave release firma solo build di produzione senza feature dev/fault.
-`ota-dev-key` incorpora la chiave dev; `ota-fault-inject` la abilita implicitamente.
-`--development` è un consenso esplicito per firmare build bench dev/fault, non
+La chiave release firma solo build di produzione senza la feature fault.
+`--development` è un consenso esplicito per firmare build bench fault, non
 un modo per pubblicarle come release. Una rotazione usa il vecchio seed per
 firmare una build che incorpora la nuova chiave, con `--rotate-to NUOVA.pub`;
 il tool verifica il match. Dopo conferma, la nuova build accetta la nuova chiave.

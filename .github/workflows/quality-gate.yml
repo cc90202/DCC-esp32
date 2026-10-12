@@ -37,7 +37,6 @@ jobs:
           sha256sum --check <<'EOF'
           402c2c64761034e10b36ca8699d641e2bc0c86fd245a859d78e1aae4e2d201cd  bootloader/esp32c6-bootloader.bin
           333d21df8f456306b81716b63ce1be59d6d974d41b3d28dc7dce21d78394d052  keys/ota_release.pub
-          9c2ea726b2b9179abe9313c85ac8909b61dea698f0b5bfda788194f4079a76cf  keys/ota_dev.pub
           EOF
 
       - name: Host unit tests
