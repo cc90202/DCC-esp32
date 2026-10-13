@@ -21,13 +21,10 @@ use super::{FrameKind, FunctionAction, ParseError, Z21Command};
 /// - [`ParseError::InvalidAddress`] when a decoded loco address is out of range.
 /// - [`ParseError::InvalidFunction`] when a loco function index is outside F0..F28.
 pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
-    if buf.len() < 4 {
-        return Err(ParseError::FrameTooShort);
-    }
-    let data_len = u16::from_le_bytes([buf[0], buf[1]]) as usize;
-    if data_len < 4 || data_len > buf.len() {
-        return Err(ParseError::LenMismatch);
-    }
+    let data_len = frame_len(buf).map_err(|error| match error {
+        FrameBoundaryError::TruncatedHeader { .. } => ParseError::FrameTooShort,
+        FrameBoundaryError::InvalidLength { .. } => ParseError::LenMismatch,
+    })?;
     // Slice to exactly this frame's bytes so XBus checksum covers only its data.
     let frame = &buf[..data_len];
     let header = frame_kind(frame).header;
@@ -190,11 +187,7 @@ fn parse_set_loco_drive_command(payload: &[u8], db0: u8) -> Result<Z21Command, P
     let (speed, format) = if db0 == DB0_LOCO_SPEED28 {
         (z21_wire_to_logical(raw_speed), SpeedFormat::Speed28)
     } else {
-        let logical_speed = match raw_speed {
-            0 | 1 => 0,
-            _ => raw_speed - 1,
-        };
-        (logical_speed, SpeedFormat::Speed128)
+        (speed128_wire_to_logical(raw_speed), SpeedFormat::Speed128)
     };
 
     Ok(Z21Command::SetLocoDrive {

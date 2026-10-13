@@ -102,7 +102,7 @@
 use core::fmt;
 
 use crate::dcc::timing::{DCC_ONE_HIGH_US, DCC_ZERO_HIGH_US};
-use crate::dcc::{DccPacket, encoder::PulseCode};
+use crate::dcc::{DCC_MAX_PACKET_BYTES, DccPacket, encoder::PulseCode};
 
 const ONE_BIT_MIN_US: u16 = 55;
 const ONE_BIT_MAX_US: u16 = 61;
@@ -281,6 +281,56 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
     }
 
     Ok(())
+}
+
+/// Decodes an encoded pulse stream back into the packet bytes it carries,
+/// checksum byte included.
+///
+/// Walks the same layout as [`validate_packet_structure`] (preamble, start
+/// bit, eight data bits per byte, separator or end bit) but accumulates the
+/// data bits MSB first. It exists so tests can compare a pulse stream with a
+/// recorded byte sequence; it is not an independent check of the encoder.
+///
+/// # Panics
+///
+/// Panics if the stream is not a well-formed DCC packet or carries more than
+/// [`DCC_MAX_PACKET_BYTES`] bytes. Callers are tests, where a malformed stream
+/// is a bug to surface.
+pub(crate) fn decode_pulses(pulses: &[PulseCode]) -> heapless::Vec<u8, DCC_MAX_PACKET_BYTES> {
+    let preamble_count = pulses.iter().take_while(|p| is_one_bit(p)).count();
+    assert!(
+        preamble_count >= 14,
+        "preamble has {preamble_count} one bits, at least 14 required"
+    );
+    let mut bits = pulses[preamble_count..].iter().map(|pulse| {
+        match classify_pulse(pulse).expect("every pulse must be a valid DCC bit") {
+            DccBitKind::One => true,
+            DccBitKind::Zero => false,
+        }
+    });
+    assert_eq!(
+        bits.next(),
+        Some(false),
+        "missing start bit after the preamble"
+    );
+
+    let mut bytes = heapless::Vec::new();
+    loop {
+        let byte = (0..8).fold(0u8, |acc, _| {
+            let bit = bits.next().expect("stream ends inside a data byte");
+            (acc << 1) | u8::from(bit)
+        });
+        bytes
+            .push(byte)
+            .expect("decoded packet must fit DCC_MAX_PACKET_BYTES");
+        match bits.next() {
+            Some(false) => {}
+            Some(true) => break,
+            None => panic!("stream ends without an end bit"),
+        }
+    }
+    assert!(bits.next().is_none(), "pulses follow the end bit");
+    bytes
 }
 
 /// Validates NMRA S-9.2 packet compliance

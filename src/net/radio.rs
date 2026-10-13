@@ -2,6 +2,7 @@
 
 use core::fmt;
 
+use esp_hal::rng::Rng;
 use esp_radio::wifi::{Interfaces, ModeConfig, WifiController};
 use static_cell::StaticCell;
 
@@ -95,6 +96,16 @@ impl core::error::Error for WifiBringupError {
             }
         }
     }
+}
+
+/// Returns a 64-bit seed for an `embassy_net` stack from the hardware RNG.
+///
+/// The first draw fills the high word and the second the low word. The RNG
+/// yields true random numbers only while the radio is running, so call this
+/// after [`start_wifi`].
+pub(crate) fn stack_seed() -> u64 {
+    let rng = Rng::new();
+    (rng.random() as u64) << 32 | rng.random() as u64
 }
 
 fn init_controller() -> Result<&'static mut esp_radio::Controller<'static>, RadioInitError> {

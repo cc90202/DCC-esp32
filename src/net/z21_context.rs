@@ -12,37 +12,27 @@ use crate::dcc::channels::{
 };
 use crate::system_status::channels::FaultEventSender;
 
-/// Dependencies used only by track-power and status handlers.
-pub(super) struct TrackCtx<'a> {
-    pub(super) fault_sender: &'a FaultEventSender,
-    pub(super) status_model: &'a StatusModel,
-    pub(super) lease_permit: Option<LeasePermit>,
-}
-
-/// Dependencies used only by locomotive handlers.
-pub(super) struct LocoCtx<'a> {
-    pub(super) status_model: &'a StatusModel,
-    pub(super) lease_permit: Option<LeasePermit>,
-    pub(super) request_sender: &'a LocoRequestSender,
-    pub(super) response_receiver: &'a LocoResponseReceiver,
-    /// Local counter: the network task is the sole locomotive request producer.
-    pub(super) next_request_id: &'a Cell<u32>,
-}
-
-/// Dependencies used only by Programming-on-Main handlers.
-pub(super) struct PomCtx<'a> {
-    pub(super) status_model: &'a StatusModel,
-    pub(super) lease_permit: Option<LeasePermit>,
-    pub(super) request_sender: &'a PomRequestSender,
-    pub(super) response_receiver: &'a PomResponseReceiver,
-    /// Local counter: the network task is the sole POM request producer.
-    pub(super) next_request_id: &'a Cell<u32>,
-    pub(super) loco: LocoCtx<'a>,
-}
-
-/// Family-specific dependencies used by the Z21 router.
+/// Dependencies shared by every Z21 handler, built once per UDP frame.
 pub(super) struct Z21Ctx<'a> {
-    pub(super) track: TrackCtx<'a>,
-    pub(super) loco: LocoCtx<'a>,
-    pub(super) pom: PomCtx<'a>,
+    pub status_model: &'a StatusModel,
+    pub lease_permit: Option<LeasePermit>,
+    pub fault_sender: &'a FaultEventSender,
+    pub loco: LocoChannels<'a>,
+    pub pom: PomChannels<'a>,
+}
+
+/// Locomotive request/response channels and their request-id counter.
+pub(super) struct LocoChannels<'a> {
+    pub request_sender: &'a LocoRequestSender,
+    pub response_receiver: &'a LocoResponseReceiver,
+    /// Local counter: the network task is the sole locomotive request producer.
+    pub next_request_id: &'a Cell<u32>,
+}
+
+/// Programming-on-Main request/response channels and their request-id counter.
+pub(super) struct PomChannels<'a> {
+    pub request_sender: &'a PomRequestSender,
+    pub response_receiver: &'a PomResponseReceiver,
+    /// Local counter: the network task is the sole POM request producer.
+    pub next_request_id: &'a Cell<u32>,
 }

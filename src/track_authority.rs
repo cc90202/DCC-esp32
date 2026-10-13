@@ -1,7 +1,7 @@
 //! Runtime adapter that serializes controller authority with track power.
 //!
 //! The lease policy and registry remain framework-independent in
-//! `application`; this module owns the ESP critical section and hardware
+//! `authority`; this module owns the ESP critical section and hardware
 //! side-effect at the outer runtime boundary.
 
 use core::cell::RefCell;

@@ -10,7 +10,6 @@ use embassy_executor::Spawner;
 use embassy_net::{Config, Ipv4Cidr, StackResources, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Sender;
-use esp_hal::rng::Rng;
 use esp_radio::wifi::{AccessPointConfig, AuthMethod, ModeConfig};
 use heapless::String;
 use static_cell::StaticCell;
@@ -114,8 +113,7 @@ where
             .await
             .map_err(ProvisioningApError::WifiBringup)?;
 
-    let rng = Rng::new();
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let seed = radio::stack_seed();
     let resources = PROVISIONING_NET_RESOURCES.init(StackResources::new());
     let (stack, runner) =
         embassy_net::new(interfaces.ap, provisioning_net_config(), resources, seed);

@@ -36,11 +36,8 @@ pub(crate) fn apply_loco_result(
 
 #[must_use]
 pub(crate) fn projected_or_neutral(slots: &LocoSlots, address: DccAddress) -> LocoState {
-    slots
-        .iter()
-        .flatten()
-        .find(|state| state.address == address)
-        .copied()
+    projected_slot_index(slots, address)
+        .and_then(|index| slots[index])
         .unwrap_or(LocoState {
             address,
             speed: LogicalSpeed::zero(SpeedFormat::Speed128),
@@ -79,7 +76,9 @@ fn apply_snapshot(
     Ok(state)
 }
 
-fn projected_slot_index(slots: &LocoSlots, address: DccAddress) -> Option<usize> {
+/// Return the index of the projected slot holding `address`, if any.
+#[must_use]
+pub(crate) fn projected_slot_index(slots: &LocoSlots, address: DccAddress) -> Option<usize> {
     slots
         .iter()
         .position(|slot| slot.as_ref().is_some_and(|slot| slot.address == address))

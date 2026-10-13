@@ -1,7 +1,7 @@
 //! Z21-side POM (Programming on Main) request/response client.
 //!
 //! Talks to the POM actor task (`dcc::cv::pom_actor_task`) over the
-//! single-slot request/response channels threaded through [`PomCtx`].
+//! single-slot request/response channels threaded through [`Z21Ctx`].
 //!
 //! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
@@ -9,17 +9,17 @@
 use core::cell::Cell;
 
 use defmt::warn;
-use embassy_time::{Instant, with_timeout};
 
+use super::correlated::{SendMode, correlated_request};
 use crate::application::LocoSlots;
-use crate::application::pom::{
-    PomAdmissionError, PomRefreshFailure, apply_refresh_result, prepare_read, prepare_write,
+use crate::application::locomotive::{
+    LocoCommandFailure, LocoCommandOutcome, resolve_loco_command,
 };
+use crate::application::pom::{PomAdmissionError, prepare_read, prepare_write};
 use crate::dcc::channels::{PomRequestSender, PomResponseReceiver};
-use crate::dcc::cv::drain_channel;
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
-use crate::net::z21_context::PomCtx;
+use crate::net::z21_context::Z21Ctx;
 use crate::net::z21_dispatch::encoded_len;
 use crate::z21 as z21_proto;
 
@@ -41,60 +41,32 @@ enum PomOutcome {
     Unavailable,
 }
 
-/// Allocate the next [`PomRequestId`] from the net task's local counter.
+/// Sends one POM request to the actor and waits for the reply carrying its id.
 ///
-/// Replaces a global `AtomicU32`: the counter only needs to be unique within
-/// this task's single-flight request/response channel, so a plain `Cell`
-/// owned by `net_task` is enough.
-fn next_pom_request_id(counter: &Cell<u32>) -> PomRequestId {
-    let id = counter.get();
-    counter.set(id.wrapping_add(1));
-    PomRequestId::new(id)
-}
-
-pub(super) async fn request_pom(
+/// The id comes from the net task's local counter: it only needs to be unique
+/// within this task's single-flight request/response channel.
+async fn request_pom(
     pom_request_sender: &PomRequestSender,
     pom_response_receiver: &PomResponseReceiver,
     next_request_id: &Cell<u32>,
     build_request: impl FnOnce(PomRequestId) -> PomRequest,
 ) -> Option<PomResponse> {
-    let request_id = next_pom_request_id(next_request_id);
-    drain_channel(pom_response_receiver);
-
-    if pom_request_sender
-        .try_send(build_request(request_id))
-        .is_err()
-    {
-        return None;
-    }
-
-    let deadline = Instant::now() + POM_CLIENT_TIMEOUT;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let response = with_timeout(remaining, pom_response_receiver.receive())
-            .await
-            .ok()?;
-        match response {
-            PomResponse::Ack {
-                request_id: response_request_id,
-            }
-            | PomResponse::Nack {
-                request_id: response_request_id,
-            } if response_request_id == request_id => {
-                return Some(response);
-            }
-            PomResponse::Value {
-                request_id: response_request_id,
-                ..
-            } if response_request_id == request_id => return Some(response),
-            _ => {}
-        }
-    }
+    correlated_request(
+        pom_request_sender,
+        pom_response_receiver,
+        next_request_id,
+        PomRequestId::new,
+        |request_id, _now| build_request(request_id),
+        PomResponse::request_id,
+        SendMode::TryOnce,
+        POM_CLIENT_TIMEOUT,
+    )
+    .await
 }
 
 pub(super) async fn handle_cv_pom_write(
     out: &mut [u8],
-    ctx: &PomCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
     value: u8,
@@ -110,9 +82,9 @@ pub(super) async fn handle_cv_pom_write(
 
     let reply = classify_reply(
         request_pom(
-            ctx.request_sender,
-            ctx.response_receiver,
-            ctx.next_request_id,
+            ctx.pom.request_sender,
+            ctx.pom.response_receiver,
+            ctx.pom.next_request_id,
             |request_id| PomRequest::Write {
                 request_id,
                 permit,
@@ -140,7 +112,7 @@ pub(super) async fn handle_cv_pom_write(
 pub(super) async fn handle_cv_pom_read(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
-    ctx: &PomCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
 ) -> usize {
@@ -159,9 +131,9 @@ pub(super) async fn handle_cv_pom_read(
         plan.refresh_request,
     )
     .await;
-    match apply_refresh_result(loco_slots, refresh.map(|response| response.result)) {
-        Ok(()) => {}
-        Err(PomRefreshFailure::SchedulerTimeout) => {
+    match resolve_loco_command(loco_slots, address, refresh.map(|response| response.result)) {
+        LocoCommandOutcome::Applied(_) => {}
+        LocoCommandOutcome::Rejected(LocoCommandFailure::SchedulerTimeout) => {
             warn!(
                 "POM read addr={} cv={} rejected: scheduler response timed out",
                 address.value(),
@@ -169,7 +141,7 @@ pub(super) async fn handle_cv_pom_read(
             );
             return encode_nack(out);
         }
-        Err(PomRefreshFailure::SchedulerRejected(result)) => {
+        LocoCommandOutcome::Rejected(LocoCommandFailure::SchedulerRejected(result)) => {
             warn!(
                 "POM read addr={} cv={} rejected by scheduler: {:?}",
                 address.value(),
@@ -178,7 +150,7 @@ pub(super) async fn handle_cv_pom_read(
             );
             return encode_nack(out);
         }
-        Err(PomRefreshFailure::Projection(error)) => {
+        LocoCommandOutcome::Rejected(LocoCommandFailure::Projection(error)) => {
             warn!(
                 "POM read addr={} cv={} projection failed: {:?}",
                 address.value(),
@@ -191,9 +163,9 @@ pub(super) async fn handle_cv_pom_read(
 
     let reply = classify_reply(
         request_pom(
-            ctx.request_sender,
-            ctx.response_receiver,
-            ctx.next_request_id,
+            ctx.pom.request_sender,
+            ctx.pom.response_receiver,
+            ctx.pom.next_request_id,
             |request_id| PomRequest::Read {
                 request_id,
                 permit,
@@ -231,7 +203,7 @@ fn encode_nack(out: &mut [u8]) -> usize {
 
 fn reject_admission(
     out: &mut [u8],
-    ctx: &PomCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
     operation: PomOperation,

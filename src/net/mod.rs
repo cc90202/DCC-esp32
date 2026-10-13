@@ -3,6 +3,8 @@
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod client_watchdog;
 #[cfg(any(test, target_arch = "riscv32"))]
+mod correlated;
+#[cfg(any(test, target_arch = "riscv32"))]
 mod loco_client;
 #[cfg(target_arch = "riscv32")]
 mod pom_client;
@@ -14,6 +16,8 @@ mod radio;
 pub use radio::{RadioInitError, WifiBringupError};
 #[cfg(target_arch = "riscv32")]
 mod railcom_lookup;
+#[cfg(target_arch = "riscv32")]
+mod reply;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod udp_control;
 #[cfg(target_arch = "riscv32")]

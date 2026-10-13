@@ -4,8 +4,6 @@
 //! not import Z21, Embassy, ESP-HAL, logging, or peripheral drivers.
 
 #[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) mod client_safety;
-#[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod loco_projection;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod locomotive;
@@ -15,6 +13,10 @@ mod status;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod track_control;
 
+/// Lease policy, kept beside the registry in `authority` and re-exported here
+/// so the network adapters keep importing it from the application layer.
+#[cfg(target_arch = "riscv32")]
+pub(crate) use crate::authority::policy as client_safety;
 pub use crate::authority::{LeaseEpoch, LeasePermit};
 pub use status::StatusModel;
 

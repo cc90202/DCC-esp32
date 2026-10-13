@@ -112,6 +112,19 @@ pub enum PomResponse {
     Nack { request_id: PomRequestId },
 }
 
+#[cfg(target_arch = "riscv32")]
+impl PomResponse {
+    /// Id of the request this response answers.
+    #[must_use]
+    pub(crate) const fn request_id(&self) -> PomRequestId {
+        match *self {
+            Self::Value { request_id, .. }
+            | Self::Ack { request_id }
+            | Self::Nack { request_id } => request_id,
+        }
+    }
+}
+
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -164,7 +177,7 @@ pub struct PomTxStarted {
 /// a stale leftover. `Copy` keeps the helper allocation-free for the small POM
 /// types that flow through these channels.
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn drain_channel<T: Copy, const N: usize>(
+fn drain_channel<T: Copy, const N: usize>(
     receiver: &crate::runtime_channels::RuntimeReceiver<T, N>,
 ) {
     while receiver.try_receive().is_ok() {}

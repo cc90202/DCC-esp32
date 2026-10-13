@@ -4,7 +4,7 @@ use crate::application::StatusModel;
 use crate::application::track_control::{
     TrackPowerFeedback, TrackPowerRequest, TrackStatus, decide_track_power,
 };
-use crate::net::z21_context::TrackCtx;
+use crate::net::z21_context::Z21Ctx;
 use crate::z21 as z21_proto;
 
 use super::encoded_len;
@@ -13,28 +13,27 @@ pub(super) fn encode_current_system_state(status_model: &StatusModel, out: &mut 
     encode_system_state(TrackStatus::from_model(*status_model), out)
 }
 
+fn central_state(status: TrackStatus) -> z21_proto::CentralState {
+    z21_proto::CentralState {
+        track_on: status.power_on,
+        estop: status.estop_active,
+        short_circuit: status.short_circuit,
+    }
+}
+
 pub(in crate::net) fn encode_system_state(status: TrackStatus, out: &mut [u8]) -> usize {
-    encoded_len(z21_proto::encode_system_state(
-        status.power_on,
-        status.estop_active,
-        status.short_circuit,
-        out,
-    ))
+    encoded_len(z21_proto::encode_system_state(central_state(status), out))
 }
 
 pub(super) fn encode_current_status(status_model: &StatusModel, out: &mut [u8]) -> usize {
     let status = TrackStatus::from_model(*status_model);
-    encoded_len(z21_proto::encode_status(
-        status.power_on,
-        status.estop_active,
-        out,
-    ))
+    encoded_len(z21_proto::encode_status(central_state(status), out))
 }
 
 pub(super) async fn apply_power_request(
     request: TrackPowerRequest,
     out: &mut [u8],
-    ctx: &TrackCtx<'_>,
+    ctx: &Z21Ctx<'_>,
 ) -> usize {
     if matches!(request, TrackPowerRequest::Enable(_)) && crate::track_output::inhibited() {
         defmt::warn!("Z21 power-on refused: an update holds the track off");
