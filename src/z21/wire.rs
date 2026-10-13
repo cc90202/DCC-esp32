@@ -6,6 +6,7 @@ pub(super) const HEADER_GET_SERIAL_NUMBER: u16 = 0x0010;
 // 0x0012 is not in the v1.13 spec but some app versions send it as GetCode.
 pub(super) const HEADER_GET_CODE_LEGACY: u16 = 0x0012; // app-compat alias
 pub(super) const HEADER_GET_CODE: u16 = 0x0018; // per spec §2.21
+// The `LAN_GET_HWINFO` reply echoes the request header.
 pub(super) const HEADER_GET_HWINFO: u16 = 0x001A;
 pub(super) const HEADER_LOGOFF: u16 = 0x0030;
 pub(super) const HEADER_SET_BROADCAST_FLAGS: u16 = 0x0050;
@@ -13,6 +14,7 @@ pub(super) const HEADER_GET_LOCOMODE: u16 = 0x0060;
 pub(super) const HEADER_SET_LOCOMODE: u16 = 0x0061;
 pub(super) const HEADER_RAILCOM_GETDATA: u16 = 0x0089;
 pub(super) const HEADER_LOCONET_DETECTOR: u16 = 0x00A4;
+// Shared by every XBus request, reply and broadcast frame.
 pub(crate) const HEADER_XBUS: u16 = 0x0040;
 pub(crate) const HEADER_SYSTEMSTATE_GETDATA: u16 = 0x0085;
 
@@ -41,14 +43,12 @@ pub(super) const DB0_LOCO_FUNCTION: u8 = 0xF8;
 pub(super) const DB0_GET_LOCO_INFO: u8 = 0xF0;
 pub(super) const DB0_GET_FIRMWARE_VERSION: u8 = 0x0A;
 
-// Z21 response headers (always 0x0040 for XBus replies; others echo the request header)
+// Z21 response headers (XBus replies use HEADER_XBUS; others echo the request header)
 pub(super) const RESP_GET_SERIAL_NUMBER: u16 = 0x0010;
 pub(super) const RESP_GET_CODE: u16 = 0x0018; // per spec §2.21
 pub(super) const RESP_SYSTEMSTATE: u16 = 0x0084;
-pub(super) const RESP_LOCO_INFO: u16 = 0x0040;
 pub(super) const RESP_LOCOMODE: u16 = 0x0060;
 pub(super) const RESP_RAILCOM_DATACHANGED: u16 = 0x0088;
-pub(super) const RESP_BC_XBUS: u16 = 0x0040; // shared header for all XBus broadcast/response frames
 
 // Response XBus X-Header values
 pub(super) const RESP_XH_LOCO_INFO: u8 = 0xEF;
@@ -175,6 +175,31 @@ pub(super) const fn logical_to_z21_wire(speed: u8) -> Option<u8> {
     } else {
         let v = ((n + 1) >> 1) + 1;
         Some(if n.is_multiple_of(2) { v | 0x10 } else { v })
+    }
+}
+
+/// Convert a logical 128-step speed into its 7-bit Z21 wire value.
+///
+/// Logical 0 is stop and encodes as raw 0; logical `n` in `1..=126` encodes as
+/// `n + 1`, skipping raw 1, which is the emergency stop step.
+#[must_use]
+pub(super) const fn speed128_logical_to_wire(speed: u8) -> u8 {
+    if speed == 0 {
+        0
+    } else {
+        speed.saturating_add(1) & 0x7F
+    }
+}
+
+/// Convert a 7-bit Z21 128-step wire value into logical runtime speed.
+///
+/// Raw 0 (stop) and raw 1 (emergency stop) both decode to logical stop; raw
+/// `n` in `2..=127` decodes to `n - 1`.
+#[must_use]
+pub(super) const fn speed128_wire_to_logical(raw_speed: u8) -> u8 {
+    match raw_speed {
+        0 | 1 => 0,
+        _ => raw_speed - 1,
     }
 }
 

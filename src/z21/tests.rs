@@ -2,6 +2,14 @@ use super::wire::*;
 use super::*;
 use crate::dcc::{FunctionState, LogicalSpeed};
 
+fn cstate(track_on: bool, estop: bool, short_circuit: bool) -> CentralState {
+    CentralState {
+        track_on,
+        estop,
+        short_circuit,
+    }
+}
+
 fn addr_short(n: u8) -> DccAddress {
     DccAddress::new_short(n).unwrap()
 }
@@ -532,24 +540,28 @@ fn test_encode_system_state_central_state_bits() {
     let mut buf = [0u8; 32];
 
     // Normal: all bits clear
-    let n = encode_system_state(true, false, false, &mut buf);
+    let n = encode_system_state(cstate(true, false, false), &mut buf);
     assert_eq!(n, Some(20));
     assert_eq!(buf[16], 0x00);
 
     // E-stop: bit0
-    encode_system_state(true, true, false, &mut buf).expect("test response buffer must fit");
+    encode_system_state(cstate(true, true, false), &mut buf)
+        .expect("test response buffer must fit");
     assert_eq!(buf[16], 0x01);
 
     // Track off: bit1
-    encode_system_state(false, false, false, &mut buf).expect("test response buffer must fit");
+    encode_system_state(cstate(false, false, false), &mut buf)
+        .expect("test response buffer must fit");
     assert_eq!(buf[16], 0x02);
 
     // Short circuit: bit1 + bit2 (track off implied by short)
-    encode_system_state(false, false, true, &mut buf).expect("test response buffer must fit");
+    encode_system_state(cstate(false, false, true), &mut buf)
+        .expect("test response buffer must fit");
     assert_eq!(buf[16], 0x06);
 
     // All flags: bit0 + bit1 + bit2
-    encode_system_state(false, true, true, &mut buf).expect("test response buffer must fit");
+    encode_system_state(cstate(false, true, true), &mut buf)
+        .expect("test response buffer must fit");
     assert_eq!(buf[16], 0x07);
 }
 
@@ -609,8 +621,11 @@ fn test_all_encoders_reject_short_output_buffers() {
     assert_eq!(encode_firmware_version(&mut empty), None);
     assert_eq!(encode_code(&mut empty), None);
     assert_eq!(encode_hwinfo(&mut empty), None);
-    assert_eq!(encode_status(true, false, &mut empty), None);
-    assert_eq!(encode_system_state(true, false, false, &mut empty), None);
+    assert_eq!(encode_status(cstate(true, false, false), &mut empty), None);
+    assert_eq!(
+        encode_system_state(cstate(true, false, false), &mut empty),
+        None
+    );
     assert_eq!(encode_loco_mode(addr_short(3), &mut empty), None);
     assert_eq!(encode_railcom_data(addr_short(3), 0, 0, &mut empty), None);
 }
@@ -631,21 +646,21 @@ fn test_encode_status_flags() {
     // Status is at buf[6], X-Header at buf[4], DB0 at buf[5]
 
     // track on, no estop → status = 0x00
-    encode_status(true, false, &mut buf).expect("test response buffer must fit");
+    encode_status(cstate(true, false, false), &mut buf).expect("test response buffer must fit");
     assert_eq!(buf[4], 0x62); // X-Header
     assert_eq!(buf[5], 0x22); // DB0
     assert_eq!(buf[6], 0x00); // status: no flags
 
     // track off, no estop → status = 0x02 (csTrackVoltageOff)
-    encode_status(false, false, &mut buf).expect("test response buffer must fit");
+    encode_status(cstate(false, false, false), &mut buf).expect("test response buffer must fit");
     assert_eq!(buf[6], 0x02);
 
     // track on, estop → status = 0x01 (csEmergencyStop)
-    encode_status(true, true, &mut buf).expect("test response buffer must fit");
+    encode_status(cstate(true, true, false), &mut buf).expect("test response buffer must fit");
     assert_eq!(buf[6], 0x01);
 
     // track off, estop → status = 0x03
-    encode_status(false, true, &mut buf).expect("test response buffer must fit");
+    encode_status(cstate(false, true, false), &mut buf).expect("test response buffer must fit");
     assert_eq!(buf[6], 0x03);
 }
 
@@ -821,4 +836,45 @@ fn frame_iterator_rejects_declared_length_past_datagram() {
             remaining: 4,
         }))
     );
+}
+
+// --- Shared encoding helpers ---
+
+#[test]
+fn status_changed_omits_the_short_bit_while_system_state_sets_it() {
+    let shorted = CentralState {
+        track_on: false,
+        estop: false,
+        short_circuit: true,
+    };
+    let mut status = [0u8; 8];
+    let mut system_state = [0u8; 20];
+
+    encode_status(shorted, &mut status).expect("test response buffer must fit");
+    encode_system_state(shorted, &mut system_state).expect("test response buffer must fit");
+
+    assert_eq!(status[6], CS_TRACK_VOLTAGE_OFF);
+    assert_eq!(status[7], xbus_checksum(&status[4..7]));
+    assert_eq!(system_state[16], CS_TRACK_VOLTAGE_OFF | CS_SHORT_CIRCUIT);
+}
+
+#[test]
+fn speed128_logical_round_trips_for_0_to_126() {
+    for logical in 0..=126u8 {
+        let raw = speed128_logical_to_wire(logical);
+        assert!(raw <= 0x7F, "logical {logical} encoded outside 7 bits");
+        assert_eq!(speed128_wire_to_logical(raw), logical);
+    }
+}
+
+#[test]
+fn speed128_raw_edge_cases_0_1_127() {
+    // Raw 0 is stop, raw 1 is emergency stop and decodes to stop as well.
+    assert_eq!(speed128_wire_to_logical(0), 0);
+    assert_eq!(speed128_wire_to_logical(1), 0);
+    // Raw 127 is the top step, logical 126.
+    assert_eq!(speed128_wire_to_logical(127), 126);
+    assert_eq!(speed128_logical_to_wire(0), 0);
+    assert_eq!(speed128_logical_to_wire(1), 2);
+    assert_eq!(speed128_logical_to_wire(126), 127);
 }

@@ -1,7 +1,7 @@
 use crate::dcc::{DccAddress, Direction, SpeedFormat};
 
-use super::LocoInfo;
 use super::wire::*;
+use super::{CentralState, LocoInfo};
 
 fn output_with_capacity<const LEN: usize>(out: &mut [u8]) -> Option<&mut [u8]> {
     out.get_mut(..LEN)
@@ -22,18 +22,11 @@ fn output_with_capacity<const LEN: usize>(out: &mut [u8]) -> Option<&mut [u8]> {
 pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 14;
     let out = output_with_capacity::<LEN>(out)?;
-    write_frame_header(out, LEN as u16, RESP_LOCO_INFO);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_LOCO_INFO;
 
     // DB0, DB1: address
-    let addr_val = state.address.value();
-    if state.address.is_long() {
-        out[5] = 0xC0 | ((addr_val >> 8) as u8);
-        out[6] = (addr_val & 0xFF) as u8;
-    } else {
-        out[5] = 0x00;
-        out[6] = (addr_val & 0xFF) as u8;
-    }
+    write_loco_address_be(state.address, out, 5);
 
     // DB2: 0000BKKK, B=0 (not busy), KKK=speed steps format
     let kkk: u8 = match state.speed.format() {
@@ -44,13 +37,7 @@ pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> Option<usize> {
 
     // DB3: RVVVVVVV, direction and speed, encoded in the native format
     let wire_speed: u8 = match state.speed.format() {
-        SpeedFormat::Speed128 => {
-            if state.speed.is_zero() {
-                0
-            } else {
-                state.speed.value().saturating_add(1) & 0x7F
-            }
-        }
+        SpeedFormat::Speed128 => speed128_logical_to_wire(state.speed.value()),
         SpeedFormat::Speed28 => logical_to_z21_wire(state.speed.value()).unwrap_or(0),
     };
     let dir_bit: u8 = if state.direction == Direction::Forward {
@@ -89,7 +76,7 @@ pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> Option<usize> {
 pub fn encode_bc_track_power(on: bool, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 7;
     let out = output_with_capacity::<LEN>(out)?;
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_TRACK_POWER;
     if on {
         out[5] = RESP_DB0_POWER_ON;
@@ -106,7 +93,7 @@ pub fn encode_bc_track_power(on: bool, out: &mut [u8]) -> Option<usize> {
 pub fn encode_bc_stopped(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 6;
     let out = output_with_capacity::<LEN>(out)?;
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_BC_STOPPED;
     write_xbus_checksum(out, 4, 1);
     Some(LEN)
@@ -118,7 +105,7 @@ pub fn encode_bc_stopped(out: &mut [u8]) -> Option<usize> {
 pub fn encode_unknown_command(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 7;
     let out = output_with_capacity::<LEN>(out)?;
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_TRACK_POWER;
     out[5] = RESP_DB0_UNKNOWN_COMMAND;
     write_xbus_checksum(out, 4, 2);
@@ -133,7 +120,7 @@ pub fn encode_cv_result(cv: u16, value: u8, out: &mut [u8]) -> Option<usize> {
     let wire_cv = cv_to_wire(cv)?;
     let out = output_with_capacity::<LEN>(out)?;
 
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_CV_RESULT;
     out[5] = RESP_DB0_CV_RESULT;
     out[6] = ((wire_cv >> 8) & 0x03) as u8;
@@ -150,7 +137,7 @@ pub fn encode_cv_nack(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 7;
     let out = output_with_capacity::<LEN>(out)?;
 
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_TRACK_POWER;
     out[5] = RESP_DB0_CV_NACK;
     write_xbus_checksum(out, 4, 2);
@@ -169,7 +156,7 @@ pub fn encode_turnout_info(address: DccAddress, out: &mut [u8]) -> Option<usize>
     const LEN: usize = 9;
     let out = output_with_capacity::<LEN>(out)?;
     let address = address.value();
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = XHEADER_TURNOUT_INFO;
     out[5] = (address >> 8) as u8;
     out[6] = (address & 0xFF) as u8;
@@ -199,7 +186,7 @@ pub fn encode_xbus_version(out: &mut [u8]) -> Option<usize> {
     // [DataLen:2][Header=0x0040:2][0x63][0x21][0x30][0x12][XCS]
     const LEN: usize = 9;
     let out = output_with_capacity::<LEN>(out)?;
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_VERSION;
     out[5] = DB0_GET_XBUS_VERSION; // DB0 echo
     out[6] = XBUS_VERSION;
@@ -217,7 +204,7 @@ pub fn encode_xbus_version(out: &mut [u8]) -> Option<usize> {
 pub fn encode_firmware_version(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 9;
     let out = output_with_capacity::<LEN>(out)?;
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_FIRMWARE_VERSION;
     out[5] = DB0_GET_FIRMWARE_VERSION;
     out[6] = ((FW_VERSION >> 8) & 0xFF) as u8;
@@ -248,6 +235,7 @@ pub fn encode_code(out: &mut [u8]) -> Option<usize> {
 pub fn encode_hwinfo(out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 12;
     let out = output_with_capacity::<LEN>(out)?;
+    // The protocol echoes the request header in the reply.
     write_frame_header(out, LEN as u16, HEADER_GET_HWINFO);
     write_u32_le(out, 4, HW_TYPE);
     write_u32_le(out, 8, FW_VERSION);
@@ -260,18 +248,21 @@ pub fn encode_hwinfo(out: &mut [u8]) -> Option<usize> {
 ///
 /// Per spec §2.12: XBus reply, header=0x0040, X-Header=0x62, DB0=0x22, DB1=Status, XCS.
 /// Bitmask: bit0=EmergencyStop, bit1=TrackVoltageOff, bit2=ShortCircuit, bit5=ProgrammingMode.
-pub fn encode_status(track_on: bool, estop: bool, out: &mut [u8]) -> Option<usize> {
+///
+/// Only bit0 and bit1 are reported here: `state.short_circuit` is ignored, so
+/// this broadcast never carries bit2. [`encode_system_state`] reports it.
+pub fn encode_status(state: CentralState, out: &mut [u8]) -> Option<usize> {
     // [DataLen:2][Header=0x0040:2][0x62][0x22][Status][XCS]
     const LEN: usize = 8;
     let out = output_with_capacity::<LEN>(out)?;
-    write_frame_header(out, LEN as u16, RESP_BC_XBUS);
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_STATUS_CHANGED;
     out[5] = RESP_DB0_STATUS_CHANGED;
     let mut status: u8 = 0;
-    if estop {
+    if state.estop {
         status |= CS_EMERGENCY_STOP;
     }
-    if !track_on {
+    if !state.track_on {
         status |= CS_TRACK_VOLTAGE_OFF;
     }
     out[6] = status;
@@ -293,12 +284,7 @@ pub fn encode_status(track_on: bool, estop: bool, out: &mut [u8]) -> Option<usiz
 ///   \[16\]   CentralState: bit0=EmergencyStop, bit1=TrackVoltageOff, bit2=ShortCircuit
 ///   \[17\]   CentralStateEx (0)
 ///   [18-19] reserved
-pub fn encode_system_state(
-    track_on: bool,
-    estop: bool,
-    short_circuit: bool,
-    out: &mut [u8],
-) -> Option<usize> {
+pub fn encode_system_state(state: CentralState, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 20;
     let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, RESP_SYSTEMSTATE);
@@ -318,13 +304,13 @@ pub fn encode_system_state(
     write_u16_le(out, 14, 3300);
     // CentralState: bit0=EmergencyStop, bit1=TrackVoltageOff, bit2=ShortCircuit
     let mut cs: u8 = 0;
-    if estop {
+    if state.estop {
         cs |= CS_EMERGENCY_STOP;
     }
-    if !track_on {
+    if !state.track_on {
         cs |= CS_TRACK_VOLTAGE_OFF;
     }
-    if short_circuit {
+    if state.short_circuit {
         cs |= CS_SHORT_CIRCUIT;
     }
     out[16] = cs;

@@ -67,6 +67,21 @@ pub struct LocoInfo {
     pub functions: FunctionState,
 }
 
+/// Command station state reported in the Z21 `CentralState` byte.
+///
+/// `LAN_X_STATUS_CHANGED` reports only `estop` and `track_on`;
+/// `LAN_SYSTEMSTATE_DATACHANGED` also reports `short_circuit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct CentralState {
+    /// Track output is powered; `false` sets the track-voltage-off bit.
+    pub track_on: bool,
+    /// Emergency stop is active.
+    pub estop: bool,
+    /// The track output is in a short-circuit fault.
+    pub short_circuit: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct FrameKind {
