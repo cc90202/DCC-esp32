@@ -5,7 +5,7 @@
 //! the adapter.  The watchdog adapter is responsible for applying a
 //! [`LeaseDecision::Trip`] before acknowledging the request.
 
-pub use crate::authority::{LeaseEpoch, LeasePermit};
+use super::{LeaseEpoch, LeasePermit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]

@@ -21,10 +21,9 @@ use static_cell::StaticCell;
 
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
-use crate::application::client_safety::{
-    LeaseDecision, LeaseEpoch, LeasePermit, LeaseRequest, LeaseVerdict, lease_verdict,
-};
+use crate::application::client_safety::{LeaseDecision, LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::application::{LeaseEpoch, LeasePermit};
 use crate::dcc::LOCO_SLOT_CAPACITY;
 use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,

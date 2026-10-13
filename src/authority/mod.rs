@@ -7,6 +7,9 @@
 /// run.
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod lease_registry;
+/// Pure controller-lease policy that issues the permits the registry accepts.
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod policy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]

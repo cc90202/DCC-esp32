@@ -55,7 +55,7 @@ impl LeaseRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::client_safety::{
+    use crate::authority::policy::{
         ClientSafetyPolicy, LeaseActivity, LeaseDecision, LeaseRequest,
     };
 
