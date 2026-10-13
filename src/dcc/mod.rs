@@ -153,7 +153,7 @@ pub(crate) use packet::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{
     BinaryStateAddress, DCC_MAX_PACKET_BYTES, DccAddress, DccAddressKind, DccPacket, Direction,
-    LogonGroup, LogonSessionId, NmraSpeed28, NmraSpeed128, PacketEncodeError, PomCv, ServiceModeCv,
+    LogonGroup, LogonSessionId, NmraSpeed28, NmraSpeed128, PomCv, ServiceModeCv,
 };
 #[cfg(any(test, target_arch = "riscv32"))]
 #[doc(inline)]

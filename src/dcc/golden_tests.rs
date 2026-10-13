@@ -478,7 +478,7 @@ fn pull_until(
         let packet = manager
             .build_next_packet()
             .expect("an admitted locomotive must keep emitting packets");
-        let bytes = packet.to_bytes().expect("emitted packet must encode");
+        let bytes = packet.to_bytes();
         if bytes.starts_with(&address_prefix(address)) && wanted(instruction_byte(address, &bytes))
         {
             return packet;
@@ -509,7 +509,7 @@ fn run_scenario(scenario: Scenario) -> DccPacket {
             let packet = pull_until(&mut manager, address, |instruction| {
                 function_group_of_instruction(instruction).is_some()
             });
-            let bytes = packet.to_bytes().expect("emitted packet must encode");
+            let bytes = packet.to_bytes();
             assert_eq!(
                 function_group_of_instruction(instruction_byte(address, &bytes)),
                 Some(group),
@@ -560,13 +560,11 @@ fn run_scenario(scenario: Scenario) -> DccPacket {
 #[test]
 fn every_golden_packet_encodes_to_its_recorded_bytes() {
     for (label, packet, expected) in golden_packets_a() {
-        let bytes = packet.to_bytes().expect("golden packet must encode");
+        let bytes = packet.to_bytes();
         assert_eq!(bytes.as_slice(), expected, "A: {label}");
     }
     for (label, scenario, expected) in golden_packets_b() {
-        let bytes = run_scenario(scenario)
-            .to_bytes()
-            .expect("emitted packet must encode");
+        let bytes = run_scenario(scenario).to_bytes();
         assert_eq!(bytes.as_slice(), expected, "B: {label}");
     }
 }

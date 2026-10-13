@@ -10,7 +10,7 @@
 //!
 //! let addr = DccAddress::new_short(42).expect("42 is a valid short address");
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
-//! let bytes = packet.to_bytes().unwrap();
+//! let bytes = packet.to_bytes();
 //! assert!(!bytes.is_empty());
 //! ```
 //!
@@ -23,30 +23,10 @@
 //! - Service Mode CV range: 1-256 (Direct Mode addressing)
 //! - POM CV range: 1-1024 (Long Form CV access)
 
-use core::fmt;
-
 use heapless::Vec;
 
+pub use crate::dcc::speed28::NmraSpeed28;
 use crate::dcc::speed28::encode_nmra_instruction_speed_bits;
-
-/// Packet encoding failures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum PacketEncodeError {
-    InvalidSpeed28 { speed: u8 },
-}
-
-impl fmt::Display for PacketEncodeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidSpeed28 { speed } => {
-                write!(formatter, "invalid 28-step DCC speed {speed}")
-            }
-        }
-    }
-}
-
-impl core::error::Error for PacketEncodeError {}
 
 /// DCC decoder address (opaque type enforcing NMRA address validation)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,26 +353,6 @@ impl HighFragment {
 pub enum Direction {
     Forward,
     Reverse,
-}
-
-/// Validated 28-step speed value per NMRA S-9.2 §2.3.2.3.
-///
-/// Range 0-29: 0=stop, 1=e-stop, 2-29=speed steps 1-28.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct NmraSpeed28(u8);
-
-impl NmraSpeed28 {
-    pub const fn new(speed: u8) -> Option<Self> {
-        match speed {
-            value @ 0..=29 => Some(Self(value)),
-            _ => None,
-        }
-    }
-
-    pub const fn value(self) -> u8 {
-        self.0
-    }
 }
 
 /// Validated 128-step speed value per NMRA S-9.2.1.
@@ -732,14 +692,11 @@ impl DccPacket {
         Self::bool_mask(direction == Direction::Forward, mask)
     }
 
-    fn encode_speed28_instruction(
-        direction: Direction,
-        speed: NmraSpeed28,
-    ) -> Result<u8, PacketEncodeError> {
+    fn encode_speed28_instruction(direction: Direction, speed: NmraSpeed28) -> u8 {
         // Instruction format: 01DCSSSS (NMRA S-9.2 §2.3.2.3)
-        let speed_bits = encode_nmra_instruction_speed_bits(speed.value())?;
-
-        Ok(0b0100_0000 | Self::direction_mask(direction, 0b0010_0000) | speed_bits)
+        0b0100_0000
+            | Self::direction_mask(direction, 0b0010_0000)
+            | encode_nmra_instruction_speed_bits(speed)
     }
 
     fn encode_speed128_data(direction: Direction, speed: NmraSpeed128) -> u8 {
@@ -831,13 +788,10 @@ impl DccPacket {
     /// Encode packet to bytes with checksum.
     ///
     /// Returns a vector containing the complete DCC packet payload bytes
-    /// followed by the error detection checksum byte.
-    ///
-    /// # Errors
-    /// Returns [`PacketEncodeError::InvalidSpeed28`] only if the internal
-    /// Speed28 encoder receives an impossible value. Public speed and CV ranges
-    /// are guaranteed by newtypes.
-    pub fn to_bytes(&self) -> Result<Vec<u8, DCC_MAX_PACKET_BYTES>, PacketEncodeError> {
+    /// followed by the error detection checksum byte. Every variant encodes:
+    /// speed, address and CV ranges are enforced by the field newtypes.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8, DCC_MAX_PACKET_BYTES> {
         let mut packet = PacketBytes::new();
 
         match *self {
@@ -857,7 +811,7 @@ impl DccPacket {
                 speed,
             } => {
                 packet.push_address(address);
-                packet.push(Self::encode_speed28_instruction(direction, speed)?);
+                packet.push(Self::encode_speed28_instruction(direction, speed));
             }
             DccPacket::Speed128 {
                 address,
@@ -1014,7 +968,7 @@ impl DccPacket {
             }
         }
 
-        Ok(packet.finalize())
+        packet.finalize()
     }
 }
 
@@ -1199,9 +1153,7 @@ mod tests {
         ];
 
         for packet in all_variants {
-            let encoded = packet.to_bytes().unwrap_or_else(|error| {
-                panic!("{} failed to encode: {error:?}", variant_name(packet))
-            });
+            let encoded = packet.to_bytes();
             assert!(
                 encoded.len() <= DCC_MAX_PACKET_BYTES,
                 "{} encoded to {} bytes, exceeding DCC_MAX_PACKET_BYTES",
@@ -1216,7 +1168,7 @@ mod tests {
             subcommand: u8::MAX,
         };
         assert_eq!(
-            longest.to_bytes().unwrap().len(),
+            longest.to_bytes().len(),
             DCC_MAX_PACKET_BYTES,
             "the declared capacity should remain tight"
         );
@@ -1320,7 +1272,7 @@ mod tests {
     #[test]
     fn test_idle_packet_encoding() {
         let packet = DccPacket::Idle;
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // Idle packet: [0xFF, 0x00, checksum]
         // checksum = 0xFF XOR 0x00 = 0xFF
         assert_eq!(bytes.as_slice(), &[0xFF, 0x00, 0xFF]);
@@ -1329,7 +1281,7 @@ mod tests {
     #[test]
     fn test_reset_packet_encoding() {
         let packet = DccPacket::Reset;
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         assert_eq!(bytes.as_slice(), &[0x00, 0x00, 0x00]);
     }
 
@@ -1337,7 +1289,7 @@ mod tests {
     fn test_speed28_packet_encoding() {
         let addr = DccAddress::new_short(3).unwrap();
         let packet = DccPacket::speed_28step(addr, 14, Direction::Forward).unwrap();
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         // address = 3
         // instruction = 01DCSSSS per NMRA S-9.2
@@ -1355,7 +1307,7 @@ mod tests {
         let packet =
             DccPacket::speed_128step(DccAddress::new_long(1000).unwrap(), 64, Direction::Reverse)
                 .unwrap();
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         // Expected: [addr_high, addr_low, 0x3F, speed_byte, checksum]
         // Long address 1000 = 0x03E8
@@ -1384,7 +1336,7 @@ mod tests {
             f3: true,
             f4: false,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // instruction = 100DDDDD = 0b1000_0000 | FL(0b1_0000) | F4(0) | F3(0b100) | F2(0) | F1(0b1)
         // = 0b1001_0101 = 0x95
         assert_eq!(bytes.len(), 3);
@@ -1403,7 +1355,7 @@ mod tests {
             f7: true,
             f8: false,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // instruction = 1011DDDD = 0b1011_0000 | F8(0) | F7(0b100) | F6(0) | F5(0b1)
         // = 0b1011_0101 = 0xB5
         assert_eq!(bytes.len(), 3);
@@ -1422,7 +1374,7 @@ mod tests {
             f11: true,
             f12: true,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // instruction = 1010DDDD = 0b1010_0000 | F12(0b1000) | F11(0b100) | F10(0) | F9(0)
         // = 0b1010_1100 = 0xAC
         assert_eq!(bytes.len(), 3);
@@ -1438,7 +1390,7 @@ mod tests {
             address: addr,
             direction: Direction::Forward,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // instruction = 01DC0001 (C=0): 0b0100_0001 | 0b0010_0000 (fwd) = 0b0110_0001 = 0x61
         assert_eq!(bytes.len(), 3);
         assert_eq!(bytes[0], 3);
@@ -1449,7 +1401,7 @@ mod tests {
     #[test]
     fn test_broadcast_stop_encoding() {
         let packet = DccPacket::BroadcastStop;
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // [0x00, 0b0110_0001, checksum]
         // 0b0110_0001 = 01DC0001, D=1 (fwd), C=0, SSSS=0001 (e-stop)
         // checksum = 0x00 ^ 0b0110_0001 = 0b0110_0001
@@ -1465,7 +1417,7 @@ mod tests {
             bin_addr: binary_state_addr(2),
             state: false,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         assert_eq!(bytes.as_slice(), &[0x00, 0xDD, 0x02, 0xDF]);
     }
@@ -1484,7 +1436,7 @@ mod tests {
             command_station_id: 0x0DCC,
             session_id: LogonSessionId::new(0x42),
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         assert_eq!(bytes.as_slice(), &[254, 0xFF, 0x0D, 0xCC, 0x42, 0x82]);
     }
@@ -1503,7 +1455,7 @@ mod tests {
             decoder_id: 0x1234_5678,
             subcommand: 0xFF,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         assert_eq!(
             bytes.as_slice(),
@@ -1522,8 +1474,8 @@ mod tests {
 
     #[test]
     fn test_broadcast_stop_differs_from_reset() {
-        let stop = DccPacket::BroadcastStop.to_bytes().unwrap();
-        let reset = DccPacket::Reset.to_bytes().unwrap();
+        let stop = DccPacket::BroadcastStop.to_bytes();
+        let reset = DccPacket::Reset.to_bytes();
         // BroadcastStop has instruction byte 0x61, Reset has 0x00
         assert_ne!(stop.as_slice(), reset.as_slice());
     }
@@ -1542,7 +1494,7 @@ mod tests {
             f19: false,
             f20: true,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // data = 0b1010_0101 (F20=1, F18=1, F15=1, F13=1)
         assert_eq!(bytes.len(), 4);
         assert_eq!(bytes[0], 5);
@@ -1565,7 +1517,7 @@ mod tests {
             f27: false,
             f28: true,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         // data = 0b1001_1010 (F28=1, F25=1, F24=1, F22=1)
         assert_eq!(bytes.len(), 4);
         assert_eq!(bytes[0], 7);
@@ -1588,7 +1540,7 @@ mod tests {
             f19: false,
             f20: true,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         assert_eq!(bytes.len(), 5);
         assert_eq!(bytes[0], 0xC3);
         assert_eq!(bytes[1], 0xE8);
@@ -1611,7 +1563,7 @@ mod tests {
             f27: false,
             f28: true,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
         assert_eq!(bytes.len(), 5);
         assert_eq!(bytes[0], 0xC3);
         assert_eq!(bytes[1], 0xE8);
@@ -1641,27 +1593,19 @@ mod tests {
 
         // Verify stop (speed=0): CSSSS = 00000
         let pkt = DccPacket::speed_28step(addr, 0, Direction::Forward).unwrap();
-        let bytes = pkt.to_bytes().unwrap();
+        let bytes = pkt.to_bytes();
         assert_eq!(bytes[1] & 0b0001_1111, 0b0_0000, "speed=0 should be stop");
 
         // Verify e-stop (speed=1): CSSSS = 00001
         let pkt = DccPacket::speed_28step(addr, 1, Direction::Forward).unwrap();
-        let bytes = pkt.to_bytes().unwrap();
+        let bytes = pkt.to_bytes();
         assert_eq!(bytes[1] & 0b0001_1111, 0b0_0001, "speed=1 should be e-stop");
 
         // Verify direction bit: forward=1, reverse=0
         let fwd = DccPacket::speed_28step(addr, 10, Direction::Forward).unwrap();
         let rev = DccPacket::speed_28step(addr, 10, Direction::Reverse).unwrap();
-        assert_eq!(
-            fwd.to_bytes().unwrap()[1] & 0b0010_0000,
-            0b0010_0000,
-            "forward D=1"
-        );
-        assert_eq!(
-            rev.to_bytes().unwrap()[1] & 0b0010_0000,
-            0b0000_0000,
-            "reverse D=0"
-        );
+        assert_eq!(fwd.to_bytes()[1] & 0b0010_0000, 0b0010_0000, "forward D=1");
+        assert_eq!(rev.to_bytes()[1] & 0b0010_0000, 0b0000_0000, "reverse D=0");
 
         // Verify NMRA S-9.2 interleaved encoding for speed values:
         // step=speed-1, SSSS=(step+3)/2, C=(step-1)&1
@@ -1677,7 +1621,7 @@ mod tests {
 
         for &(speed, expected_cssss) in test_cases {
             let pkt = DccPacket::speed_28step(addr, speed, Direction::Forward).unwrap();
-            let bytes = pkt.to_bytes().unwrap();
+            let bytes = pkt.to_bytes();
             assert_eq!(
                 bytes[1] & 0b0001_1111,
                 expected_cssss,
@@ -1702,7 +1646,7 @@ mod tests {
             cv: service_cv(1),
             value: 3,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         // Expected: [0b0111_0100, 0x00, 0x03, checksum]
         // CV high byte: 0b0111_0100 (0111 01 00 - Verify instruction, CV bits 9-8 = 00)
@@ -1723,7 +1667,7 @@ mod tests {
             cv: service_cv(29),
             value: 6,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         // Expected: [0b0111_1100, 0x1C, 0x06, checksum]
         // CV high byte: 0b0111_1100 (0111 11 00 - Write instruction, CV bits 9-8 = 00)
@@ -1748,8 +1692,8 @@ mod tests {
             value: 0,
         };
 
-        let verify_bytes = verify.to_bytes().unwrap();
-        let write_bytes = write.to_bytes().unwrap();
+        let verify_bytes = verify.to_bytes();
+        let write_bytes = write.to_bytes();
 
         // Instruction bytes differ only in bits 3-2: Verify=01, Write=11
         // Verify: 0b0111_0100 (0x74)
@@ -1771,8 +1715,8 @@ mod tests {
             value: 0,
         };
 
-        let bytes1 = cv1.to_bytes().unwrap();
-        let bytes256 = cv256.to_bytes().unwrap();
+        let bytes1 = cv1.to_bytes();
+        let bytes256 = cv256.to_bytes();
 
         // CV1: high byte = 0b0111_0100, low byte = 0x00
         assert_eq!(bytes1[0], 0b0111_0100);
@@ -1790,7 +1734,7 @@ mod tests {
             cv: pom_cv(29),
             value: 6,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         assert_eq!(bytes, [0x03, 0xEC, 0x1C, 0x06, 0xF5]);
     }
@@ -1801,7 +1745,7 @@ mod tests {
             address: DccAddress::new_long(1000).unwrap(),
             cv: pom_cv(1),
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         assert_eq!(bytes, [0xC3, 0xE8, 0xE4, 0x00, 0x00, 0xCF]);
     }
@@ -1817,8 +1761,8 @@ mod tests {
             cv: pom_cv(1024),
         };
 
-        let bytes1 = cv1.to_bytes().unwrap();
-        let bytes1024 = cv1024.to_bytes().unwrap();
+        let bytes1 = cv1.to_bytes();
+        let bytes1024 = cv1024.to_bytes();
 
         assert_eq!(bytes1[1], 0b1110_0100);
         assert_eq!(bytes1[2], 0x00);
@@ -1845,7 +1789,7 @@ mod tests {
             cv: service_cv(17),
             value: 192,
         };
-        let bytes = packet.to_bytes().unwrap();
+        let bytes = packet.to_bytes();
 
         let expected_checksum = bytes[0] ^ bytes[1] ^ bytes[2];
         assert_eq!(bytes[3], expected_checksum);

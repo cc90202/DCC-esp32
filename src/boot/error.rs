@@ -38,12 +38,8 @@ pub enum BootError {
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 /// Invariant that failed during the DCC startup self-check.
 pub enum DccSelfCheckError {
-    /// The standard idle packet could not be encoded.
-    IdlePacketEncoding,
     /// The encoded idle packet could not be converted to an RMT waveform.
     IdleWaveformBuild,
-    /// The standard reset packet could not be encoded.
-    ResetPacketEncoding,
     /// The known-valid short-address fixture was rejected.
     ShortAddress3Invalid,
     /// The 28-step speed fixture could not be encoded.
@@ -173,14 +169,8 @@ impl BootError {
             Self::OptionalPeripheralInit(OptionalPeripheralInit::DisplayUnavailable) => {
                 "display disabled"
             }
-            Self::DccSelfCheck(DccSelfCheckError::IdlePacketEncoding) => {
-                "idle packet encoding failed"
-            }
             Self::DccSelfCheck(DccSelfCheckError::IdleWaveformBuild) => {
                 "idle waveform build failed"
-            }
-            Self::DccSelfCheck(DccSelfCheckError::ResetPacketEncoding) => {
-                "reset packet encoding failed"
             }
             Self::DccSelfCheck(DccSelfCheckError::ShortAddress3Invalid) => {
                 "short address 3 must be valid"

@@ -1,4 +1,6 @@
-use crate::dcc::DccAddress;
+use crate::dcc::{
+    DccAddress, NmraSpeed28, encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed,
+};
 
 // Source: Z21 LAN Protocol Specification v1.13 (docs/specs/z21-lan-protokoll-en.pdf)
 
@@ -164,17 +166,17 @@ pub(super) const fn cv_from_wire(wire_cv: u16) -> Option<u16> {
 }
 
 /// Convert a logical runtime speed (0..=28) into the Z21 wire representation.
+///
+/// The Z21 byte carries the same `C` + `SSSS` interleave as the NMRA 28-step
+/// instruction, so it is produced by the shared DCC encoder.
 #[must_use]
 pub(super) const fn logical_to_z21_wire(speed: u8) -> Option<u8> {
-    let n @ 0..=28 = speed else {
-        return None;
-    };
-
-    if n == 0 {
-        Some(0)
-    } else {
-        let v = ((n + 1) >> 1) + 1;
-        Some(if n.is_multiple_of(2) { v | 0x10 } else { v })
+    match logical_to_nmra_packet_speed(speed) {
+        Some(raw) => match NmraSpeed28::new(raw) {
+            Some(nmra) => Some(encode_nmra_instruction_speed_bits(nmra)),
+            None => None,
+        },
+        None => None,
     }
 }
 
@@ -227,12 +229,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_logical_to_z21_wire() {
-        assert_eq!(logical_to_z21_wire(0), Some(0));
-        assert_eq!(logical_to_z21_wire(1), Some(0x02));
-        assert_eq!(logical_to_z21_wire(14), Some(0x18));
-        assert_eq!(logical_to_z21_wire(28), Some(0x1F));
+    fn z21_speed28_wire_matches_the_nmra_interleave_for_every_step() {
+        // Z21 wire byte for each logical speed, indexed by the speed (0..=28).
+        const EXPECTED: [u8; 29] = [
+            0x00, 0x02, 0x12, 0x03, 0x13, 0x04, 0x14, 0x05, 0x15, 0x06, 0x16, 0x07, 0x17, 0x08,
+            0x18, 0x09, 0x19, 0x0A, 0x1A, 0x0B, 0x1B, 0x0C, 0x1C, 0x0D, 0x1D, 0x0E, 0x1E, 0x0F,
+            0x1F,
+        ];
+
+        for (logical, &expected) in (0u8..).zip(EXPECTED.iter()) {
+            let nmra = logical_to_nmra_packet_speed(logical)
+                .and_then(NmraSpeed28::new)
+                .expect("logical speeds 0..=28 map to a valid NMRA 28-step value");
+            assert_eq!(
+                encode_nmra_instruction_speed_bits(nmra),
+                expected,
+                "NMRA interleave for logical speed {logical}"
+            );
+            assert_eq!(
+                logical_to_z21_wire(logical),
+                Some(expected),
+                "Z21 wire for logical speed {logical}"
+            );
+        }
+    }
+
+    #[test]
+    fn logical_to_z21_wire_rejects_speeds_above_28() {
         assert_eq!(logical_to_z21_wire(29), None);
+        assert_eq!(logical_to_z21_wire(u8::MAX), None);
     }
 
     #[test]

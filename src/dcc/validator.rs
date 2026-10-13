@@ -383,9 +383,7 @@ fn validate_address(address: &crate::dcc::DccAddress) -> Result<(), ValidationEr
 
 /// Validates packet checksum
 pub fn validate_checksum(packet: &DccPacket) -> Result<(), ValidationError> {
-    let bytes = packet
-        .to_bytes()
-        .map_err(|_| ValidationError::EncodingError)?;
+    let bytes = packet.to_bytes();
 
     // Calculate expected checksum (XOR of all bytes except last)
     let mut expected = 0u8;
