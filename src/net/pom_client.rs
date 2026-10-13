@@ -12,9 +12,10 @@ use defmt::warn;
 
 use super::correlated::{SendMode, correlated_request};
 use crate::application::LocoSlots;
-use crate::application::pom::{
-    PomAdmissionError, PomRefreshFailure, apply_refresh_result, prepare_read, prepare_write,
+use crate::application::locomotive::{
+    LocoCommandFailure, LocoCommandOutcome, resolve_loco_command,
 };
+use crate::application::pom::{PomAdmissionError, prepare_read, prepare_write};
 use crate::dcc::channels::{PomRequestSender, PomResponseReceiver};
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
@@ -130,9 +131,9 @@ pub(super) async fn handle_cv_pom_read(
         plan.refresh_request,
     )
     .await;
-    match apply_refresh_result(loco_slots, refresh.map(|response| response.result)) {
-        Ok(()) => {}
-        Err(PomRefreshFailure::SchedulerTimeout) => {
+    match resolve_loco_command(loco_slots, address, refresh.map(|response| response.result)) {
+        LocoCommandOutcome::Applied(_) => {}
+        LocoCommandOutcome::Rejected(LocoCommandFailure::SchedulerTimeout) => {
             warn!(
                 "POM read addr={} cv={} rejected: scheduler response timed out",
                 address.value(),
@@ -140,7 +141,7 @@ pub(super) async fn handle_cv_pom_read(
             );
             return encode_nack(out);
         }
-        Err(PomRefreshFailure::SchedulerRejected(result)) => {
+        LocoCommandOutcome::Rejected(LocoCommandFailure::SchedulerRejected(result)) => {
             warn!(
                 "POM read addr={} cv={} rejected by scheduler: {:?}",
                 address.value(),
@@ -149,7 +150,7 @@ pub(super) async fn handle_cv_pom_read(
             );
             return encode_nack(out);
         }
-        Err(PomRefreshFailure::Projection(error)) => {
+        LocoCommandOutcome::Rejected(LocoCommandFailure::Projection(error)) => {
             warn!(
                 "POM read addr={} cv={} projection failed: {:?}",
                 address.value(),

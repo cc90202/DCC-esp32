@@ -1,8 +1,8 @@
 //! Framework-independent Programming on Main application policy.
 
 use crate::application::LocoSlots;
-use crate::application::loco_projection::{ProjectionError, apply_loco_result};
-use crate::dcc::{DccAddress, LocoRequest, LocoRequestResult, PomCv, SpeedFormat};
+use crate::application::loco_projection::projected_slot_index;
+use crate::dcc::{DccAddress, LocoRequest, PomCv, SpeedFormat};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -23,14 +23,6 @@ pub(crate) struct PomWritePlan {
     pub(crate) address: DccAddress,
     pub(crate) cv: PomCv,
     pub(crate) value: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub(crate) enum PomRefreshFailure {
-    SchedulerTimeout,
-    SchedulerRejected(LocoRequestResult),
-    Projection(ProjectionError),
 }
 
 pub(crate) fn prepare_read(
@@ -64,25 +56,9 @@ pub(crate) fn prepare_write(
     Ok(PomWritePlan { address, cv, value })
 }
 
-pub(crate) fn apply_refresh_result(
-    slots: &mut LocoSlots,
-    result: Option<LocoRequestResult>,
-) -> Result<(), PomRefreshFailure> {
-    let Some(result) = result else {
-        return Err(PomRefreshFailure::SchedulerTimeout);
-    };
-    match apply_loco_result(slots, result) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(PomRefreshFailure::SchedulerRejected(result)),
-        Err(error) => Err(PomRefreshFailure::Projection(error)),
-    }
-}
-
 fn projected_format(slots: &LocoSlots, address: DccAddress) -> SpeedFormat {
-    slots
-        .iter()
-        .flatten()
-        .find(|slot| slot.address == address)
+    projected_slot_index(slots, address)
+        .and_then(|index| slots[index])
         .map_or(SpeedFormat::Speed128, |slot| slot.speed.format())
 }
 
@@ -90,7 +66,7 @@ fn projected_format(slots: &LocoSlots, address: DccAddress) -> SpeedFormat {
 mod tests {
     use super::*;
     use crate::application::LocoState;
-    use crate::dcc::{Direction, FunctionState, LocoSnapshot, LogicalSpeed};
+    use crate::dcc::{Direction, FunctionState, LogicalSpeed};
 
     fn address() -> DccAddress {
         DccAddress::new_short(3).unwrap()
@@ -100,15 +76,6 @@ mod tests {
         LocoState {
             address: address(),
             speed: LogicalSpeed::zero(format),
-            direction: Direction::Forward,
-            functions: FunctionState::empty(),
-        }
-    }
-
-    fn snapshot() -> LocoSnapshot {
-        LocoSnapshot {
-            address: address(),
-            speed: LogicalSpeed::zero(SpeedFormat::Speed128),
             direction: Direction::Forward,
             functions: FunctionState::empty(),
         }
@@ -148,28 +115,5 @@ mod tests {
                 format: SpeedFormat::Speed128,
             }
         );
-    }
-
-    #[test]
-    fn refresh_timeout_does_not_mutate_projection() {
-        let confirmed = state(SpeedFormat::Speed28);
-        let mut slots = [None; 12];
-        slots[0] = Some(confirmed);
-
-        assert_eq!(
-            apply_refresh_result(&mut slots, None),
-            Err(PomRefreshFailure::SchedulerTimeout)
-        );
-        assert_eq!(slots[0], Some(confirmed));
-    }
-
-    #[test]
-    fn confirmed_refresh_updates_projection() {
-        let mut slots = [None; 12];
-        assert_eq!(
-            apply_refresh_result(&mut slots, Some(LocoRequestResult::Inserted(snapshot()))),
-            Ok(())
-        );
-        assert_eq!(slots[0], Some(snapshot().into()));
     }
 }
