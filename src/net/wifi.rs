@@ -8,13 +8,12 @@ extern crate alloc;
 use alloc::string::ToString;
 use core::fmt;
 use defmt::{info, warn};
+use embassy_executor::Spawner;
+use embassy_net::{Config, Stack, StackResources};
 use embassy_time::{Duration, Timer};
 use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
 };
-
-use embassy_executor::Spawner;
-use embassy_net::{Config, Stack, StackResources};
 use static_cell::StaticCell;
 
 use super::radio::{self, WifiBringupError};

@@ -25,10 +25,16 @@ pub(crate) type LeaseTripChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, LeaseTripNotification, 1>;
 pub(crate) type LeaseRequestSender =
     Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>;
+pub(crate) type LeaseRequestReceiver =
+    Receiver<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>;
+pub(crate) type LeaseResponseSender =
+    Sender<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>;
 pub(crate) type LeaseResponseReceiver =
     Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>;
 pub(crate) type LeaseTripSender =
     Sender<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>;
+pub(crate) type LeaseTripReceiver =
+    Receiver<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LeaseTripNotification {
@@ -37,10 +43,8 @@ pub(crate) struct LeaseTripNotification {
 }
 
 pub(crate) struct ClientWatchdogContext {
-    pub(crate) request_receiver:
-        Receiver<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
-    pub(crate) response_sender:
-        Sender<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
+    pub(crate) request_receiver: LeaseRequestReceiver,
+    pub(crate) response_sender: LeaseResponseSender,
     pub(crate) trip_sender: LeaseTripSender,
     pub(crate) fault_sender: FaultEventSender,
     pub(crate) ready_sender: BootReadySender,

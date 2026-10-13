@@ -177,7 +177,7 @@ pub struct PomTxStarted {
 /// a stale leftover. `Copy` keeps the helper allocation-free for the small POM
 /// types that flow through these channels.
 #[cfg(target_arch = "riscv32")]
-pub(crate) fn drain_channel<T: Copy, const N: usize>(
+fn drain_channel<T: Copy, const N: usize>(
     receiver: &crate::runtime_channels::RuntimeReceiver<T, N>,
 ) {
     while receiver.try_receive().is_ok() {}

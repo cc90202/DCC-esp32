@@ -231,7 +231,6 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
 }
 
 /// What the Z21 loop does with a command once the controller lease has answered.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LeaseVerdict {
     /// Run the command but leave the recorded lease owner untouched.
@@ -249,7 +248,6 @@ pub(crate) enum LeaseVerdict {
 ///
 /// A rejected keep-alive still runs, because queries from a client that does
 /// not own the lease are harmless; any other rejected activity is refused.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[must_use]
 pub(crate) fn lease_verdict<C>(
     decision: LeaseDecision<C>,

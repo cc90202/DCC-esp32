@@ -14,8 +14,6 @@ use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpEndpoint, Stack};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Receiver;
 use embassy_time::{Duration, Instant, with_timeout};
 use static_cell::StaticCell;
 
@@ -29,20 +27,17 @@ use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
 };
 use crate::macros::bench_diag;
-use crate::net::client_watchdog::{
-    LeaseRequestSender, LeaseResponseReceiver, LeaseTripNotification,
-};
+use crate::net::client_watchdog::{LeaseRequestSender, LeaseResponseReceiver, LeaseTripReceiver};
 use crate::net::loco_client::reset_for_lease;
 use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::{LocoChannels, PomChannels, Z21Ctx};
 use crate::net::z21_dispatch::{
     LeaseClassification, classify_lease_activity, encode_system_state, encoded_len, handle_command,
 };
-use crate::system_status::BootReadyEvent;
-use crate::system_status::announce_ready;
 use crate::system_status::channels::{
     BootReadySender, DisplaySender, FaultEventSender, NetStatusReceiver, SystemStatusSender,
 };
+use crate::system_status::{BootReadyEvent, announce_ready};
 use crate::z21 as z21_proto;
 #[cfg(feature = "bench-diag")]
 use crate::z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
@@ -85,8 +80,7 @@ pub(crate) struct NetTaskChannels {
     pub(crate) loco_response_receiver: LocoResponseReceiver,
     pub(crate) lease_request_sender: LeaseRequestSender,
     pub(crate) lease_response_receiver: LeaseResponseReceiver,
-    pub(crate) lease_trip_receiver:
-        Receiver<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
+    pub(crate) lease_trip_receiver: LeaseTripReceiver,
 }
 
 struct Z21LoopIo {
@@ -98,7 +92,7 @@ struct Z21LoopIo {
     loco_response_receiver: LocoResponseReceiver,
     lease_request_sender: LeaseRequestSender,
     lease_response_receiver: LeaseResponseReceiver,
-    lease_trip_receiver: Receiver<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
+    lease_trip_receiver: LeaseTripReceiver,
 }
 
 struct Z21LoopState {
