@@ -32,6 +32,8 @@
 pub(crate) mod channels;
 pub(crate) mod cv;
 pub(crate) mod encoder;
+#[cfg(test)]
+mod golden_tests;
 pub(crate) mod packet;
 pub(crate) mod scheduler;
 pub(crate) mod speed28;
