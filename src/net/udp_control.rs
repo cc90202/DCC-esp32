@@ -33,7 +33,7 @@ use crate::macros::bench_diag;
 use crate::net::client_watchdog::LeaseTripNotification;
 use crate::net::loco_client::reset_for_lease;
 use crate::net::wifi_config::WifiCredentials;
-use crate::net::z21_context::{LocoCtx, PomCtx, TrackCtx, Z21Ctx};
+use crate::net::z21_context::{LocoChannels, PomChannels, Z21Ctx};
 use crate::net::z21_dispatch::{
     LeaseClassification, classify_lease_activity, encode_system_state, encoded_len, handle_command,
 };
@@ -282,31 +282,18 @@ async fn handle_udp_datagram(
             state.scheduler_epoch = Some(permit.epoch());
         }
         let ctx = Z21Ctx {
-            track: TrackCtx {
-                fault_sender: &io.fault_sender,
-                status_model: &state.status_model,
-                lease_permit,
-            },
-            loco: LocoCtx {
-                status_model: &state.status_model,
-                lease_permit,
+            status_model: &state.status_model,
+            lease_permit,
+            fault_sender: &io.fault_sender,
+            loco: LocoChannels {
                 request_sender: &io.loco_request_sender,
                 response_receiver: &io.loco_response_receiver,
                 next_request_id: &state.next_loco_request_id,
             },
-            pom: PomCtx {
-                status_model: &state.status_model,
-                lease_permit,
+            pom: PomChannels {
                 request_sender: &io.pom_request_sender,
                 response_receiver: &io.pom_response_receiver,
                 next_request_id: &state.next_pom_request_id,
-                loco: LocoCtx {
-                    status_model: &state.status_model,
-                    lease_permit,
-                    request_sender: &io.loco_request_sender,
-                    response_receiver: &io.loco_response_receiver,
-                    next_request_id: &state.next_loco_request_id,
-                },
             },
         };
         let response_len =

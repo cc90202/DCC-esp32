@@ -4,7 +4,7 @@ use crate::application::StatusModel;
 use crate::application::track_control::{
     TrackPowerFeedback, TrackPowerRequest, TrackStatus, decide_track_power,
 };
-use crate::net::z21_context::TrackCtx;
+use crate::net::z21_context::Z21Ctx;
 use crate::z21 as z21_proto;
 
 use super::encoded_len;
@@ -34,7 +34,7 @@ pub(super) fn encode_current_status(status_model: &StatusModel, out: &mut [u8]) 
 pub(super) async fn apply_power_request(
     request: TrackPowerRequest,
     out: &mut [u8],
-    ctx: &TrackCtx<'_>,
+    ctx: &Z21Ctx<'_>,
 ) -> usize {
     if matches!(request, TrackPowerRequest::Enable(_)) && crate::track_output::inhibited() {
         defmt::warn!("Z21 power-on refused: an update holds the track off");

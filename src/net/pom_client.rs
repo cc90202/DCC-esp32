@@ -1,7 +1,7 @@
 //! Z21-side POM (Programming on Main) request/response client.
 //!
 //! Talks to the POM actor task (`dcc::cv::pom_actor_task`) over the
-//! single-slot request/response channels threaded through [`PomCtx`].
+//! single-slot request/response channels threaded through [`Z21Ctx`].
 //!
 //! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
@@ -19,7 +19,7 @@ use crate::application::pom::{PomAdmissionError, prepare_read, prepare_write};
 use crate::dcc::channels::{PomRequestSender, PomResponseReceiver};
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
-use crate::net::z21_context::PomCtx;
+use crate::net::z21_context::Z21Ctx;
 use crate::net::z21_dispatch::encoded_len;
 use crate::z21 as z21_proto;
 
@@ -66,7 +66,7 @@ async fn request_pom(
 
 pub(super) async fn handle_cv_pom_write(
     out: &mut [u8],
-    ctx: &PomCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
     value: u8,
@@ -82,9 +82,9 @@ pub(super) async fn handle_cv_pom_write(
 
     let reply = classify_reply(
         request_pom(
-            ctx.request_sender,
-            ctx.response_receiver,
-            ctx.next_request_id,
+            ctx.pom.request_sender,
+            ctx.pom.response_receiver,
+            ctx.pom.next_request_id,
             |request_id| PomRequest::Write {
                 request_id,
                 permit,
@@ -112,7 +112,7 @@ pub(super) async fn handle_cv_pom_write(
 pub(super) async fn handle_cv_pom_read(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
-    ctx: &PomCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
 ) -> usize {
@@ -163,9 +163,9 @@ pub(super) async fn handle_cv_pom_read(
 
     let reply = classify_reply(
         request_pom(
-            ctx.request_sender,
-            ctx.response_receiver,
-            ctx.next_request_id,
+            ctx.pom.request_sender,
+            ctx.pom.response_receiver,
+            ctx.pom.next_request_id,
             |request_id| PomRequest::Read {
                 request_id,
                 permit,
@@ -203,7 +203,7 @@ fn encode_nack(out: &mut [u8]) -> usize {
 
 fn reject_admission(
     out: &mut [u8],
-    ctx: &PomCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
     cv: u16,
     operation: PomOperation,

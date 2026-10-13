@@ -16,7 +16,7 @@ use crate::dcc::FunctionIndex;
 use crate::dcc::{DccAddress, Direction, FunctionChange, LocoRequest, SpeedFormat};
 use crate::macros::bench_diag;
 use crate::net::loco_client::request_loco;
-use crate::net::z21_context::LocoCtx;
+use crate::net::z21_context::Z21Ctx;
 use crate::z21::{self as z21_proto, FunctionAction};
 
 use super::encoded_len;
@@ -57,13 +57,13 @@ pub(super) fn set_mode(address: DccAddress, mode: u8) -> usize {
 pub(super) async fn get_info(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
-    ctx: &LocoCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: DccAddress,
 ) -> usize {
     let response = request_loco(
-        ctx.request_sender,
-        ctx.response_receiver,
-        ctx.next_request_id,
+        ctx.loco.request_sender,
+        ctx.loco.response_receiver,
+        ctx.loco.next_request_id,
         None,
         LocoRequest::GetState { address },
     )
@@ -97,7 +97,7 @@ pub(super) async fn get_info(
 pub(super) async fn emergency_stop(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
-    ctx: &LocoCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: DccAddress,
 ) -> usize {
     let outcome = apply_requested_change(
@@ -113,7 +113,7 @@ pub(super) async fn emergency_stop(
 pub(super) async fn set_drive(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
-    ctx: &LocoCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     command: DriveCommand,
 ) -> usize {
     let DriveCommand {
@@ -154,7 +154,7 @@ pub(super) async fn set_drive(
 pub(super) async fn set_function(
     loco_slots: &mut LocoSlots,
     out: &mut [u8],
-    ctx: &LocoCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: DccAddress,
     function: u8,
     action: FunctionAction,
@@ -195,7 +195,7 @@ pub(super) async fn set_function(
 }
 
 fn report_request_error(
-    ctx: &LocoCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     address: DccAddress,
     command_kind: &str,
     error: LocoRequestError,
@@ -241,7 +241,7 @@ fn loco_info(state: LocoState) -> z21_proto::LocoInfo {
 
 async fn apply_requested_change(
     loco_slots: &mut LocoSlots,
-    ctx: &LocoCtx<'_>,
+    ctx: &Z21Ctx<'_>,
     request: LocoRequest,
     command_kind: &str,
 ) -> LocoCommandOutcome {
@@ -251,9 +251,9 @@ async fn apply_requested_change(
         .then_some(ctx.lease_permit)
         .flatten();
     let response = request_loco(
-        ctx.request_sender,
-        ctx.response_receiver,
-        ctx.next_request_id,
+        ctx.loco.request_sender,
+        ctx.loco.response_receiver,
+        ctx.loco.next_request_id,
         permit,
         request,
     )
