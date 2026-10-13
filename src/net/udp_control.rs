@@ -13,15 +13,15 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{IpAddress, IpEndpoint, Stack};
+use embassy_net::{IpEndpoint, Stack};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
+use embassy_sync::channel::Receiver;
 use embassy_time::{Duration, Instant, with_timeout};
 use static_cell::StaticCell;
 
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
-use crate::application::client_safety::{LeaseDecision, LeaseRequest, LeaseVerdict, lease_verdict};
+use crate::application::client_safety::{LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
 use crate::application::{LeaseEpoch, LeasePermit};
 use crate::dcc::LOCO_SLOT_CAPACITY;
@@ -29,7 +29,9 @@ use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
 };
 use crate::macros::bench_diag;
-use crate::net::client_watchdog::LeaseTripNotification;
+use crate::net::client_watchdog::{
+    LeaseRequestSender, LeaseResponseReceiver, LeaseTripNotification,
+};
 use crate::net::loco_client::reset_for_lease;
 use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::{LocoChannels, PomChannels, Z21Ctx};
@@ -81,10 +83,8 @@ pub(crate) struct NetTaskChannels {
     pub(crate) pom_response_receiver: PomResponseReceiver,
     pub(crate) loco_request_sender: LocoRequestSender,
     pub(crate) loco_response_receiver: LocoResponseReceiver,
-    pub(crate) lease_request_sender:
-        Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
-    pub(crate) lease_response_receiver:
-        Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
+    pub(crate) lease_request_sender: LeaseRequestSender,
+    pub(crate) lease_response_receiver: LeaseResponseReceiver,
     pub(crate) lease_trip_receiver:
         Receiver<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
 }
@@ -96,9 +96,8 @@ struct Z21LoopIo {
     pom_response_receiver: PomResponseReceiver,
     loco_request_sender: LocoRequestSender,
     loco_response_receiver: LocoResponseReceiver,
-    lease_request_sender: Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
-    lease_response_receiver:
-        Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
+    lease_request_sender: LeaseRequestSender,
+    lease_response_receiver: LeaseResponseReceiver,
     lease_trip_receiver: Receiver<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
 }
 
@@ -438,8 +437,8 @@ async fn authorize_command(
     classification: LeaseClassification,
     endpoint: IpEndpoint,
     observed_at_ms: u64,
-    request_sender: &Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
-    response_receiver: &Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
+    request_sender: &LeaseRequestSender,
+    response_receiver: &LeaseResponseReceiver,
 ) -> CommandAuthorization {
     let LeaseClassification::Activity(activity) = classification else {
         return CommandAuthorization::ExecuteWithoutLeaseUpdate;

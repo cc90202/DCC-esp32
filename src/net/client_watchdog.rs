@@ -23,6 +23,12 @@ pub(crate) type LeaseResponseChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>;
 pub(crate) type LeaseTripChannel =
     embassy_sync::channel::Channel<CriticalSectionRawMutex, LeaseTripNotification, 1>;
+pub(crate) type LeaseRequestSender =
+    Sender<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>;
+pub(crate) type LeaseResponseReceiver =
+    Receiver<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>;
+pub(crate) type LeaseTripSender =
+    Sender<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LeaseTripNotification {
@@ -35,7 +41,7 @@ pub(crate) struct ClientWatchdogContext {
         Receiver<'static, CriticalSectionRawMutex, LeaseRequest<IpAddress>, 1>,
     pub(crate) response_sender:
         Sender<'static, CriticalSectionRawMutex, LeaseDecision<IpAddress>, 1>,
-    pub(crate) trip_sender: Sender<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
+    pub(crate) trip_sender: LeaseTripSender,
     pub(crate) fault_sender: FaultEventSender,
     pub(crate) ready_sender: BootReadySender,
 }
@@ -84,7 +90,7 @@ pub(crate) async fn client_watchdog_task(context: ClientWatchdogContext) -> ! {
 async fn apply_decision(
     decision: LeaseDecision<IpAddress>,
     fault_sender: &FaultEventSender,
-    trip_sender: &Sender<'static, CriticalSectionRawMutex, LeaseTripNotification, 1>,
+    trip_sender: &LeaseTripSender,
 ) {
     match decision {
         LeaseDecision::Acquired(permit)

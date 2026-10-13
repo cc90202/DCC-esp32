@@ -15,7 +15,6 @@ use esp_radio::wifi::{
 
 use embassy_executor::Spawner;
 use embassy_net::{Config, Stack, StackResources};
-use esp_hal::rng::Rng;
 use static_cell::StaticCell;
 
 use super::radio::{self, WifiBringupError};
@@ -122,8 +121,7 @@ pub(super) async fn start_network_stack(
     info!("WiFi started, connecting to SSID: {}", credentials.ssid());
 
     let net_config = Config::dhcpv4(Default::default());
-    let rng = Rng::new();
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let seed = radio::stack_seed();
     let resources = NET_RESOURCES.init(StackResources::new());
     let (stack, runner) = embassy_net::new(interfaces.sta, net_config, resources, seed);
 
