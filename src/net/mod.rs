@@ -17,6 +17,8 @@ pub use radio::{RadioInitError, WifiBringupError};
 #[cfg(target_arch = "riscv32")]
 mod railcom_lookup;
 #[cfg(target_arch = "riscv32")]
+mod reply;
+#[cfg(target_arch = "riscv32")]
 pub(crate) mod udp_control;
 #[cfg(target_arch = "riscv32")]
 mod wifi;

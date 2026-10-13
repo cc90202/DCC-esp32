@@ -13,10 +13,17 @@ use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
 };
 
-use super::radio::WifiBringupError;
+use embassy_executor::Spawner;
+use embassy_net::{Config, Stack, StackResources};
+use esp_hal::rng::Rng;
+use static_cell::StaticCell;
+
+use super::radio::{self, WifiBringupError};
 use crate::net::wifi_config::WifiCredentials;
-use crate::system_status::SystemStatusEvent;
-use crate::system_status::channels::SystemStatusSender;
+use crate::system_status::channels::{DisplaySender, SystemStatusSender};
+use crate::system_status::{DisplayEvent, SystemStatusEvent};
+
+static NET_RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
@@ -99,6 +106,48 @@ pub(super) fn client_mode_config(credentials: &WifiCredentials) -> ModeConfig {
             .with_password(credentials.password().to_string())
             .with_auth_method(AuthMethod::Wpa2Personal),
     )
+}
+
+/// Starts the radio and the embassy-net stack, spawns the WiFi tasks and waits for DHCP.
+pub(super) async fn start_network_stack(
+    spawner: Spawner,
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    credentials: &WifiCredentials,
+    status_sender: SystemStatusSender,
+    display_sender: DisplaySender,
+) -> Result<Stack<'static>, NetInitError> {
+    let (wifi_ctrl, interfaces) = radio::start_wifi(wifi, &client_mode_config(credentials))
+        .await
+        .map_err(NetInitError::WifiBringup)?;
+    info!("WiFi started, connecting to SSID: {}", credentials.ssid());
+
+    let net_config = Config::dhcpv4(Default::default());
+    let rng = Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let resources = NET_RESOURCES.init(StackResources::new());
+    let (stack, runner) = embassy_net::new(interfaces.sta, net_config, resources, seed);
+
+    spawner
+        .spawn(wifi_runner_task(runner))
+        .map_err(|_| NetInitError::WifiRunnerSpawn)?;
+    spawner
+        .spawn(connection_task(wifi_ctrl, status_sender))
+        .map_err(|_| NetInitError::ConnectionSpawn)?;
+
+    info!("Waiting for DHCP...");
+    stack.wait_config_up().await;
+    if let Some(config) = stack.config_v4() {
+        let address = config.address.address();
+        info!("Network up, IP: {}", defmt::Display2Format(&address));
+        let _ = display_sender.try_send(DisplayEvent::IpAssigned(address.octets()));
+        let _ = display_sender.try_send(DisplayEvent::BootProgress(
+            crate::system_status::BootStep::WifiConnected,
+        ));
+    } else {
+        info!("Network up, DHCP configured (no IPv4?)");
+    }
+
+    Ok(stack)
 }
 
 /// Runs the embassy-net stack driver in a dedicated Embassy task, following the official example.

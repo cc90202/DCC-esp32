@@ -13,19 +13,19 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{Config, IpAddress, IpEndpoint, Stack, StackResources};
+use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Instant, with_timeout};
-use esp_hal::rng::Rng;
 use static_cell::StaticCell;
 
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
 use crate::application::client_safety::{
-    LeaseActivity, LeaseDecision, LeaseEpoch, LeasePermit, LeaseRequest,
+    LeaseDecision, LeaseEpoch, LeasePermit, LeaseRequest, LeaseVerdict, lease_verdict,
 };
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::dcc::LOCO_SLOT_CAPACITY;
 use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
 };
@@ -37,17 +37,17 @@ use crate::net::z21_context::{LocoChannels, PomChannels, Z21Ctx};
 use crate::net::z21_dispatch::{
     LeaseClassification, classify_lease_activity, encode_system_state, encoded_len, handle_command,
 };
+use crate::system_status::BootReadyEvent;
 use crate::system_status::announce_ready;
 use crate::system_status::channels::{
     BootReadySender, DisplaySender, FaultEventSender, NetStatusReceiver, SystemStatusSender,
 };
-use crate::system_status::{BootReadyEvent, DisplayEvent};
 use crate::z21 as z21_proto;
 #[cfg(feature = "bench-diag")]
 use crate::z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 
-use super::wifi::NetInitError;
-use super::{radio, wifi};
+use super::reply::send_reply;
+use super::wifi::{NetInitError, start_network_stack};
 
 const Z21_PORT: u16 = 21105;
 const MAX_FRAMES_PER_DATAGRAM: usize = 8;
@@ -58,7 +58,6 @@ static RX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
-static NET_RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
 static STATUS_BROADCAST_SEND_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 static UDP_RECEIVE_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -116,7 +115,7 @@ struct Z21LoopState {
 impl Z21LoopState {
     fn new() -> Self {
         Self {
-            loco_slots: [None; 12],
+            loco_slots: [None; LOCO_SLOT_CAPACITY],
             lease_owner: None,
             scheduler_epoch: None,
             status_model: StatusModel::new(),
@@ -124,47 +123,6 @@ impl Z21LoopState {
             next_loco_request_id: Cell::new(1),
         }
     }
-}
-
-async fn start_network_stack(
-    spawner: Spawner,
-    wifi: esp_hal::peripherals::WIFI<'static>,
-    credentials: &WifiCredentials,
-    status_sender: SystemStatusSender,
-    display_sender: DisplaySender,
-) -> Result<Stack<'static>, NetInitError> {
-    let (wifi_ctrl, interfaces) = radio::start_wifi(wifi, &wifi::client_mode_config(credentials))
-        .await
-        .map_err(NetInitError::WifiBringup)?;
-    info!("WiFi started, connecting to SSID: {}", credentials.ssid());
-
-    let net_config = Config::dhcpv4(Default::default());
-    let rng = Rng::new();
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
-    let resources = NET_RESOURCES.init(StackResources::new());
-    let (stack, runner) = embassy_net::new(interfaces.sta, net_config, resources, seed);
-
-    spawner
-        .spawn(wifi::wifi_runner_task(runner))
-        .map_err(|_| NetInitError::WifiRunnerSpawn)?;
-    spawner
-        .spawn(wifi::connection_task(wifi_ctrl, status_sender))
-        .map_err(|_| NetInitError::ConnectionSpawn)?;
-
-    info!("Waiting for DHCP...");
-    stack.wait_config_up().await;
-    if let Some(config) = stack.config_v4() {
-        let address = config.address.address();
-        info!("Network up, IP: {}", defmt::Display2Format(&address));
-        let _ = display_sender.try_send(DisplayEvent::IpAssigned(address.octets()));
-        let _ = display_sender.try_send(DisplayEvent::BootProgress(
-            crate::system_status::BootStep::WifiConnected,
-        ));
-    } else {
-        info!("Network up, DHCP configured (no IPv4?)");
-    }
-
-    Ok(stack)
 }
 
 fn bind_z21_socket(stack: Stack<'static>) -> Result<UdpSocket<'static>, NetInitError> {
@@ -298,11 +256,9 @@ async fn handle_udp_datagram(
         };
         let response_len =
             handle_command(command, frame, &mut state.loco_slots, send_buf, &ctx).await;
-        if response_len > 0
-            && socket
-                .send_to(&send_buf[..response_len], endpoint)
-                .await
-                .is_err()
+        if send_reply(socket, send_buf, response_len, endpoint)
+            .await
+            .is_err()
         {
             warn!("Z21 UDP send failed");
         }
@@ -315,11 +271,9 @@ async fn send_unknown_command_response(
     send_buf: &mut [u8],
 ) {
     let response_len = encoded_len(z21_proto::encode_unknown_command(send_buf));
-    if response_len > 0
-        && socket
-            .send_to(&send_buf[..response_len], endpoint)
-            .await
-            .is_err()
+    if send_reply(socket, send_buf, response_len, endpoint)
+        .await
+        .is_err()
     {
         warn!("Z21 UDP send failed");
     }
@@ -346,11 +300,9 @@ async fn broadcast_status(
             StatusBroadcast::Stopped => encoded_len(z21_proto::encode_bc_stopped(send_buf)),
             StatusBroadcast::SystemState(status) => encode_system_state(status, send_buf),
         };
-        if response_len > 0
-            && socket
-                .send_to(&send_buf[..response_len], endpoint)
-                .await
-                .is_err()
+        if send_reply(socket, send_buf, response_len, endpoint)
+            .await
+            .is_err()
         {
             STATUS_BROADCAST_SEND_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
             warn!("Z21 status broadcast send failed");
@@ -406,9 +358,7 @@ async fn run_z21_loop(mut socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
                 state.scheduler_epoch = None;
                 let response_len = encoded_len(z21_proto::encode_bc_stopped(&mut send_buf));
                 if let Some(endpoint) = owner_endpoint
-                    && response_len > 0
-                    && socket
-                        .send_to(&send_buf[..response_len], endpoint)
+                    && send_reply(&socket, &send_buf, response_len, endpoint)
                         .await
                         .is_err()
                 {
@@ -505,21 +455,13 @@ async fn authorize_command(
             observed_at_ms,
         })
         .await;
-    match response_receiver.receive().await {
-        LeaseDecision::Acquired(permit) | LeaseDecision::Renewed(permit) => {
-            CommandAuthorization::ExecuteForOwner {
-                owner: endpoint,
-                permit: Some(permit),
-            }
-        }
-        LeaseDecision::Maintained(_) => CommandAuthorization::ExecuteForOwner {
+    match lease_verdict(response_receiver.receive().await, activity) {
+        LeaseVerdict::ExecuteWithoutLeaseUpdate => CommandAuthorization::ExecuteWithoutLeaseUpdate,
+        LeaseVerdict::ExecuteForOwner { permit } => CommandAuthorization::ExecuteForOwner {
             owner: endpoint,
-            permit: None,
+            permit,
         },
-        LeaseDecision::Rejected(_) if matches!(activity, LeaseActivity::KeepAlive) => {
-            CommandAuthorization::ExecuteWithoutLeaseUpdate
-        }
-        LeaseDecision::Rejected(_) => CommandAuthorization::Reject,
-        LeaseDecision::Trip { .. } => CommandAuthorization::Trip,
+        LeaseVerdict::Reject => CommandAuthorization::Reject,
+        LeaseVerdict::Trip => CommandAuthorization::Trip,
     }
 }

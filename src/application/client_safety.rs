@@ -230,6 +230,46 @@ impl<Client: Copy + Eq> ClientSafetyPolicy<Client> {
     }
 }
 
+/// What the Z21 loop does with a command once the controller lease has answered.
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeaseVerdict {
+    /// Run the command but leave the recorded lease owner untouched.
+    ExecuteWithoutLeaseUpdate,
+    /// Run the command for the sender, which now owns the lease; `permit` is
+    /// set only when the lease was acquired or renewed.
+    ExecuteForOwner { permit: Option<LeasePermit> },
+    /// Refuse the command.
+    Reject,
+    /// Refuse the command and forget the lease owner: the lease has tripped.
+    Trip,
+}
+
+/// Maps the lease decision for a command's activity onto what the loop does.
+///
+/// A rejected keep-alive still runs, because queries from a client that does
+/// not own the lease are harmless; any other rejected activity is refused.
+#[cfg(any(test, target_arch = "riscv32"))]
+#[must_use]
+pub(crate) fn lease_verdict<C>(
+    decision: LeaseDecision<C>,
+    activity: LeaseActivity,
+) -> LeaseVerdict {
+    match decision {
+        LeaseDecision::Acquired(permit) | LeaseDecision::Renewed(permit) => {
+            LeaseVerdict::ExecuteForOwner {
+                permit: Some(permit),
+            }
+        }
+        LeaseDecision::Maintained(_) => LeaseVerdict::ExecuteForOwner { permit: None },
+        LeaseDecision::Rejected(_) if matches!(activity, LeaseActivity::KeepAlive) => {
+            LeaseVerdict::ExecuteWithoutLeaseUpdate
+        }
+        LeaseDecision::Rejected(_) => LeaseVerdict::Reject,
+        LeaseDecision::Trip { .. } => LeaseVerdict::Trip,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +492,73 @@ mod tests {
             })
         );
         assert_eq!(policy.on_timer(60_000), None);
+    }
+
+    fn permit() -> LeasePermit {
+        LeasePermit::new(LeaseEpoch::new(3), 30_100)
+    }
+
+    #[test]
+    fn rejected_keepalive_executes_without_lease_update() {
+        let decision = LeaseDecision::<u8>::Rejected(LeaseRejection::OwnedByAnotherClient);
+        assert_eq!(
+            lease_verdict(decision, LeaseActivity::KeepAlive),
+            LeaseVerdict::ExecuteWithoutLeaseUpdate
+        );
+    }
+
+    #[test]
+    fn rejected_command_is_refused() {
+        for activity in [LeaseActivity::Acquire, LeaseActivity::Logoff] {
+            let decision = LeaseDecision::<u8>::Rejected(LeaseRejection::NoActiveLease);
+            assert_eq!(lease_verdict(decision, activity), LeaseVerdict::Reject);
+        }
+    }
+
+    #[test]
+    fn acquired_and_renewed_carry_permit() {
+        let expected = LeaseVerdict::ExecuteForOwner {
+            permit: Some(permit()),
+        };
+        assert_eq!(
+            lease_verdict(
+                LeaseDecision::<u8>::Acquired(permit()),
+                LeaseActivity::Acquire
+            ),
+            expected
+        );
+        assert_eq!(
+            lease_verdict(
+                LeaseDecision::<u8>::Renewed(permit()),
+                LeaseActivity::Acquire
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn maintained_carries_no_permit() {
+        assert_eq!(
+            lease_verdict(
+                LeaseDecision::<u8>::Maintained(permit()),
+                LeaseActivity::KeepAlive
+            ),
+            LeaseVerdict::ExecuteForOwner { permit: None }
+        );
+    }
+
+    #[test]
+    fn trip_is_trip() {
+        for activity in [
+            LeaseActivity::Acquire,
+            LeaseActivity::KeepAlive,
+            LeaseActivity::Logoff,
+        ] {
+            let decision = LeaseDecision::Trip {
+                client: 7_u8,
+                reason: TripReason::OwnerLogoff,
+            };
+            assert_eq!(lease_verdict(decision, activity), LeaseVerdict::Trip);
+        }
     }
 }
