@@ -9,14 +9,13 @@
 use core::cell::Cell;
 
 use defmt::warn;
-use embassy_time::{Instant, with_timeout};
 
+use super::correlated::{SendMode, correlated_request};
 use crate::application::LocoSlots;
 use crate::application::pom::{
     PomAdmissionError, PomRefreshFailure, apply_refresh_result, prepare_read, prepare_write,
 };
 use crate::dcc::channels::{PomRequestSender, PomResponseReceiver};
-use crate::dcc::cv::drain_channel;
 use crate::dcc::{PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::PomCtx;
@@ -41,55 +40,27 @@ enum PomOutcome {
     Unavailable,
 }
 
-/// Allocate the next [`PomRequestId`] from the net task's local counter.
+/// Sends one POM request to the actor and waits for the reply carrying its id.
 ///
-/// Replaces a global `AtomicU32`: the counter only needs to be unique within
-/// this task's single-flight request/response channel, so a plain `Cell`
-/// owned by `net_task` is enough.
-fn next_pom_request_id(counter: &Cell<u32>) -> PomRequestId {
-    let id = counter.get();
-    counter.set(id.wrapping_add(1));
-    PomRequestId::new(id)
-}
-
-pub(super) async fn request_pom(
+/// The id comes from the net task's local counter: it only needs to be unique
+/// within this task's single-flight request/response channel.
+async fn request_pom(
     pom_request_sender: &PomRequestSender,
     pom_response_receiver: &PomResponseReceiver,
     next_request_id: &Cell<u32>,
     build_request: impl FnOnce(PomRequestId) -> PomRequest,
 ) -> Option<PomResponse> {
-    let request_id = next_pom_request_id(next_request_id);
-    drain_channel(pom_response_receiver);
-
-    if pom_request_sender
-        .try_send(build_request(request_id))
-        .is_err()
-    {
-        return None;
-    }
-
-    let deadline = Instant::now() + POM_CLIENT_TIMEOUT;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let response = with_timeout(remaining, pom_response_receiver.receive())
-            .await
-            .ok()?;
-        match response {
-            PomResponse::Ack {
-                request_id: response_request_id,
-            }
-            | PomResponse::Nack {
-                request_id: response_request_id,
-            } if response_request_id == request_id => {
-                return Some(response);
-            }
-            PomResponse::Value {
-                request_id: response_request_id,
-                ..
-            } if response_request_id == request_id => return Some(response),
-            _ => {}
-        }
-    }
+    correlated_request(
+        pom_request_sender,
+        pom_response_receiver,
+        next_request_id,
+        PomRequestId::new,
+        |request_id, _now| build_request(request_id),
+        PomResponse::request_id,
+        SendMode::TryOnce,
+        POM_CLIENT_TIMEOUT,
+    )
+    .await
 }
 
 pub(super) async fn handle_cv_pom_write(

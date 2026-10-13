@@ -5,8 +5,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
-use embassy_time::{Duration, Instant, with_timeout};
+use embassy_time::Duration;
 
+use super::correlated::{SendMode, correlated_request};
 use crate::application::LeasePermit;
 #[cfg(target_arch = "riscv32")]
 use crate::dcc::LocoRequestResult;
@@ -29,45 +30,27 @@ pub(crate) fn loco_response_timeout_count() -> u32 {
     LOCO_RESPONSE_TIMEOUT_COUNT.load(Ordering::Relaxed)
 }
 
-fn next_loco_request_id(counter: &Cell<u32>) -> LocoRequestId {
-    let value = counter.get();
-    counter.set(value.wrapping_add(1));
-    LocoRequestId::new(value)
-}
-
 async fn send_correlated_request(
     request_sender: &Sender<'static, CriticalSectionRawMutex, LocoRequestMessage, 1>,
     response_receiver: &Receiver<'static, CriticalSectionRawMutex, LocoResponse, 1>,
     next_request_id: &Cell<u32>,
     request: SchedulerRequest,
 ) -> Option<LocoResponse> {
-    while response_receiver.try_receive().is_ok() {}
-
-    let request_id = next_loco_request_id(next_request_id);
-    let now = Instant::now();
-    let response_deadline = now + LOCO_RESPONSE_TIMEOUT;
-    let message = LocoRequestMessage {
-        request_id,
-        request,
-        deadline: LocoRequestDeadline::from_ticks((now + LOCO_EXECUTION_TIMEOUT).as_ticks()),
-    };
-
-    if with_timeout(LOCO_RESPONSE_TIMEOUT, request_sender.send(message))
-        .await
-        .is_err()
-    {
-        return None;
-    }
-
-    loop {
-        let remaining = response_deadline.saturating_duration_since(Instant::now());
-        let Ok(response) = with_timeout(remaining, response_receiver.receive()).await else {
-            return None;
-        };
-        if response.request_id == request_id {
-            return Some(response);
-        }
-    }
+    correlated_request(
+        request_sender,
+        response_receiver,
+        next_request_id,
+        LocoRequestId::new,
+        |request_id, now| LocoRequestMessage {
+            request_id,
+            request,
+            deadline: LocoRequestDeadline::from_ticks((now + LOCO_EXECUTION_TIMEOUT).as_ticks()),
+        },
+        |response| response.request_id,
+        SendMode::Blocking,
+        LOCO_RESPONSE_TIMEOUT,
+    )
+    .await
 }
 
 pub(super) async fn request_loco(

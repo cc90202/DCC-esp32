@@ -3,6 +3,8 @@
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod client_watchdog;
 #[cfg(any(test, target_arch = "riscv32"))]
+mod correlated;
+#[cfg(any(test, target_arch = "riscv32"))]
 mod loco_client;
 #[cfg(target_arch = "riscv32")]
 mod pom_client;
