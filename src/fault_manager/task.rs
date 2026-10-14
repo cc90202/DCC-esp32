@@ -1,14 +1,13 @@
 //! Firmware fault-manager task: performs the side effects that
 //! [`FaultLoop::step`] decides, in a fixed order, for each fault event.
 
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch};
 use embassy_time::{Duration, Instant, with_timeout};
 
 use super::policy::FaultDecision;
 use super::power_fence;
 use super::relay::{FaultEffectsSignal, FaultEffectsSnapshot};
 use super::step::FaultLoop;
-use super::{INTERLOCK_STOP_DONE, TRACK_POWER_ARMED};
+use super::{FaultStateSender, INTERLOCK_STOP_DONE, TRACK_POWER_ARMED};
 use crate::dcc::PowerGeneration;
 use crate::dcc::channels::{PowerFenceAckReceiver, PowerQuiesceSender};
 use crate::system_status::channels::{BootReadySender, FaultEventReceiver};
@@ -20,7 +19,7 @@ pub(crate) struct FaultManagerTaskContext {
     pub(crate) power_quiesce_sender: PowerQuiesceSender,
     pub(crate) power_fence_ack_receiver: PowerFenceAckReceiver,
     pub(crate) track_output: TrackOutput,
-    pub(crate) state_sender: watch::Sender<'static, CriticalSectionRawMutex, FaultManagerState, 1>,
+    pub(crate) state_sender: FaultStateSender,
     pub(crate) effects_signal: &'static FaultEffectsSignal,
     pub(crate) ready_sender: BootReadySender,
 }

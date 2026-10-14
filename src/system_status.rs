@@ -252,6 +252,7 @@ pub(crate) mod channels {
     pub(crate) type SystemStatusReceiver = RuntimeReceiver<SystemStatusEvent, STATUS_DEPTH>;
 
     pub(crate) type NetStatusChannel = RuntimeChannel<SystemStatusEvent, NET_STATUS_DEPTH>;
+    pub(crate) type NetStatusSender = RuntimeSender<SystemStatusEvent, NET_STATUS_DEPTH>;
     pub(crate) type NetStatusReceiver = RuntimeReceiver<SystemStatusEvent, NET_STATUS_DEPTH>;
 
     pub(crate) type BootReadyChannel = RuntimeChannel<BootReadyEvent, BOOT_READY_DEPTH>;
