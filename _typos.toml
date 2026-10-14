@@ -1,0 +1,17 @@
+# Spelling check (typos) over src/, crates/, tools/ and scripts/.
+
+[files]
+extend-exclude = [
+    # Italian user interface pages served by the firmware.
+    "src/net/update_http/page.html",
+    "src/net/provisioning/html.rs",
+]
+
+[default]
+# Bare 32-bit hex addresses, such as the ESP32-C6 flash addresses in the
+# disassembly fixtures of scripts/check-isr-ram.sh.
+extend-ignore-re = ["\\b[0-9a-f]{8}\\b"]
+
+[default.extend-words]
+# "Lok" as in ESU LokSound and LokProgrammer.
+Lok = "Lok"

@@ -106,3 +106,71 @@ jobs:
       # signing configuration; the default release above is built separately.
       - name: Clippy riscv32 all features (bench/fault only)
         run: cargo clippy-esp -- -D warnings
+
+  # Complexity, module structure, duplication, dependency audit and spelling.
+  # The local entry point for the same checks is scripts/check-all.sh.
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.99.0
+          targets: riscv32imac-unknown-none-elf, x86_64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+
+      - name: Install Node.js for jscpd
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.21.0
+
+      - name: Install prebuilt analysis tools
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-deny@0.20.2,typos@1.51.1,cargo-machete@0.9.1
+          fallback: none
+
+      # No prebuilt release in install-action's list: cargo-binstall fetches one
+      # when available and builds from source otherwise (kept by the cache).
+      - name: Install module and complexity analysers
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-modules@0.27.0,rust-code-analysis-cli@0.0.25
+
+      # The complexity and module-cycle allowlists may only shrink relative to
+      # the target branch.
+      - name: Fetch the base branch
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: git fetch --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Cognitive complexity
+        env:
+          COMPLEXITY_BASE: origin/${{ github.base_ref || 'main' }}
+        run: bash scripts/check-complexity.sh
+
+      - name: Module dependencies
+        env:
+          CYCLE_BASE_REF: origin/${{ github.base_ref || 'main' }}
+        run: |
+          bash scripts/check-module-deps.sh --self-test
+          bash scripts/check-module-deps.sh
+
+      - name: Duplicated code
+        run: bash scripts/check-duplication.sh jscpd
+
+      - name: Unused dependencies
+        run: bash scripts/check-duplication.sh machete
+
+      - name: Dependency audit
+        run: cargo deny --workspace check
+
+      - name: Spelling
+        run: typos src crates tools scripts
