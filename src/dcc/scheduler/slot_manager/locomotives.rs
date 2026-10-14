@@ -49,7 +49,10 @@ impl SlotManager {
             .enumerate()
             .filter(|(_, slot)| {
                 !slot.has_pending_transmission()
-                    && !self.pending_estop_targets.contains(&slot.address)
+                    && !self
+                        .pending_estop_targets
+                        .iter()
+                        .any(|&queued| queued == slot.address)
             })
             .filter_map(|(index, slot)| {
                 slot.stopped_since
@@ -297,8 +300,11 @@ impl SlotManager {
         slot.dirty_speed = true;
         slot.dirty_speed_retries = DIRTY_STOP_RETRY_COUNT;
 
-        if !self.pending_estop_targets.contains(&address)
-            && self.pending_estop_targets.push(address).is_err()
+        if !self
+            .pending_estop_targets
+            .iter()
+            .any(|&queued| queued == address)
+            && self.pending_estop_targets.push_back(address).is_err()
         {
             #[cfg(target_arch = "riscv32")]
             defmt::warn!(

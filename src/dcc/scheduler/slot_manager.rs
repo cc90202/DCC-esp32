@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use heapless::Vec;
+use heapless::{Deque, Vec};
 
 use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::cutout::CutoutMode;
@@ -326,8 +326,8 @@ mod invariant_recovery_tests {
 pub struct SlotManager {
     slots: Vec<Slot, LOCO_SLOT_CAPACITY>,
     pending_broadcast_estop: bool,
-    pending_estop_targets: Vec<DccAddress, LOCO_SLOT_CAPACITY>,
-    pending_pom: Vec<PendingPomPacket, PENDING_POM_CAPACITY>,
+    pending_estop_targets: Deque<DccAddress, LOCO_SLOT_CAPACITY>,
+    pending_pom: Deque<PendingPomPacket, PENDING_POM_CAPACITY>,
     active_pom: Option<ActivePomRequest>,
     pending_railcom_telemetry: Option<DccPacket>,
     next_index: usize,
@@ -396,8 +396,8 @@ impl SlotManager {
         Self {
             slots: Vec::new(),
             pending_broadcast_estop: false,
-            pending_estop_targets: Vec::new(),
-            pending_pom: Vec::new(),
+            pending_estop_targets: Deque::new(),
+            pending_pom: Deque::new(),
             active_pom: None,
             pending_railcom_telemetry: None,
             next_index: 0,

@@ -694,6 +694,25 @@ fn test_emergency_stop_single() {
 }
 
 #[test]
+fn targeted_emergency_stops_are_emitted_in_request_order() {
+    let mut mgr = SlotManager::new();
+    fill_with_moving_locomotives(&mut mgr);
+    drain_pending_slot_transmissions(&mut mgr);
+    let requested = [addr(5), addr(1), addr(9)];
+    for address in requested {
+        assert!(mgr.request_emergency_stop(address));
+    }
+
+    for expected in requested {
+        let packet = mgr.build_next_packet().unwrap();
+        assert!(
+            matches!(packet, DccPacket::EmergencyStop { address, .. } if address == expected),
+            "expected EmergencyStop for {expected:?}, got {packet:?}"
+        );
+    }
+}
+
+#[test]
 fn test_build_next_packet_empty() {
     let mut mgr = SlotManager::new();
     assert!(mgr.build_next_packet().is_none());
@@ -1287,6 +1306,29 @@ fn test_program_on_main_rejects_when_queue_full() {
             cv: pom_cv(29),
         }
     ));
+}
+
+#[test]
+fn queued_pom_packets_are_emitted_in_request_order() {
+    let mut mgr = SlotManager::new();
+    let cvs = [7, 2, 5];
+    for cv in cvs {
+        assert!(mgr.program_on_main(
+            pom_id(40),
+            DccPacket::PomReadByte {
+                address: addr(3),
+                cv: pom_cv(cv),
+            },
+        ));
+    }
+
+    for expected in cvs {
+        let packet = mgr.build_next_packet().unwrap();
+        assert!(
+            matches!(packet, DccPacket::PomReadByte { cv, .. } if cv.value() == expected),
+            "expected POM read of CV{expected}, got {packet:?}"
+        );
+    }
 }
 
 #[test]

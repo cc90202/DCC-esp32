@@ -45,7 +45,7 @@ impl SlotManager {
             cutout,
         });
         self.pending_pom
-            .push(PendingPomPacket {
+            .push_back(PendingPomPacket {
                 request_id,
                 permit,
                 packet,
