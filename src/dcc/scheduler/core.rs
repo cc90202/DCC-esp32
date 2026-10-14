@@ -331,4 +331,35 @@ mod tests {
         assert!(!core.authorize_for_emission(programming, |_| false));
         assert_ne!(core.next_packet().class, PacketClass::Programming);
     }
+
+    #[test]
+    fn discarding_a_pom_drops_only_the_matching_request_and_epoch() {
+        let mut core = SchedulerCore::new();
+        let permit = permit();
+        let other_epoch =
+            crate::authority::LeasePermit::new(crate::authority::LeaseEpoch::new(2), u64::MAX);
+        let read = DccPacket::PomReadByte {
+            address: address(),
+            cv: crate::dcc::PomCv::new(1).expect("valid CV"),
+        };
+        core.slots.reset_for_lease(permit);
+        for _ in 0..2 {
+            let command = SchedulerCommand::ProgramOnMain {
+                request_id: PomRequestId::new(77),
+                permit,
+                packet: read,
+            };
+            assert_eq!(core.handle_command(command), CommandOutcome::Applied);
+        }
+        assert_eq!(core.next_packet().class, PacketClass::Safety);
+
+        core.discard_pom(PomRequestId::new(78), permit);
+        core.discard_pom(PomRequestId::new(77), other_epoch);
+        assert!(core.slots.pom_context_for_packet(read).is_some());
+        assert_eq!(core.next_packet().class, PacketClass::Programming);
+
+        core.discard_pom(PomRequestId::new(77), permit);
+        assert_eq!(core.slots.pom_context_for_packet(read), None);
+        assert_ne!(core.next_packet().class, PacketClass::Programming);
+    }
 }

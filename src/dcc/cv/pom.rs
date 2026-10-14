@@ -337,6 +337,27 @@ mod tests {
     }
 
     #[test]
+    fn test_pom_result_reports_a_nack_without_a_value() {
+        assert_eq!(
+            pom_result_from_railcom_items(
+                pom_id(3),
+                seq(5),
+                DccAddress::new_short(3),
+                true,
+                &[RailcomItem::Nack],
+            ),
+            Some(PomRailcomResult::Window {
+                request_id: pom_id(3),
+                packet_sequence: seq(5),
+                target_address: DccAddress::new_short(3),
+                value: None,
+                ack: false,
+                nack: true,
+            })
+        );
+    }
+
+    #[test]
     fn test_pom_result_survives_a_short_ext_behind_the_cv_answer() {
         // End to end from the wire, because this is where the short `app:ext`
         // costs data: the whole window used to fail as a truncated datagram,
