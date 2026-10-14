@@ -149,7 +149,9 @@ mod tests {
                 request_id: request.request_id,
                 result: LocoRequestResult::NotFound,
             }));
+            request.deadline
         });
+        let sent_at = embassy_time::Instant::now();
 
         let response = block_on(request_loco(
             &REQUESTS.sender(),
@@ -166,7 +168,9 @@ mod tests {
                 result: LocoRequestResult::NotFound,
             }) if request_id == LocoRequestId::new(7)
         ));
-        responder.join().expect("responder thread must finish");
+        let deadline = responder.join().expect("responder thread must finish");
+        // The scheduler gets the whole execution timeout from the send.
+        assert!(!deadline.is_expired_at((sent_at + LOCO_EXECUTION_TIMEOUT).as_ticks() - 1));
     }
 
     #[test]

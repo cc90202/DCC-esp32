@@ -576,6 +576,41 @@ mod tests {
     }
 
     #[test]
+    fn signed_record_still_needs_the_magic_and_in_range_lengths() {
+        let record = encode_record(&credentials("DCC-Lab", "password123"), 1, false);
+        let tamperings: [fn(&mut [u8; RECORD_LEN]); 3] = [
+            |record| record[0] ^= 0x01,
+            |record| record[OFFSET_SSID_LEN] = 0xff,
+            |record| record[OFFSET_PASSWORD_LEN] = 0xff,
+        ];
+        for (index, tamper) in tamperings.iter().enumerate() {
+            let mut tampered = record;
+            tamper(&mut tampered);
+            let checksum = checksum(&tampered[..CHECKSUM_OFFSET]);
+            tampered[CHECKSUM_OFFSET..].copy_from_slice(&checksum.to_le_bytes());
+            let mut flash = MockFlash::erased();
+            flash.sectors[0][..RECORD_LEN].copy_from_slice(&tampered);
+            let mut store = WifiConfigStore::new(flash);
+
+            assert_eq!(store.load(), Err(StoreError::Corrupt), "tampering {index}");
+        }
+    }
+
+    #[test]
+    fn longest_credentials_round_trip() {
+        let ssid = "s".repeat(32);
+        let password = "p".repeat(63);
+        let mut store = WifiConfigStore::new(MockFlash::erased());
+
+        assert_eq!(store.save(&credentials(&ssid, &password)), Ok(()));
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(
+            (loaded.ssid(), loaded.password()),
+            (ssid.as_str(), password.as_str())
+        );
+    }
+
+    #[test]
     fn force_provisioning_flag_round_trips_and_clears() {
         let mut store = WifiConfigStore::new(MockFlash::erased());
         let credentials = credentials("DCC-Lab", "password123");
