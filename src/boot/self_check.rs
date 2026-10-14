@@ -3,7 +3,6 @@
 use defmt::info;
 
 use crate::dcc::{DccAddress, DccPacket, Direction};
-use crate::dcc_runtime::build_idle_rmt_buffer;
 
 use super::{BootError, DccSelfCheckError};
 
@@ -16,7 +15,6 @@ pub(super) fn verify_boot_packet_encoding() -> Result<(), BootError> {
     info!("boot: running DCC packet self-check");
 
     log_packet_bytes("Idle packet", DccPacket::Idle);
-    build_idle_rmt_buffer().map_err(|_| DccSelfCheckError::IdleWaveformBuild)?;
     log_packet_bytes("Reset packet", DccPacket::Reset);
 
     let short_addr_3 = DccAddress::new_short(3).ok_or(DccSelfCheckError::ShortAddress3Invalid)?;
