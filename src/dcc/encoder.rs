@@ -50,10 +50,10 @@
 //!
 //! # Error handling
 //!
-//! [`encode_dcc_packet`] returns [`EncodeError::Packet`] if the packet cannot be encoded
-//! to bytes, or [`EncodeError::PulseBufferOverflow`] if the pulse sequence exceeds
-//! capacity (should not occur with valid input). Public packet constructors use
-//! validated newtypes for address, speed, and CV ranges.
+//! [`encode_dcc_packet`] returns [`EncodeError::PulseBufferOverflow`] if the pulse
+//! sequence exceeds capacity (should not occur with valid input). Byte encoding
+//! itself cannot fail: public packet constructors use validated newtypes for
+//! address, speed, and CV ranges.
 
 use core::fmt;
 
@@ -70,35 +70,19 @@ use heapless::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum EncodeError {
-    /// `Packet` wraps errors returned by packet byte encoding.
-    Packet(crate::dcc::packet::PacketEncodeError),
     /// `PulseBufferOverflow` means the pulse output buffer capacity was exceeded.
     PulseBufferOverflow,
-}
-
-impl From<crate::dcc::packet::PacketEncodeError> for EncodeError {
-    fn from(value: crate::dcc::packet::PacketEncodeError) -> Self {
-        Self::Packet(value)
-    }
 }
 
 impl fmt::Display for EncodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Packet(error) => write!(formatter, "DCC packet encoding failed: {error}"),
             Self::PulseBufferOverflow => formatter.write_str("DCC pulse buffer capacity exceeded"),
         }
     }
 }
 
-impl core::error::Error for EncodeError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Packet(error) => Some(error),
-            Self::PulseBufferOverflow => None,
-        }
-    }
-}
+impl core::error::Error for EncodeError {}
 
 /// RMT pulse representation
 ///
@@ -168,8 +152,7 @@ pub fn encode_byte(byte: u8) -> [PulseCode; 8] {
 /// - Max realistic packet: < `DCC_MAX_PACKET_PULSES`
 ///
 /// # Errors
-/// Returns [`EncodeError::Packet`] if packet byte encoding fails,
-/// or [`EncodeError::PulseBufferOverflow`] if the pulse buffer overflows.
+/// Returns [`EncodeError::PulseBufferOverflow`] if the pulse buffer overflows.
 pub fn encode_dcc_packet(
     packet: &DccPacket,
 ) -> Result<Vec<PulseCode, DCC_MAX_PACKET_PULSES>, EncodeError> {
@@ -210,7 +193,7 @@ fn encode_packet_tail<const N: usize>(
 ) -> Result<(), EncodeError> {
     push(pulses, dcc_bit_to_pulse(false))?;
 
-    let bytes = packet.to_bytes()?;
+    let bytes = packet.to_bytes();
     for (index, &byte) in bytes.iter().enumerate() {
         for pulse in encode_byte(byte) {
             push(pulses, pulse)?;
@@ -278,6 +261,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::dcc::FunctionGroupKind;
     use crate::dcc::packet::*;
 
     fn service_cv(cv: u16) -> ServiceModeCv {
@@ -374,50 +358,7 @@ mod tests {
             DccPacket::Reset,
             DccPacket::speed_28step(addr_short, 28, Direction::Forward).unwrap(),
             DccPacket::speed_128step(addr_long, 126, Direction::Reverse).unwrap(),
-            DccPacket::FunctionGroup1 {
-                address: addr_long,
-                fl: true,
-                f1: true,
-                f2: true,
-                f3: true,
-                f4: true,
-            },
-            DccPacket::FunctionGroup2A {
-                address: addr_long,
-                f5: true,
-                f6: true,
-                f7: true,
-                f8: true,
-            },
-            DccPacket::FunctionGroup2B {
-                address: addr_long,
-                f9: true,
-                f10: true,
-                f11: true,
-                f12: true,
-            },
-            DccPacket::FunctionGroup3 {
-                address: addr_long,
-                f13: true,
-                f14: true,
-                f15: true,
-                f16: true,
-                f17: true,
-                f18: true,
-                f19: true,
-                f20: true,
-            },
-            DccPacket::FunctionGroup4 {
-                address: addr_long,
-                f21: true,
-                f22: true,
-                f23: true,
-                f24: true,
-                f25: true,
-                f26: true,
-                f27: true,
-                f28: true,
-            },
+            DccPacket::function_group(addr_long, FunctionGroupKind::G4, u8::MAX),
             DccPacket::ServiceModeVerifyByte {
                 cv: service_cv(256),
                 value: 255,

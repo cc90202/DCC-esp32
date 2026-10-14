@@ -6,7 +6,9 @@
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::cutout::PacketSequence;
 #[cfg(any(test, target_arch = "riscv32"))]
-use crate::dcc::packet::{DccAddress, PomCv};
+use crate::dcc::PomRequestId;
+#[cfg(any(test, target_arch = "riscv32"))]
+use crate::dcc::packet::{DccAddress, DccPacket, PomCv};
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::railcom_data::{RailcomDatagram, RailcomItem};
 
@@ -37,68 +39,38 @@ pub fn pom_runtime_stats() -> PomRuntimeStats {
     POM.snapshot()
 }
 
-/// Identifies one POM request/response round-trip on the single-slot request
-/// and response channels between the Z21 network task and the POM actor.
-///
-/// A newtype (rather than a bare `u32`) keeps request/response matching from
-/// being confused with unrelated `u32` values (CV numbers, packet sequence
-/// counters) flowing through the same call sites.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-#[repr(transparent)]
-pub struct PomRequestId(u32);
-
-impl PomRequestId {
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        self.0
-    }
-}
-
+/// One programming-on-main request handed from the Z21 network task to the
+/// POM actor.
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum PomRequest {
-    Read {
-        request_id: PomRequestId,
-        permit: crate::authority::LeasePermit,
-        address: DccAddress,
-        cv: PomCv,
-    },
-    Write {
-        request_id: PomRequestId,
-        permit: crate::authority::LeasePermit,
-        address: DccAddress,
-        cv: PomCv,
-        value: u8,
-    },
+pub struct PomRequest {
+    pub request_id: PomRequestId,
+    pub permit: crate::authority::LeasePermit,
+    pub address: DccAddress,
+    pub cv: PomCv,
+    pub op: PomOp,
 }
 
-#[cfg(target_arch = "riscv32")]
-impl PomRequest {
-    #[must_use]
-    pub const fn request_id(self) -> PomRequestId {
-        match self {
-            Self::Read { request_id, .. } | Self::Write { request_id, .. } => request_id,
-        }
-    }
+/// Operation a [`PomRequest`] performs on its CV.
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum PomOp {
+    Read,
+    /// Write the carried byte.
+    Write(u8),
+}
 
-    #[must_use]
-    pub const fn address(self) -> DccAddress {
-        match self {
-            Self::Read { address, .. } | Self::Write { address, .. } => address,
-        }
-    }
-
-    #[must_use]
-    pub const fn permit(self) -> crate::authority::LeasePermit {
-        match self {
-            Self::Read { permit, .. } | Self::Write { permit, .. } => permit,
+#[cfg(any(test, target_arch = "riscv32"))]
+impl From<&PomRequest> for DccPacket {
+    fn from(request: &PomRequest) -> Self {
+        let PomRequest {
+            address, cv, op, ..
+        } = *request;
+        match op {
+            PomOp::Read => Self::PomReadByte { address, cv },
+            PomOp::Write(value) => Self::PomWriteByte { address, cv, value },
         }
     }
 }
@@ -140,29 +112,6 @@ pub enum PomRailcomResult {
 }
 
 #[cfg(target_arch = "riscv32")]
-impl PomRailcomResult {
-    const fn request_id(self) -> PomRequestId {
-        match self {
-            Self::Window { request_id, .. } => request_id,
-        }
-    }
-
-    const fn target_address(self) -> Option<DccAddress> {
-        match self {
-            Self::Window { target_address, .. } => target_address,
-        }
-    }
-
-    const fn packet_sequence(self) -> PacketSequence {
-        match self {
-            Self::Window {
-                packet_sequence, ..
-            } => packet_sequence,
-        }
-    }
-}
-
-#[cfg(target_arch = "riscv32")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct PomTxStarted {
@@ -183,12 +132,27 @@ fn drain_channel<T: Copy, const N: usize>(
     while receiver.try_receive().is_ok() {}
 }
 
+/// Why a RailCom result was not attributed to the request in flight.
+#[cfg(any(test, target_arch = "riscv32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PomMismatch {
+    /// The result belongs to another request id, or to a cutout earlier than
+    /// the first one that may answer this request.
+    Stale,
+    /// The result came from a decoder other than the request target.
+    WrongTarget,
+}
+
+/// Attributes one RailCom result to `request`.
+///
+/// `Ok(None)` means the result belongs to the request but carries no verdict
+/// for its operation yet.
 #[cfg(any(test, target_arch = "riscv32"))]
 fn match_pom_result(
     request: PomRequest,
     earliest_sequence: PacketSequence,
     result: PomRailcomResult,
-) -> Option<PomResponse> {
+) -> Result<Option<PomResponse>, PomMismatch> {
     let PomRailcomResult::Window {
         request_id: result_request_id,
         packet_sequence,
@@ -196,48 +160,25 @@ fn match_pom_result(
         value,
         ack,
         nack,
-        ..
     } = result;
-    let (request_id, address) = match request {
-        PomRequest::Read {
-            request_id,
-            address,
-            ..
-        }
-        | PomRequest::Write {
-            request_id,
-            address,
-            ..
-        } => (request_id, address),
+    let request_id = request.request_id;
+    if result_request_id != request_id || !packet_sequence.is_at_or_after(earliest_sequence) {
+        return Err(PomMismatch::Stale);
+    }
+    if target_address != Some(request.address) {
+        return Err(PomMismatch::WrongTarget);
+    }
+    let response = match request.op {
+        PomOp::Read => match value {
+            Some(value) => Some(PomResponse::Value { request_id, value }),
+            None => nack.then_some(PomResponse::Nack { request_id }),
+        },
+        // RCN-217 §§2.5, 5.2: an unsupported CV is reported as ACK followed
+        // by NACK in the same CH2 response. NACK must win.
+        PomOp::Write(_) if nack => Some(PomResponse::Nack { request_id }),
+        PomOp::Write(_) => ack.then_some(PomResponse::Ack { request_id }),
     };
-    if result_request_id != request_id
-        || target_address != Some(address)
-        || !packet_sequence.is_at_or_after(earliest_sequence)
-    {
-        return None;
-    }
-    match request {
-        PomRequest::Read { request_id, .. } => {
-            if let Some(value) = value {
-                Some(PomResponse::Value { request_id, value })
-            } else if nack {
-                Some(PomResponse::Nack { request_id })
-            } else {
-                None
-            }
-        }
-        PomRequest::Write { request_id, .. } => {
-            // RCN-217 §§2.5, 5.2: an unsupported CV is reported as ACK
-            // followed by NACK in the same CH2 response. NACK must win.
-            if nack {
-                Some(PomResponse::Nack { request_id })
-            } else if ack {
-                Some(PomResponse::Ack { request_id })
-            } else {
-                None
-            }
-        }
-    }
+    Ok(response)
 }
 
 /// Turns one channel-2 receive window into a POM outcome, if it carries one.
@@ -546,11 +487,12 @@ mod tests {
 
     #[test]
     fn test_pom_read_accepts_followup_packet_value() {
-        let request = PomRequest::Read {
+        let request = PomRequest {
             request_id: pom_id(7),
             permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
+            op: PomOp::Read,
         };
         let result = PomRailcomResult::Window {
             request_id: pom_id(7),
@@ -563,21 +505,21 @@ mod tests {
 
         assert_eq!(
             match_pom_result(request, seq(43), result),
-            Some(PomResponse::Value {
+            Ok(Some(PomResponse::Value {
                 request_id: pom_id(7),
                 value: 151,
-            })
+            }))
         );
     }
 
     #[test]
     fn test_pom_write_wire_ack_nack_reports_unsupported_cv() {
-        let request = PomRequest::Write {
+        let request = PomRequest {
             request_id: pom_id(11),
             permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(29),
-            value: 6,
+            op: PomOp::Write(6),
         };
         for ack in [0x0f, 0xf0] {
             let parsed = crate::railcom::parser::parse_channel2(&[ack, 0x3c]).unwrap();
@@ -591,21 +533,21 @@ mod tests {
             .unwrap();
             assert_eq!(
                 match_pom_result(request, seq(50), result),
-                Some(PomResponse::Nack {
+                Ok(Some(PomResponse::Nack {
                     request_id: pom_id(11)
-                })
+                }))
             );
         }
     }
 
     #[test]
     fn test_pom_write_accepts_matching_ack() {
-        let request = PomRequest::Write {
+        let request = PomRequest {
             request_id: pom_id(11),
             permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(29),
-            value: 6,
+            op: PomOp::Write(6),
         };
         let result = PomRailcomResult::Window {
             request_id: pom_id(11),
@@ -618,19 +560,20 @@ mod tests {
 
         assert_eq!(
             match_pom_result(request, seq(50), result),
-            Some(PomResponse::Ack {
+            Ok(Some(PomResponse::Ack {
                 request_id: pom_id(11)
-            })
+            }))
         );
     }
 
     #[test]
     fn test_pom_read_rejects_result_from_previous_request() {
-        let request = PomRequest::Read {
+        let request = PomRequest {
             request_id: pom_id(7),
             permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
+            op: PomOp::Read,
         };
         let result = PomRailcomResult::Window {
             request_id: pom_id(6),
@@ -641,16 +584,20 @@ mod tests {
             nack: false,
         };
 
-        assert_eq!(match_pom_result(request, seq(42), result), None);
+        assert_eq!(
+            match_pom_result(request, seq(42), result),
+            Err(PomMismatch::Stale)
+        );
     }
 
     #[test]
     fn test_pom_read_rejects_followup_packet_from_other_loco() {
-        let request = PomRequest::Read {
+        let request = PomRequest {
             request_id: pom_id(7),
             permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(8),
+            op: PomOp::Read,
         };
         let result = PomRailcomResult::Window {
             request_id: pom_id(7),
@@ -661,16 +608,20 @@ mod tests {
             nack: false,
         };
 
-        assert_eq!(match_pom_result(request, seq(43), result), None);
+        assert_eq!(
+            match_pom_result(request, seq(43), result),
+            Err(PomMismatch::WrongTarget)
+        );
     }
 
     #[test]
     fn test_pom_rejects_delayed_previous_value_in_first_new_request_window() {
-        let request = PomRequest::Read {
+        let request = PomRequest {
             request_id: pom_id(8),
             permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(9),
+            op: PomOp::Read,
         };
         let relabelled_previous_result = PomRailcomResult::Window {
             request_id: pom_id(8),
@@ -683,17 +634,18 @@ mod tests {
 
         assert_eq!(
             match_pom_result(request, seq(101), relabelled_previous_result),
-            None,
+            Err(PomMismatch::Stale),
         );
     }
 
     #[test]
     fn test_pom_sequence_gate_accepts_response_after_u32_wrap() {
-        let request = PomRequest::Read {
+        let request = PomRequest {
             request_id: pom_id(9),
             permit: permit(),
             address: DccAddress::new_short(3).unwrap(),
             cv: pom_cv(10),
+            op: PomOp::Read,
         };
         let result = PomRailcomResult::Window {
             request_id: pom_id(9),
@@ -706,10 +658,30 @@ mod tests {
 
         assert_eq!(
             match_pom_result(request, seq(u32::MAX), result),
-            Some(PomResponse::Value {
+            Ok(Some(PomResponse::Value {
                 request_id: pom_id(9),
                 value: 88,
-            }),
+            })),
+        );
+    }
+
+    #[test]
+    fn pom_request_converts_to_its_golden_packet() {
+        let request = |cv: u16, op: PomOp| PomRequest {
+            request_id: pom_id(1),
+            permit: permit(),
+            address: DccAddress::new_short(3).unwrap(),
+            cv: pom_cv(cv),
+            op,
+        };
+
+        assert_eq!(
+            DccPacket::from(&request(1, PomOp::Read)).to_bytes(),
+            [0x03, 0xE4, 0x00, 0x00, 0xE7]
+        );
+        assert_eq!(
+            DccPacket::from(&request(29, PomOp::Write(0x22))).to_bytes(),
+            [0x03, 0xEC, 0x1C, 0x22, 0xD1]
         );
     }
 }

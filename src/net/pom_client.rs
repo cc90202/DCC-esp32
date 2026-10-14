@@ -17,7 +17,7 @@ use crate::application::locomotive::{
 };
 use crate::application::pom::{PomAdmissionError, prepare_read, prepare_write};
 use crate::dcc::channels::{PomRequestSender, PomResponseReceiver};
-use crate::dcc::{PomRequest, PomRequestId, PomResponse};
+use crate::dcc::{PomOp, PomRequest, PomRequestId, PomResponse};
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::Z21Ctx;
 use crate::net::z21_dispatch::encoded_len;
@@ -85,12 +85,12 @@ pub(super) async fn handle_cv_pom_write(
             ctx.pom.request_sender,
             ctx.pom.response_receiver,
             ctx.pom.next_request_id,
-            |request_id| PomRequest::Write {
+            |request_id| PomRequest {
                 request_id,
                 permit,
                 address: plan.address,
                 cv: plan.cv,
-                value: plan.value,
+                op: PomOp::Write(plan.value),
             },
         )
         .await,
@@ -166,11 +166,12 @@ pub(super) async fn handle_cv_pom_read(
             ctx.pom.request_sender,
             ctx.pom.response_receiver,
             ctx.pom.next_request_id,
-            |request_id| PomRequest::Read {
+            |request_id| PomRequest {
                 request_id,
                 permit,
                 address: plan.address,
                 cv: plan.cv,
+                op: PomOp::Read,
             },
         )
         .await,

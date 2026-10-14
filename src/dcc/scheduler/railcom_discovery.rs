@@ -5,8 +5,14 @@ use super::railcom_policy::{record_track_logon_sent, record_track_search_sent};
 
 /// DCC-A/RailCom track search trigger used when the command station has no
 /// active slots yet but still wants decoders to answer during cutouts.
-const RAILCOM_TRACK_SEARCH_BIN_ADDR: u8 = 2;
-const RAILCOM_LOGON_GROUP_NOW: u8 = 3;
+const RAILCOM_TRACK_SEARCH_BIN_ADDR: BinaryStateAddress = match BinaryStateAddress::new(2) {
+    Some(address) => address,
+    None => panic!("track-search binary-state address out of range"),
+};
+const RAILCOM_LOGON_GROUP_NOW: LogonGroup = match LogonGroup::new(3) {
+    Some(group) => group,
+    None => panic!("logon group out of range"),
+};
 const RAILCOM_LOGON_COMMAND_STATION_ID: u16 = 0x0DCC;
 const RAILCOM_LOGON_SESSION_ID: LogonSessionId = LogonSessionId::new(1);
 const RAILCOM_LOGON_ENABLE_STARTUP_REPEATS: u8 = 3;
@@ -52,33 +58,17 @@ impl RailcomDiscovery {
 
         if self.logon_enable_remaining > 0 {
             self.logon_enable_remaining -= 1;
-            match LogonGroup::new(RAILCOM_LOGON_GROUP_NOW) {
-                Some(group) => {
-                    record_track_logon_sent();
-                    DccPacket::LogonEnable {
-                        group,
-                        command_station_id: RAILCOM_LOGON_COMMAND_STATION_ID,
-                        session_id: RAILCOM_LOGON_SESSION_ID,
-                    }
-                }
-                None => {
-                    defmt::error!("railcom discovery: invalid configured logon group");
-                    DccPacket::Idle
-                }
+            record_track_logon_sent();
+            DccPacket::LogonEnable {
+                group: RAILCOM_LOGON_GROUP_NOW,
+                command_station_id: RAILCOM_LOGON_COMMAND_STATION_ID,
+                session_id: RAILCOM_LOGON_SESSION_ID,
             }
         } else {
-            match BinaryStateAddress::new(RAILCOM_TRACK_SEARCH_BIN_ADDR) {
-                Some(bin_addr) => {
-                    record_track_search_sent();
-                    DccPacket::BroadcastBinaryStateShort {
-                        bin_addr,
-                        state: false,
-                    }
-                }
-                None => {
-                    defmt::error!("railcom discovery: invalid configured track-search address");
-                    DccPacket::Idle
-                }
+            record_track_search_sent();
+            DccPacket::BroadcastBinaryStateShort {
+                bin_addr: RAILCOM_TRACK_SEARCH_BIN_ADDR,
+                state: false,
             }
         }
     }

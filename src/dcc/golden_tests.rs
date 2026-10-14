@@ -22,14 +22,16 @@
 use std::vec::Vec;
 
 use crate::authority::{LeaseEpoch, LeasePermit};
+use crate::dcc::function_groups::{group_bits, group_of};
 use crate::dcc::scheduler::{
     FunctionChange, FunctionIndex, LocoRequest, LocoRequestResult, LogicalSpeed, SchedulerCommand,
     SpeedFormat,
 };
 use crate::dcc::validator::decode_pulses;
 use crate::dcc::{
-    BinaryStateAddress, DccAddress, DccPacket, Direction, LogonGroup, LogonSessionId, NmraSpeed28,
-    NmraSpeed128, PomCv, PomRequestId, ServiceModeCv, SlotManager, encode_dcc_packet,
+    BinaryStateAddress, DccAddress, DccPacket, Direction, FunctionGroupKind, LogonGroup,
+    LogonSessionId, NmraSpeed28, NmraSpeed128, PomCv, PomRequestId, ServiceModeCv, SlotManager,
+    encode_dcc_packet,
 };
 
 /// Upper bound on packets pulled from a [`SlotManager`] while looking for the
@@ -215,45 +217,45 @@ fn golden_packets_a() -> Vec<(&'static str, DccPacket, &'static [u8])> {
         ("emergency stop short 3 reverse", DccPacket::EmergencyStop { address: short(3), direction: Direction::Reverse }, &[0x03, 0x41, 0x42]),
         ("emergency stop long 1234 forward", DccPacket::EmergencyStop { address: long(1234), direction: Direction::Forward }, &[0xC4, 0xD2, 0x61, 0x77]),
         ("emergency stop long 1234 reverse", DccPacket::EmergencyStop { address: long(1234), direction: Direction::Reverse }, &[0xC4, 0xD2, 0x41, 0x57]),
-        ("only F0 set short 3", DccPacket::FunctionGroup1 { address: short(3), fl: true, f1: false, f2: false, f3: false, f4: false }, &[0x03, 0x90, 0x93]),
-        ("only F1 set short 3", DccPacket::FunctionGroup1 { address: short(3), fl: false, f1: true, f2: false, f3: false, f4: false }, &[0x03, 0x81, 0x82]),
-        ("only F2 set short 3", DccPacket::FunctionGroup1 { address: short(3), fl: false, f1: false, f2: true, f3: false, f4: false }, &[0x03, 0x82, 0x81]),
-        ("only F3 set short 3", DccPacket::FunctionGroup1 { address: short(3), fl: false, f1: false, f2: false, f3: true, f4: false }, &[0x03, 0x84, 0x87]),
-        ("only F4 set short 3", DccPacket::FunctionGroup1 { address: short(3), fl: false, f1: false, f2: false, f3: false, f4: true }, &[0x03, 0x88, 0x8B]),
-        ("only F5 set short 3", DccPacket::FunctionGroup2A { address: short(3), f5: true, f6: false, f7: false, f8: false }, &[0x03, 0xB1, 0xB2]),
-        ("only F6 set short 3", DccPacket::FunctionGroup2A { address: short(3), f5: false, f6: true, f7: false, f8: false }, &[0x03, 0xB2, 0xB1]),
-        ("only F7 set short 3", DccPacket::FunctionGroup2A { address: short(3), f5: false, f6: false, f7: true, f8: false }, &[0x03, 0xB4, 0xB7]),
-        ("only F8 set short 3", DccPacket::FunctionGroup2A { address: short(3), f5: false, f6: false, f7: false, f8: true }, &[0x03, 0xB8, 0xBB]),
-        ("only F9 set short 3", DccPacket::FunctionGroup2B { address: short(3), f9: true, f10: false, f11: false, f12: false }, &[0x03, 0xA1, 0xA2]),
-        ("only F10 set short 3", DccPacket::FunctionGroup2B { address: short(3), f9: false, f10: true, f11: false, f12: false }, &[0x03, 0xA2, 0xA1]),
-        ("only F11 set short 3", DccPacket::FunctionGroup2B { address: short(3), f9: false, f10: false, f11: true, f12: false }, &[0x03, 0xA4, 0xA7]),
-        ("only F12 set short 3", DccPacket::FunctionGroup2B { address: short(3), f9: false, f10: false, f11: false, f12: true }, &[0x03, 0xA8, 0xAB]),
-        ("only F13 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: true, f14: false, f15: false, f16: false, f17: false, f18: false, f19: false, f20: false }, &[0x03, 0xDE, 0x01, 0xDC]),
-        ("only F14 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: false, f14: true, f15: false, f16: false, f17: false, f18: false, f19: false, f20: false }, &[0x03, 0xDE, 0x02, 0xDF]),
-        ("only F15 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: false, f14: false, f15: true, f16: false, f17: false, f18: false, f19: false, f20: false }, &[0x03, 0xDE, 0x04, 0xD9]),
-        ("only F16 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: false, f14: false, f15: false, f16: true, f17: false, f18: false, f19: false, f20: false }, &[0x03, 0xDE, 0x08, 0xD5]),
-        ("only F17 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: false, f14: false, f15: false, f16: false, f17: true, f18: false, f19: false, f20: false }, &[0x03, 0xDE, 0x10, 0xCD]),
-        ("only F18 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: false, f14: false, f15: false, f16: false, f17: false, f18: true, f19: false, f20: false }, &[0x03, 0xDE, 0x20, 0xFD]),
-        ("only F19 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: false, f14: false, f15: false, f16: false, f17: false, f18: false, f19: true, f20: false }, &[0x03, 0xDE, 0x40, 0x9D]),
-        ("only F20 set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: false, f14: false, f15: false, f16: false, f17: false, f18: false, f19: false, f20: true }, &[0x03, 0xDE, 0x80, 0x5D]),
-        ("only F21 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: true, f22: false, f23: false, f24: false, f25: false, f26: false, f27: false, f28: false }, &[0x03, 0xDF, 0x01, 0xDD]),
-        ("only F22 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: false, f22: true, f23: false, f24: false, f25: false, f26: false, f27: false, f28: false }, &[0x03, 0xDF, 0x02, 0xDE]),
-        ("only F23 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: false, f22: false, f23: true, f24: false, f25: false, f26: false, f27: false, f28: false }, &[0x03, 0xDF, 0x04, 0xD8]),
-        ("only F24 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: false, f22: false, f23: false, f24: true, f25: false, f26: false, f27: false, f28: false }, &[0x03, 0xDF, 0x08, 0xD4]),
-        ("only F25 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: false, f22: false, f23: false, f24: false, f25: true, f26: false, f27: false, f28: false }, &[0x03, 0xDF, 0x10, 0xCC]),
-        ("only F26 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: false, f22: false, f23: false, f24: false, f25: false, f26: true, f27: false, f28: false }, &[0x03, 0xDF, 0x20, 0xFC]),
-        ("only F27 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: false, f22: false, f23: false, f24: false, f25: false, f26: false, f27: true, f28: false }, &[0x03, 0xDF, 0x40, 0x9C]),
-        ("only F28 set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: false, f22: false, f23: false, f24: false, f25: false, f26: false, f27: false, f28: true }, &[0x03, 0xDF, 0x80, 0x5C]),
-        ("FunctionGroup1 all set short 3", DccPacket::FunctionGroup1 { address: short(3), fl: true, f1: true, f2: true, f3: true, f4: true }, &[0x03, 0x9F, 0x9C]),
-        ("FunctionGroup2A all set short 3", DccPacket::FunctionGroup2A { address: short(3), f5: true, f6: true, f7: true, f8: true }, &[0x03, 0xBF, 0xBC]),
-        ("FunctionGroup2B all set short 3", DccPacket::FunctionGroup2B { address: short(3), f9: true, f10: true, f11: true, f12: true }, &[0x03, 0xAF, 0xAC]),
-        ("FunctionGroup3 all set short 3", DccPacket::FunctionGroup3 { address: short(3), f13: true, f14: true, f15: true, f16: true, f17: true, f18: true, f19: true, f20: true }, &[0x03, 0xDE, 0xFF, 0x22]),
-        ("FunctionGroup4 all set short 3", DccPacket::FunctionGroup4 { address: short(3), f21: true, f22: true, f23: true, f24: true, f25: true, f26: true, f27: true, f28: true }, &[0x03, 0xDF, 0xFF, 0x23]),
-        ("FunctionGroup1 all set long 1234", DccPacket::FunctionGroup1 { address: long(1234), fl: true, f1: true, f2: true, f3: true, f4: true }, &[0xC4, 0xD2, 0x9F, 0x89]),
-        ("FunctionGroup2A all set long 1234", DccPacket::FunctionGroup2A { address: long(1234), f5: true, f6: true, f7: true, f8: true }, &[0xC4, 0xD2, 0xBF, 0xA9]),
-        ("FunctionGroup2B all set long 1234", DccPacket::FunctionGroup2B { address: long(1234), f9: true, f10: true, f11: true, f12: true }, &[0xC4, 0xD2, 0xAF, 0xB9]),
-        ("FunctionGroup3 all set long 1234", DccPacket::FunctionGroup3 { address: long(1234), f13: true, f14: true, f15: true, f16: true, f17: true, f18: true, f19: true, f20: true }, &[0xC4, 0xD2, 0xDE, 0xFF, 0x37]),
-        ("FunctionGroup4 all set long 1234", DccPacket::FunctionGroup4 { address: long(1234), f21: true, f22: true, f23: true, f24: true, f25: true, f26: true, f27: true, f28: true }, &[0xC4, 0xD2, 0xDF, 0xFF, 0x36]),
+        ("only F0 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G1, 0b1_0000), &[0x03, 0x90, 0x93]),
+        ("only F1 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G1, 0b0_0001), &[0x03, 0x81, 0x82]),
+        ("only F2 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G1, 0b0_0010), &[0x03, 0x82, 0x81]),
+        ("only F3 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G1, 0b0_0100), &[0x03, 0x84, 0x87]),
+        ("only F4 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G1, 0b0_1000), &[0x03, 0x88, 0x8B]),
+        ("only F5 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2a, 0b0001), &[0x03, 0xB1, 0xB2]),
+        ("only F6 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2a, 0b0010), &[0x03, 0xB2, 0xB1]),
+        ("only F7 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2a, 0b0100), &[0x03, 0xB4, 0xB7]),
+        ("only F8 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2a, 0b1000), &[0x03, 0xB8, 0xBB]),
+        ("only F9 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2b, 0b0001), &[0x03, 0xA1, 0xA2]),
+        ("only F10 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2b, 0b0010), &[0x03, 0xA2, 0xA1]),
+        ("only F11 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2b, 0b0100), &[0x03, 0xA4, 0xA7]),
+        ("only F12 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2b, 0b1000), &[0x03, 0xA8, 0xAB]),
+        ("only F13 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b0000_0001), &[0x03, 0xDE, 0x01, 0xDC]),
+        ("only F14 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b0000_0010), &[0x03, 0xDE, 0x02, 0xDF]),
+        ("only F15 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b0000_0100), &[0x03, 0xDE, 0x04, 0xD9]),
+        ("only F16 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b0000_1000), &[0x03, 0xDE, 0x08, 0xD5]),
+        ("only F17 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b0001_0000), &[0x03, 0xDE, 0x10, 0xCD]),
+        ("only F18 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b0010_0000), &[0x03, 0xDE, 0x20, 0xFD]),
+        ("only F19 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b0100_0000), &[0x03, 0xDE, 0x40, 0x9D]),
+        ("only F20 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b1000_0000), &[0x03, 0xDE, 0x80, 0x5D]),
+        ("only F21 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b0000_0001), &[0x03, 0xDF, 0x01, 0xDD]),
+        ("only F22 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b0000_0010), &[0x03, 0xDF, 0x02, 0xDE]),
+        ("only F23 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b0000_0100), &[0x03, 0xDF, 0x04, 0xD8]),
+        ("only F24 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b0000_1000), &[0x03, 0xDF, 0x08, 0xD4]),
+        ("only F25 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b0001_0000), &[0x03, 0xDF, 0x10, 0xCC]),
+        ("only F26 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b0010_0000), &[0x03, 0xDF, 0x20, 0xFC]),
+        ("only F27 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b0100_0000), &[0x03, 0xDF, 0x40, 0x9C]),
+        ("only F28 set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b1000_0000), &[0x03, 0xDF, 0x80, 0x5C]),
+        ("G1 all set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G1, 0b1_1111), &[0x03, 0x9F, 0x9C]),
+        ("G2a all set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2a, 0b1111), &[0x03, 0xBF, 0xBC]),
+        ("G2b all set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G2b, 0b1111), &[0x03, 0xAF, 0xAC]),
+        ("G3 all set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G3, 0b1111_1111), &[0x03, 0xDE, 0xFF, 0x22]),
+        ("G4 all set short 3", DccPacket::function_group(short(3), FunctionGroupKind::G4, 0b1111_1111), &[0x03, 0xDF, 0xFF, 0x23]),
+        ("G1 all set long 1234", DccPacket::function_group(long(1234), FunctionGroupKind::G1, 0b1_1111), &[0xC4, 0xD2, 0x9F, 0x89]),
+        ("G2a all set long 1234", DccPacket::function_group(long(1234), FunctionGroupKind::G2a, 0b1111), &[0xC4, 0xD2, 0xBF, 0xA9]),
+        ("G2b all set long 1234", DccPacket::function_group(long(1234), FunctionGroupKind::G2b, 0b1111), &[0xC4, 0xD2, 0xAF, 0xB9]),
+        ("G3 all set long 1234", DccPacket::function_group(long(1234), FunctionGroupKind::G3, 0b1111_1111), &[0xC4, 0xD2, 0xDE, 0xFF, 0x37]),
+        ("G4 all set long 1234", DccPacket::function_group(long(1234), FunctionGroupKind::G4, 0b1111_1111), &[0xC4, 0xD2, 0xDF, 0xFF, 0x36]),
         ("pom write short 3 cv 29 0x22", DccPacket::PomWriteByte { address: short(3), cv: pom_cv(29), value: 0x22 }, &[0x03, 0xEC, 0x1C, 0x22, 0xD1]),
         ("pom write long 1234 cv 1024 0xFF", DccPacket::PomWriteByte { address: long(1234), cv: pom_cv(1024), value: 0xFF }, &[0xC4, 0xD2, 0xEF, 0xFF, 0xFF, 0xF9]),
         ("pom read short 3 cv 1", DccPacket::PomReadByte { address: short(3), cv: pom_cv(1) }, &[0x03, 0xE4, 0x00, 0x00, 0xE7]),
@@ -478,7 +480,7 @@ fn pull_until(
         let packet = manager
             .build_next_packet()
             .expect("an admitted locomotive must keep emitting packets");
-        let bytes = packet.to_bytes().expect("emitted packet must encode");
+        let bytes = packet.to_bytes();
         if bytes.starts_with(&address_prefix(address)) && wanted(instruction_byte(address, &bytes))
         {
             return packet;
@@ -509,7 +511,7 @@ fn run_scenario(scenario: Scenario) -> DccPacket {
             let packet = pull_until(&mut manager, address, |instruction| {
                 function_group_of_instruction(instruction).is_some()
             });
-            let bytes = packet.to_bytes().expect("emitted packet must encode");
+            let bytes = packet.to_bytes();
             assert_eq!(
                 function_group_of_instruction(instruction_byte(address, &bytes)),
                 Some(group),
@@ -560,14 +562,29 @@ fn run_scenario(scenario: Scenario) -> DccPacket {
 #[test]
 fn every_golden_packet_encodes_to_its_recorded_bytes() {
     for (label, packet, expected) in golden_packets_a() {
-        let bytes = packet.to_bytes().expect("golden packet must encode");
+        let bytes = packet.to_bytes();
         assert_eq!(bytes.as_slice(), expected, "A: {label}");
     }
     for (label, scenario, expected) in golden_packets_b() {
-        let bytes = run_scenario(scenario)
-            .to_bytes()
-            .expect("emitted packet must encode");
+        let bytes = run_scenario(scenario).to_bytes();
         assert_eq!(bytes.as_slice(), expected, "B: {label}");
+    }
+}
+
+#[test]
+fn every_single_function_encodes_to_its_golden_bytes() {
+    let corpus = golden_packets_a();
+    let address = short(3);
+    for function in 0..=28u8 {
+        let label = std::format!("only F{function} set short 3");
+        let expected = corpus
+            .iter()
+            .find(|(entry, _, _)| *entry == label)
+            .map(|(_, _, bytes)| *bytes)
+            .unwrap_or_else(|| panic!("no golden entry {label:?}"));
+        let kind = group_of(function);
+        let packet = DccPacket::function_group(address, kind, group_bits(1 << function, kind));
+        assert_eq!(packet.to_bytes().as_slice(), expected, "F{function}");
     }
 }
 
