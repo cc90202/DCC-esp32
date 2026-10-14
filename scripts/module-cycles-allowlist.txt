@@ -1,0 +1,22 @@
+# Module edges that form a cycle between sibling modules and are tolerated by
+# scripts/check-module-deps.sh until the cycle is broken. The list only
+# shrinks: delete an edge once it is no longer part of a cycle, never add one.
+#
+# Format: "from -> to", both module paths under the crate root.
+
+# dcc: the channel definitions name the POM and scheduler message types, while
+# the POM actor and the scheduler send on those channels; dcc::packet and
+# dcc::cv::pom also name each other's items.
+dcc::channels -> dcc::cv
+dcc::channels -> dcc::scheduler
+dcc::cv -> dcc::channels
+dcc::cv -> dcc::packet
+dcc::cv -> dcc::scheduler
+dcc::packet -> dcc::cv
+dcc::scheduler -> dcc::channels
+dcc::scheduler -> dcc::packet
+
+# net: the Z21 dispatcher hands POM requests to the POM client, which sizes its
+# replies with the dispatcher's encoder.
+net::pom_client -> net::z21_dispatch
+net::z21_dispatch -> net::pom_client
