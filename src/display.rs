@@ -5,7 +5,7 @@ use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::channels::{BootReadySender, DisplayReceiver};
 #[cfg(target_arch = "riscv32")]
-use crate::system_status::{BootReadyEvent, announce_ready};
+use crate::system_status::{BootReadyEvent, OptionalPeripheralInit, announce_ready};
 #[cfg(target_arch = "riscv32")]
 use defmt::warn;
 #[cfg(target_arch = "riscv32")]
@@ -207,15 +207,52 @@ fn format_ip(addr: [u8; 4]) -> heapless::String<15> {
 }
 
 #[cfg(target_arch = "riscv32")]
-async fn render(
-    display: &mut Ssd1306Async<
-        I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
-        DisplaySize128x64,
-        BufferedGraphicsModeAsync<DisplaySize128x64>,
-    >,
-    model: &DisplayModel,
-    throbber_frame: u8,
+/// The OLED panel driven by the display task.
+#[cfg(target_arch = "riscv32")]
+type Display = Ssd1306Async<
+    I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+    DisplaySize128x64,
+    BufferedGraphicsModeAsync<DisplaySize128x64>,
+>;
+
+/// Draw the fault row near the bottom of the panel, reusing `line` as scratch.
+#[cfg(target_arch = "riscv32")]
+fn draw_fault_row(
+    target: &mut Display,
+    line: &mut RowText,
+    cause: FaultCause,
+    style: MonoTextStyle<'_, BinaryColor>,
 ) {
+    use core::fmt::Write;
+
+    line.clear();
+    let _ = write!(line, "Fault: {}", fault_label(cause));
+    let _ = Text::new(line, Point::new(0, 56), style).draw(target);
+}
+
+/// Advance the throbber by one frame and schedule the next tick.
+#[cfg(target_arch = "riscv32")]
+fn advance_throbber(frame: &mut u8, next_tick: &mut Instant) {
+    *frame = (*frame + 1) % THROBBER_FRAMES.len() as u8;
+    *next_tick += THROBBER_INTERVAL;
+}
+
+/// Report the display as degraded, then consume display events forever so
+/// their senders never block on a full channel.
+#[cfg(target_arch = "riscv32")]
+async fn drain_degraded(
+    receiver: DisplayReceiver,
+    ready_sender: BootReadySender,
+    cause: OptionalPeripheralInit,
+) -> ! {
+    announce_ready(ready_sender, BootReadyEvent::DisplayDegraded(cause)).await;
+    loop {
+        let _ = receiver.receive().await;
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+async fn render(display: &mut Display, model: &DisplayModel, throbber_frame: u8) {
     use core::fmt::Write;
 
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
@@ -235,9 +272,7 @@ async fn render(
         let _ = Text::new("Track off", Point::new(0, 46), style).draw(display);
 
         if let Some(cause) = model.fault {
-            line.clear();
-            let _ = write!(line, "Fault: {}", fault_label(cause));
-            let _ = Text::new(&line, Point::new(0, 56), style).draw(display);
+            draw_fault_row(display, &mut line, cause, style);
         } else {
             let _ = Text::new("Save and restart", Point::new(0, 56), style).draw(display);
         }
@@ -268,9 +303,7 @@ async fn render(
     let _ = Text::new(&line, Point::new(0, 46), style).draw(display);
 
     if let Some(cause) = model.fault {
-        line.clear();
-        let _ = write!(line, "Fault: {}", fault_label(cause));
-        let _ = Text::new(&line, Point::new(0, 56), style).draw(display);
+        draw_fault_row(display, &mut line, cause, style);
     }
 
     // Animated throbber next to state label when running.
@@ -296,16 +329,12 @@ pub async fn display_task(
 ) -> ! {
     let Some(i2c) = i2c else {
         warn!("display: disabled, draining display events");
-        announce_ready(
+        drain_degraded(
+            receiver,
             ready_sender,
-            BootReadyEvent::DisplayDegraded(
-                crate::system_status::OptionalPeripheralInit::DisplayUnavailable,
-            ),
+            OptionalPeripheralInit::DisplayUnavailable,
         )
-        .await;
-        loop {
-            let _ = receiver.receive().await;
-        }
+        .await
     };
 
     // Allow the SSD1306 to settle after power-on before sending commands.
@@ -316,16 +345,7 @@ pub async fn display_task(
         .into_buffered_graphics_mode();
     if display.init().await.is_err() {
         warn!("display: SSD1306 init failed, draining display events");
-        announce_ready(
-            ready_sender,
-            BootReadyEvent::DisplayDegraded(
-                crate::system_status::OptionalPeripheralInit::DisplayInit,
-            ),
-        )
-        .await;
-        loop {
-            let _ = receiver.receive().await;
-        }
+        drain_degraded(receiver, ready_sender, OptionalPeripheralInit::DisplayInit).await;
     }
 
     announce_ready(ready_sender, BootReadyEvent::DisplayReady).await;
@@ -342,8 +362,7 @@ pub async fn display_task(
             loop {
                 let now = Instant::now();
                 if now >= next_throbber_tick {
-                    throbber_frame = (throbber_frame + 1) % THROBBER_FRAMES.len() as u8;
-                    next_throbber_tick += THROBBER_INTERVAL;
+                    advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
                     break;
                 }
 
@@ -357,8 +376,7 @@ pub async fn display_task(
                         }
                     }
                     Err(_) => {
-                        throbber_frame = (throbber_frame + 1) % THROBBER_FRAMES.len() as u8;
-                        next_throbber_tick += THROBBER_INTERVAL;
+                        advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
                         break;
                     }
                 }
