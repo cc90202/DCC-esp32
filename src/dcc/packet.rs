@@ -25,6 +25,7 @@
 
 use heapless::Vec;
 
+use crate::dcc::function_groups::FunctionGroupKind;
 pub use crate::dcc::speed28::NmraSpeed28;
 use crate::dcc::speed28::encode_nmra_instruction_speed_bits;
 
@@ -490,7 +491,7 @@ pub enum DccPacket {
     Reset,
     /// 28-speed step format with direction
     /// Per NMRA S-9.2, bit C is speed LSB (interleaved), NOT headlight.
-    /// Use FunctionGroup1 to control FL (headlight).
+    /// FL (headlight) travels in function group G1.
     Speed28 {
         address: DccAddress,
         direction: Direction,
@@ -502,59 +503,15 @@ pub enum DccPacket {
         direction: Direction,
         speed: NmraSpeed128,
     },
-    /// Function Group One: FL (headlight), F1-F4
-    /// Encoding: 100DDDDD where D4=FL, D3=F4, D2=F3, D1=F2, D0=F1
-    FunctionGroup1 {
+    /// Function group packet: the decoder's functions of one NMRA group.
+    ///
+    /// `bits` holds the group's data bits as laid out on the wire (see
+    /// [`FunctionGroupKind`]); bits outside the group's data mask are
+    /// ignored when encoding. Build it with [`DccPacket::function_group`].
+    FunctionGroup {
         address: DccAddress,
-        fl: bool,
-        f1: bool,
-        f2: bool,
-        f3: bool,
-        f4: bool,
-    },
-    /// Function Group Two (F5-F8)
-    /// Encoding: 1011DDDD where D3=F8, D2=F7, D1=F6, D0=F5
-    FunctionGroup2A {
-        address: DccAddress,
-        f5: bool,
-        f6: bool,
-        f7: bool,
-        f8: bool,
-    },
-    /// Function Group Two (F9-F12)
-    /// Encoding: 1010DDDD where D3=F12, D2=F11, D1=F10, D0=F9
-    FunctionGroup2B {
-        address: DccAddress,
-        f9: bool,
-        f10: bool,
-        f11: bool,
-        f12: bool,
-    },
-    /// Function Group 3 (F13-F20), binary state control long form
-    /// Encoding: 0xDE DDDDDDDD where D0=F13, D7=F20
-    FunctionGroup3 {
-        address: DccAddress,
-        f13: bool,
-        f14: bool,
-        f15: bool,
-        f16: bool,
-        f17: bool,
-        f18: bool,
-        f19: bool,
-        f20: bool,
-    },
-    /// Function Group 4 (F21-F28), binary state control long form
-    /// Encoding: 0xDF DDDDDDDD where D0=F21, D7=F28
-    FunctionGroup4 {
-        address: DccAddress,
-        f21: bool,
-        f22: bool,
-        f23: bool,
-        f24: bool,
-        f25: bool,
-        f26: bool,
-        f27: bool,
-        f28: bool,
+        kind: FunctionGroupKind,
+        bits: u8,
     },
     /// Emergency stop for a specific decoder
     /// Encoding: address + 01DC0001 where C=0 (NMRA S-9.2 e-stop) + checksum
@@ -663,11 +620,7 @@ impl DccPacket {
         match *self {
             DccPacket::Speed28 { address, .. }
             | DccPacket::Speed128 { address, .. }
-            | DccPacket::FunctionGroup1 { address, .. }
-            | DccPacket::FunctionGroup2A { address, .. }
-            | DccPacket::FunctionGroup2B { address, .. }
-            | DccPacket::FunctionGroup3 { address, .. }
-            | DccPacket::FunctionGroup4 { address, .. }
+            | DccPacket::FunctionGroup { address, .. }
             | DccPacket::EmergencyStop { address, .. }
             | DccPacket::PomWriteByte { address, .. }
             | DccPacket::PomReadByte { address, .. } => Some(address),
@@ -705,44 +658,6 @@ impl DccPacket {
         Self::direction_mask(direction, 0x80) | (wire_speed & 0x7F)
     }
 
-    fn encode_function_group1(fl: bool, f1: bool, f2: bool, f3: bool, f4: bool) -> u8 {
-        // 100DDDDD: D4=FL, D3=F4, D2=F3, D1=F2, D0=F1
-        0b1000_0000
-            | Self::bool_mask(fl, 0b0001_0000)
-            | Self::bool_mask(f4, 0b0000_1000)
-            | Self::bool_mask(f3, 0b0000_0100)
-            | Self::bool_mask(f2, 0b0000_0010)
-            | Self::bool_mask(f1, 0b0000_0001)
-    }
-
-    fn encode_function_group2a(f5: bool, f6: bool, f7: bool, f8: bool) -> u8 {
-        // 1011DDDD: D3=F8, D2=F7, D1=F6, D0=F5
-        0b1011_0000
-            | Self::bool_mask(f8, 0b0000_1000)
-            | Self::bool_mask(f7, 0b0000_0100)
-            | Self::bool_mask(f6, 0b0000_0010)
-            | Self::bool_mask(f5, 0b0000_0001)
-    }
-
-    fn encode_function_group2b(f9: bool, f10: bool, f11: bool, f12: bool) -> u8 {
-        // 1010DDDD: D3=F12, D2=F11, D1=F10, D0=F9
-        0b1010_0000
-            | Self::bool_mask(f12, 0b0000_1000)
-            | Self::bool_mask(f11, 0b0000_0100)
-            | Self::bool_mask(f10, 0b0000_0010)
-            | Self::bool_mask(f9, 0b0000_0001)
-    }
-
-    fn encode_function_group_data(functions: [bool; 8]) -> u8 {
-        // DDDDDDDD: bit0..bit7 map to the corresponding function flags in order.
-        functions
-            .iter()
-            .enumerate()
-            .fold(0u8, |acc, (idx, enabled)| {
-                acc | Self::bool_mask(*enabled, 1u8 << idx)
-            })
-    }
-
     fn encode_emergency_stop_instruction(direction: Direction) -> u8 {
         // E-stop per NMRA S-9.2: 01DC0001 with C=0, SSSS=0001
         0b0100_0001 | Self::direction_mask(direction, 0b0010_0000)
@@ -761,6 +676,19 @@ impl DccPacket {
     #[cfg(test)]
     pub fn idle() -> Self {
         DccPacket::Idle
+    }
+
+    /// Create a function group packet for `address`.
+    ///
+    /// `bits` are the group's data bits as laid out on the wire; bits outside
+    /// `kind`'s data mask are dropped so equal packets compare equal.
+    #[must_use]
+    pub const fn function_group(address: DccAddress, kind: FunctionGroupKind, bits: u8) -> Self {
+        DccPacket::FunctionGroup {
+            address,
+            kind,
+            bits: bits & kind.data_mask(),
+        }
     }
 
     /// Create a 28-step speed packet.
@@ -823,70 +751,26 @@ impl DccPacket {
                 packet.push(0x3F);
                 packet.push(Self::encode_speed128_data(direction, speed));
             }
-            DccPacket::FunctionGroup1 {
+            DccPacket::FunctionGroup {
                 address,
-                fl,
-                f1,
-                f2,
-                f3,
-                f4,
+                kind,
+                bits,
             } => {
+                let data = bits & kind.data_mask();
                 packet.push_address(address);
-                packet.push(Self::encode_function_group1(fl, f1, f2, f3, f4));
-            }
-            DccPacket::FunctionGroup2A {
-                address,
-                f5,
-                f6,
-                f7,
-                f8,
-            } => {
-                packet.push_address(address);
-                packet.push(Self::encode_function_group2a(f5, f6, f7, f8));
-            }
-            DccPacket::FunctionGroup2B {
-                address,
-                f9,
-                f10,
-                f11,
-                f12,
-            } => {
-                packet.push_address(address);
-                packet.push(Self::encode_function_group2b(f9, f10, f11, f12));
-            }
-            DccPacket::FunctionGroup3 {
-                address,
-                f13,
-                f14,
-                f15,
-                f16,
-                f17,
-                f18,
-                f19,
-                f20,
-            } => {
-                packet.push_address(address);
-                packet.push(0xDE); // Binary state control F13-F20
-                packet.push(Self::encode_function_group_data([
-                    f13, f14, f15, f16, f17, f18, f19, f20,
-                ]));
-            }
-            DccPacket::FunctionGroup4 {
-                address,
-                f21,
-                f22,
-                f23,
-                f24,
-                f25,
-                f26,
-                f27,
-                f28,
-            } => {
-                packet.push_address(address);
-                packet.push(0xDF); // Binary state control F21-F28
-                packet.push(Self::encode_function_group_data([
-                    f21, f22, f23, f24, f25, f26, f27, f28,
-                ]));
+                match kind {
+                    FunctionGroupKind::G1 => packet.push(0b1000_0000 | data),
+                    FunctionGroupKind::G2a => packet.push(0b1011_0000 | data),
+                    FunctionGroupKind::G2b => packet.push(0b1010_0000 | data),
+                    FunctionGroupKind::G3 => {
+                        packet.push(0xDE);
+                        packet.push(data);
+                    }
+                    FunctionGroupKind::G4 => {
+                        packet.push(0xDF);
+                        packet.push(data);
+                    }
+                }
             }
             DccPacket::EmergencyStop { address, direction } => {
                 packet.push_address(address);
@@ -1021,11 +905,7 @@ mod tests {
             DccPacket::Reset => "Reset",
             DccPacket::Speed28 { .. } => "Speed28",
             DccPacket::Speed128 { .. } => "Speed128",
-            DccPacket::FunctionGroup1 { .. } => "FunctionGroup1",
-            DccPacket::FunctionGroup2A { .. } => "FunctionGroup2A",
-            DccPacket::FunctionGroup2B { .. } => "FunctionGroup2B",
-            DccPacket::FunctionGroup3 { .. } => "FunctionGroup3",
-            DccPacket::FunctionGroup4 { .. } => "FunctionGroup4",
+            DccPacket::FunctionGroup { .. } => "FunctionGroup",
             DccPacket::EmergencyStop { .. } => "EmergencyStop",
             DccPacket::BroadcastStop => "BroadcastStop",
             DccPacket::BroadcastBinaryStateShort { .. } => "BroadcastBinaryStateShort",
@@ -1070,50 +950,8 @@ mod tests {
                 direction: Direction::Reverse,
                 speed: NmraSpeed128::new(126).unwrap(),
             },
-            DccPacket::FunctionGroup1 {
-                address: long_address,
-                fl: true,
-                f1: true,
-                f2: true,
-                f3: true,
-                f4: true,
-            },
-            DccPacket::FunctionGroup2A {
-                address: long_address,
-                f5: true,
-                f6: true,
-                f7: true,
-                f8: true,
-            },
-            DccPacket::FunctionGroup2B {
-                address: long_address,
-                f9: true,
-                f10: true,
-                f11: true,
-                f12: true,
-            },
-            DccPacket::FunctionGroup3 {
-                address: long_address,
-                f13: true,
-                f14: true,
-                f15: true,
-                f16: true,
-                f17: true,
-                f18: true,
-                f19: true,
-                f20: true,
-            },
-            DccPacket::FunctionGroup4 {
-                address: long_address,
-                f21: true,
-                f22: true,
-                f23: true,
-                f24: true,
-                f25: true,
-                f26: true,
-                f27: true,
-                f28: true,
-            },
+            // G4 is the longest function group form (instruction + data byte).
+            DccPacket::function_group(long_address, FunctionGroupKind::G4, u8::MAX),
             DccPacket::EmergencyStop {
                 address: long_address,
                 direction: Direction::Forward,
@@ -1326,61 +1164,20 @@ mod tests {
     }
 
     #[test]
-    fn test_function_group1_encoding() {
+    fn function_group_bits_never_reach_the_opcode() {
         let addr = DccAddress::new_short(3).unwrap();
-        let packet = DccPacket::FunctionGroup1 {
+        // The constructor drops bits outside the group's data field...
+        assert_eq!(
+            DccPacket::function_group(addr, FunctionGroupKind::G2a, 0xFF),
+            DccPacket::function_group(addr, FunctionGroupKind::G2a, 0x0F)
+        );
+        // ...and so does the encoder for a packet built without it.
+        let raw = DccPacket::FunctionGroup {
             address: addr,
-            fl: true,
-            f1: true,
-            f2: false,
-            f3: true,
-            f4: false,
+            kind: FunctionGroupKind::G1,
+            bits: 0xFF,
         };
-        let bytes = packet.to_bytes();
-        // instruction = 100DDDDD = 0b1000_0000 | FL(0b1_0000) | F4(0) | F3(0b100) | F2(0) | F1(0b1)
-        // = 0b1001_0101 = 0x95
-        assert_eq!(bytes.len(), 3);
-        assert_eq!(bytes[0], 3);
-        assert_eq!(bytes[1], 0b1001_0101);
-        assert_eq!(bytes[2], 3 ^ 0b1001_0101);
-    }
-
-    #[test]
-    fn test_function_group2a_encoding() {
-        let addr = DccAddress::new_short(5).unwrap();
-        let packet = DccPacket::FunctionGroup2A {
-            address: addr,
-            f5: true,
-            f6: false,
-            f7: true,
-            f8: false,
-        };
-        let bytes = packet.to_bytes();
-        // instruction = 1011DDDD = 0b1011_0000 | F8(0) | F7(0b100) | F6(0) | F5(0b1)
-        // = 0b1011_0101 = 0xB5
-        assert_eq!(bytes.len(), 3);
-        assert_eq!(bytes[0], 5);
-        assert_eq!(bytes[1], 0b1011_0101);
-        assert_eq!(bytes[2], 5 ^ 0b1011_0101);
-    }
-
-    #[test]
-    fn test_function_group2b_encoding() {
-        let addr = DccAddress::new_short(5).unwrap();
-        let packet = DccPacket::FunctionGroup2B {
-            address: addr,
-            f9: false,
-            f10: false,
-            f11: true,
-            f12: true,
-        };
-        let bytes = packet.to_bytes();
-        // instruction = 1010DDDD = 0b1010_0000 | F12(0b1000) | F11(0b100) | F10(0) | F9(0)
-        // = 0b1010_1100 = 0xAC
-        assert_eq!(bytes.len(), 3);
-        assert_eq!(bytes[0], 5);
-        assert_eq!(bytes[1], 0b1010_1100);
-        assert_eq!(bytes[2], 5 ^ 0b1010_1100);
+        assert_eq!(raw.to_bytes().as_slice(), &[0x03, 0x9F, 0x9C]);
     }
 
     #[test]
@@ -1478,98 +1275,6 @@ mod tests {
         let reset = DccPacket::Reset.to_bytes();
         // BroadcastStop has instruction byte 0x61, Reset has 0x00
         assert_ne!(stop.as_slice(), reset.as_slice());
-    }
-
-    #[test]
-    fn test_function_group3_encoding() {
-        let addr = DccAddress::new_short(5).unwrap();
-        let packet = DccPacket::FunctionGroup3 {
-            address: addr,
-            f13: true,
-            f14: false,
-            f15: true,
-            f16: false,
-            f17: false,
-            f18: true,
-            f19: false,
-            f20: true,
-        };
-        let bytes = packet.to_bytes();
-        // data = 0b1010_0101 (F20=1, F18=1, F15=1, F13=1)
-        assert_eq!(bytes.len(), 4);
-        assert_eq!(bytes[0], 5);
-        assert_eq!(bytes[1], 0xDE);
-        assert_eq!(bytes[2], 0b1010_0101);
-        assert_eq!(bytes[3], 5 ^ 0xDE ^ 0b1010_0101);
-    }
-
-    #[test]
-    fn test_function_group4_encoding() {
-        let addr = DccAddress::new_short(7).unwrap();
-        let packet = DccPacket::FunctionGroup4 {
-            address: addr,
-            f21: false,
-            f22: true,
-            f23: false,
-            f24: true,
-            f25: true,
-            f26: false,
-            f27: false,
-            f28: true,
-        };
-        let bytes = packet.to_bytes();
-        // data = 0b1001_1010 (F28=1, F25=1, F24=1, F22=1)
-        assert_eq!(bytes.len(), 4);
-        assert_eq!(bytes[0], 7);
-        assert_eq!(bytes[1], 0xDF);
-        assert_eq!(bytes[2], 0b1001_1010);
-        assert_eq!(bytes[3], 7 ^ 0xDF ^ 0b1001_1010);
-    }
-
-    #[test]
-    fn test_function_group3_long_address_encoding() {
-        let addr = DccAddress::new_long(1000).unwrap(); // 0x03E8 -> [0xC3, 0xE8]
-        let packet = DccPacket::FunctionGroup3 {
-            address: addr,
-            f13: true,
-            f14: false,
-            f15: true,
-            f16: false,
-            f17: false,
-            f18: true,
-            f19: false,
-            f20: true,
-        };
-        let bytes = packet.to_bytes();
-        assert_eq!(bytes.len(), 5);
-        assert_eq!(bytes[0], 0xC3);
-        assert_eq!(bytes[1], 0xE8);
-        assert_eq!(bytes[2], 0xDE);
-        assert_eq!(bytes[3], 0b1010_0101);
-        assert_eq!(bytes[4], 0xC3 ^ 0xE8 ^ 0xDE ^ 0b1010_0101);
-    }
-
-    #[test]
-    fn test_function_group4_long_address_encoding() {
-        let addr = DccAddress::new_long(1000).unwrap(); // 0x03E8 -> [0xC3, 0xE8]
-        let packet = DccPacket::FunctionGroup4 {
-            address: addr,
-            f21: false,
-            f22: true,
-            f23: false,
-            f24: true,
-            f25: true,
-            f26: false,
-            f27: false,
-            f28: true,
-        };
-        let bytes = packet.to_bytes();
-        assert_eq!(bytes.len(), 5);
-        assert_eq!(bytes[0], 0xC3);
-        assert_eq!(bytes[1], 0xE8);
-        assert_eq!(bytes[2], 0xDF);
-        assert_eq!(bytes[3], 0b1001_1010);
-        assert_eq!(bytes[4], 0xC3 ^ 0xE8 ^ 0xDF ^ 0b1001_1010);
     }
 
     #[test]

@@ -5,6 +5,7 @@ use heapless::Vec;
 use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::cutout::CutoutMode;
 use crate::dcc::PomRequestId;
+use crate::dcc::function_groups::{GROUP_LAYOUTS, group_bits, group_of};
 use crate::dcc::packet::{DccAddress, DccPacket, Direction};
 use crate::dcc::speed28::logical_to_nmra_packet_speed;
 
@@ -27,6 +28,13 @@ static SCHEDULER_INVARIANT_RECOVERY_COUNT: AtomicU32 = AtomicU32::new(0);
 pub(super) const MAX_FUNCTION_REFRESH_MS: u64 = 400;
 /// Additional immediate retransmissions after a function state change.
 pub(super) const DIRTY_FUNCTION_RETRY_COUNT: u8 = 6;
+
+/// Number of function groups, one per entry of `GROUP_LAYOUTS`.
+const GROUP_COUNT: u8 = GROUP_LAYOUTS.len() as u8;
+
+// Each group keeps a 3-bit retry counter packed into `dirty_function_retries`.
+const _: () = assert!(GROUP_LAYOUTS.len() * 3 <= u16::BITS as usize);
+
 /// Additional immediate retransmissions after a stop command.
 pub(super) const DIRTY_STOP_RETRY_COUNT: u8 = 4;
 /// Small bounded queue for programming-on-main packet sequences.
@@ -120,7 +128,7 @@ impl Slot {
             self.functions &= !bit;
         }
 
-        let group = function_group(function);
+        let group = group_of(function).index();
         let group_bit = 1u8 << group;
         self.dirty_function_groups |= group_bit;
         self.set_dirty_retries(group, DIRTY_FUNCTION_RETRY_COUNT);
@@ -145,52 +153,8 @@ impl Slot {
     }
 
     fn function_packet_for_group(&self, group: u8) -> DccPacket {
-        match group {
-            0 => DccPacket::FunctionGroup1 {
-                address: self.address,
-                fl: self.function_enabled(0),
-                f1: self.function_enabled(1),
-                f2: self.function_enabled(2),
-                f3: self.function_enabled(3),
-                f4: self.function_enabled(4),
-            },
-            1 => DccPacket::FunctionGroup2A {
-                address: self.address,
-                f5: self.function_enabled(5),
-                f6: self.function_enabled(6),
-                f7: self.function_enabled(7),
-                f8: self.function_enabled(8),
-            },
-            2 => DccPacket::FunctionGroup2B {
-                address: self.address,
-                f9: self.function_enabled(9),
-                f10: self.function_enabled(10),
-                f11: self.function_enabled(11),
-                f12: self.function_enabled(12),
-            },
-            3 => DccPacket::FunctionGroup3 {
-                address: self.address,
-                f13: self.function_enabled(13),
-                f14: self.function_enabled(14),
-                f15: self.function_enabled(15),
-                f16: self.function_enabled(16),
-                f17: self.function_enabled(17),
-                f18: self.function_enabled(18),
-                f19: self.function_enabled(19),
-                f20: self.function_enabled(20),
-            },
-            _ => DccPacket::FunctionGroup4 {
-                address: self.address,
-                f21: self.function_enabled(21),
-                f22: self.function_enabled(22),
-                f23: self.function_enabled(23),
-                f24: self.function_enabled(24),
-                f25: self.function_enabled(25),
-                f26: self.function_enabled(26),
-                f27: self.function_enabled(27),
-                f28: self.function_enabled(28),
-            },
-        }
+        let kind = GROUP_LAYOUTS[usize::from(group)].kind;
+        DccPacket::function_group(self.address, kind, group_bits(self.functions, kind))
     }
 
     fn function_enabled(&self, function: u8) -> bool {
@@ -203,8 +167,8 @@ impl Slot {
             return None;
         }
 
-        for offset in 0..5 {
-            let group = (self.next_function_group + offset) % 5;
+        for offset in 0..GROUP_COUNT {
+            let group = (self.next_function_group + offset) % GROUP_COUNT;
             let bit = 1u8 << group;
             if (self.dirty_function_groups & bit) != 0 {
                 let retries = self.dirty_retries(group);
@@ -214,7 +178,7 @@ impl Slot {
                 } else {
                     self.set_dirty_retries(group, retries - 1);
                 }
-                self.next_function_group = (group + 1) % 5;
+                self.next_function_group = (group + 1) % GROUP_COUNT;
                 return Some(self.function_packet_for_group(group));
             }
         }
@@ -275,11 +239,11 @@ impl Slot {
             return None;
         }
 
-        for offset in 0..5 {
-            let group = (self.next_function_group + offset) % 5;
+        for offset in 0..GROUP_COUNT {
+            let group = (self.next_function_group + offset) % GROUP_COUNT;
             let bit = 1u8 << group;
             if (active_groups & bit) != 0 {
-                self.next_function_group = (group + 1) % 5;
+                self.next_function_group = (group + 1) % GROUP_COUNT;
                 return Some(self.function_packet_for_group(group));
             }
         }
@@ -287,28 +251,11 @@ impl Slot {
     }
 
     fn active_function_group_mask(&self) -> u8 {
-        let mut mask = 0u8;
-        // F0(FL)..F4 -> FunctionGroup1
-        if (self.functions & 0b0000_0000_0000_0000_0000_0000_0001_1111) != 0 {
-            mask |= 1 << 0;
-        }
-        // F5..F8 -> FunctionGroup2A
-        if (self.functions & 0b0000_0000_0000_0000_0000_0001_1110_0000) != 0 {
-            mask |= 1 << 1;
-        }
-        // F9..F12 -> FunctionGroup2B
-        if (self.functions & 0b0000_0000_0000_0000_0001_1110_0000_0000) != 0 {
-            mask |= 1 << 2;
-        }
-        // F13..F20 -> FunctionGroup3
-        if (self.functions & 0b0000_0000_0001_1111_1110_0000_0000_0000) != 0 {
-            mask |= 1 << 3;
-        }
-        // F21..F28 -> FunctionGroup4
-        if (self.functions & 0b0001_1111_1110_0000_0000_0000_0000_0000) != 0 {
-            mask |= 1 << 4;
-        }
-        mask | self.known_groups
+        let active = GROUP_LAYOUTS
+            .iter()
+            .filter(|layout| self.functions & layout.mask != 0)
+            .fold(0u8, |mask, layout| mask | (1 << layout.kind.index()));
+        active | self.known_groups
     }
 
     fn dirty_retries(&self, group: u8) -> u8 {
@@ -583,14 +530,4 @@ pub(super) fn allowed_slot_visits_without_function(slot_count: usize) -> u8 {
     let slot_period_ms = scheduler_tick_ms_for_slot_count(slot_count) * slot_count.max(1) as u64;
     let visits = (MAX_FUNCTION_REFRESH_MS / slot_period_ms).max(1);
     visits.min(u8::MAX as u64) as u8
-}
-
-fn function_group(function: u8) -> u8 {
-    match function {
-        0..=4 => 0,
-        5..=8 => 1,
-        9..=12 => 2,
-        13..=20 => 3,
-        _ => 4,
-    }
 }

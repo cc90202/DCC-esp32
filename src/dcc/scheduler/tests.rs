@@ -8,6 +8,7 @@ use super::slot_manager::{
 };
 use super::*;
 use crate::dcc::CutoutMode;
+use crate::dcc::FunctionGroupKind;
 use crate::dcc::packet::PomCv;
 
 fn addr(n: u8) -> DccAddress {
@@ -812,14 +813,7 @@ fn test_set_function_generates_function_packets() {
 
     // Then function dirty groups should be emitted.
     let p = mgr.build_next_packet().unwrap();
-    assert!(matches!(
-        p,
-        DccPacket::FunctionGroup1 { .. }
-            | DccPacket::FunctionGroup2A { .. }
-            | DccPacket::FunctionGroup2B { .. }
-            | DccPacket::FunctionGroup3 { .. }
-            | DccPacket::FunctionGroup4 { .. }
-    ));
+    assert!(matches!(p, DccPacket::FunctionGroup { .. }));
 }
 
 #[test]
@@ -840,14 +834,7 @@ fn test_function_refresh_fairness_speed_then_function() {
         p1,
         DccPacket::Speed28 { .. } | DccPacket::Speed128 { .. }
     ));
-    assert!(matches!(
-        p2,
-        DccPacket::FunctionGroup1 { .. }
-            | DccPacket::FunctionGroup2A { .. }
-            | DccPacket::FunctionGroup2B { .. }
-            | DccPacket::FunctionGroup3 { .. }
-            | DccPacket::FunctionGroup4 { .. }
-    ));
+    assert!(matches!(p2, DccPacket::FunctionGroup { .. }));
 }
 
 #[test]
@@ -939,14 +926,22 @@ fn test_f13_f28_dirty_and_refresh() {
     let mut seen_fg4 = false;
     for p in [p1, p2] {
         match p {
-            DccPacket::FunctionGroup3 { address, f15, .. } => {
+            DccPacket::FunctionGroup {
+                address,
+                kind: FunctionGroupKind::G3,
+                bits,
+            } => {
                 assert_eq!(address, addr(3));
-                assert!(f15);
+                assert_eq!(bits, 1 << (15 - 13), "F15 is data bit 2 of G3");
                 seen_fg3 = true;
             }
-            DccPacket::FunctionGroup4 { address, f25, .. } => {
+            DccPacket::FunctionGroup {
+                address,
+                kind: FunctionGroupKind::G4,
+                bits,
+            } => {
                 assert_eq!(address, addr(3));
-                assert!(f25);
+                assert_eq!(bits, 1 << (25 - 21), "F25 is data bit 4 of G4");
                 seen_fg4 = true;
             }
             _ => {}
@@ -1004,11 +999,7 @@ fn test_function_refresh_bound_under_12_slots() {
             .build_next_packet_with_function_budget(max_visits)
             .unwrap_or(DccPacket::Idle);
         let address = match packet {
-            DccPacket::FunctionGroup1 { address, .. }
-            | DccPacket::FunctionGroup2A { address, .. }
-            | DccPacket::FunctionGroup2B { address, .. }
-            | DccPacket::FunctionGroup3 { address, .. }
-            | DccPacket::FunctionGroup4 { address, .. } => Some(address),
+            DccPacket::FunctionGroup { address, .. } => Some(address),
             _ => None,
         };
 
@@ -1429,24 +1420,29 @@ fn test_function_group_refreshed_after_all_off() {
     let mut mgr = SlotManager::new();
     let _ = set_function(&mut mgr, addr(3), 0, true);
     // No dirty speed packet when slot is created by function-only command
-    mgr.build_next_packet(); // dirty FunctionGroup1{fl:true}
+    mgr.build_next_packet(); // dirty G1 with FL on
 
     let _ = set_function(&mut mgr, addr(3), 0, false);
-    mgr.build_next_packet(); // dirty FunctionGroup1{fl:false}
+    mgr.build_next_packet(); // dirty G1 with FL off
 
     // After: functions=0, known_groups=0b00001
-    // The refresh loop MUST continue sending FunctionGroup1
+    // The refresh loop MUST continue sending G1
     let mut got_fg1 = false;
     for _ in 0..20 {
-        if let Some(DccPacket::FunctionGroup1 { fl, .. }) = mgr.build_next_packet() {
-            assert!(!fl, "fl must be false after F0 OFF");
+        if let Some(DccPacket::FunctionGroup {
+            kind: FunctionGroupKind::G1,
+            bits,
+            ..
+        }) = mgr.build_next_packet()
+        {
+            assert_eq!(bits, 0, "FL must be off after F0 OFF");
             got_fg1 = true;
             break;
         }
     }
     assert!(
         got_fg1,
-        "FunctionGroup1 must appear in refresh even with all functions off"
+        "G1 must appear in refresh even with all functions off"
     );
 }
 

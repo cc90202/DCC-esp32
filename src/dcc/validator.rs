@@ -347,12 +347,7 @@ pub fn validate_nmra_compliance(packet: &DccPacket) -> Result<(), ValidationErro
             // Speed range guaranteed by NmraSpeed128 newtype (0-126)
             validate_address(address)?;
         }
-        DccPacket::FunctionGroup1 { address, .. }
-        | DccPacket::FunctionGroup2A { address, .. }
-        | DccPacket::FunctionGroup2B { address, .. }
-        | DccPacket::FunctionGroup3 { address, .. }
-        | DccPacket::FunctionGroup4 { address, .. }
-        | DccPacket::EmergencyStop { address, .. } => {
+        DccPacket::FunctionGroup { address, .. } | DccPacket::EmergencyStop { address, .. } => {
             validate_address(address)?;
         }
         DccPacket::PomWriteByte { address, .. } | DccPacket::PomReadByte { address, .. } => {
@@ -466,8 +461,10 @@ pub fn validate_complete(packet: &DccPacket) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dcc::function_groups::GROUP_LAYOUTS;
     use crate::dcc::{
-        DccAddress, Direction, NmraSpeed28, NmraSpeed128, PomCv, ServiceModeCv, encode_dcc_packet,
+        DccAddress, Direction, FunctionGroupKind, NmraSpeed28, NmraSpeed128, PomCv, ServiceModeCv,
+        encode_dcc_packet,
     };
 
     fn service_cv(cv: u16) -> ServiceModeCv {
@@ -524,18 +521,22 @@ mod tests {
     }
 
     #[test]
-    fn test_full_validation_function_group1() {
-        let addr = DccAddress::new_short(5).unwrap();
-        let packet = DccPacket::FunctionGroup1 {
-            address: addr,
-            fl: true,
-            f1: true,
-            f2: false,
-            f3: false,
-            f4: true,
-        };
-        let pulses = encode_dcc_packet(&packet).unwrap();
-        assert!(validate_full(&packet, &pulses).is_ok());
+    fn test_full_validation_every_function_group() {
+        let addresses = [
+            DccAddress::new_short(5).unwrap(),
+            DccAddress::new_long(1000).unwrap(),
+        ];
+        for address in addresses {
+            for layout in GROUP_LAYOUTS {
+                let packet = DccPacket::function_group(address, layout.kind, 0b1010_0101);
+                let pulses = encode_dcc_packet(&packet).unwrap();
+                assert!(
+                    validate_full(&packet, &pulses).is_ok(),
+                    "{:?} at {address:?}",
+                    layout.kind
+                );
+            }
+        }
     }
 
     #[test]
@@ -648,28 +649,9 @@ mod tests {
                 address: addr,
                 direction: Direction::Forward,
             },
-            DccPacket::FunctionGroup1 {
-                address: addr,
-                fl: true,
-                f1: false,
-                f2: true,
-                f3: false,
-                f4: true,
-            },
-            DccPacket::FunctionGroup2A {
-                address: addr,
-                f5: true,
-                f6: true,
-                f7: false,
-                f8: false,
-            },
-            DccPacket::FunctionGroup2B {
-                address: addr,
-                f9: false,
-                f10: true,
-                f11: false,
-                f12: true,
-            },
+            DccPacket::function_group(addr, FunctionGroupKind::G1, 0b11010),
+            DccPacket::function_group(addr, FunctionGroupKind::G2a, 0b0011),
+            DccPacket::function_group(addr, FunctionGroupKind::G2b, 0b1010),
         ];
         for packet in packets {
             assert!(
@@ -693,14 +675,7 @@ mod tests {
                 address: addr,
                 direction: Direction::Forward,
             },
-            DccPacket::FunctionGroup1 {
-                address: addr,
-                fl: true,
-                f1: false,
-                f2: true,
-                f3: false,
-                f4: true,
-            },
+            DccPacket::function_group(addr, FunctionGroupKind::G1, 0b11010),
         ];
         for packet in packets {
             let pulses = encode_dcc_packet(packet).unwrap();
@@ -721,78 +696,6 @@ mod tests {
             result,
             Err(ValidationError::PacketTooShort { .. })
         ));
-    }
-
-    #[test]
-    fn test_full_validation_function_group3() {
-        let addr = DccAddress::new_short(5).unwrap();
-        let packet = DccPacket::FunctionGroup3 {
-            address: addr,
-            f13: true,
-            f14: false,
-            f15: true,
-            f16: false,
-            f17: false,
-            f18: true,
-            f19: false,
-            f20: true,
-        };
-        let pulses = encode_dcc_packet(&packet).unwrap();
-        assert!(validate_full(&packet, &pulses).is_ok());
-    }
-
-    #[test]
-    fn test_full_validation_function_group4() {
-        let addr = DccAddress::new_short(7).unwrap();
-        let packet = DccPacket::FunctionGroup4 {
-            address: addr,
-            f21: false,
-            f22: true,
-            f23: false,
-            f24: true,
-            f25: true,
-            f26: false,
-            f27: false,
-            f28: true,
-        };
-        let pulses = encode_dcc_packet(&packet).unwrap();
-        assert!(validate_full(&packet, &pulses).is_ok());
-    }
-
-    #[test]
-    fn test_full_validation_function_group3_long_address() {
-        let addr = DccAddress::new_long(1000).unwrap();
-        let packet = DccPacket::FunctionGroup3 {
-            address: addr,
-            f13: true,
-            f14: false,
-            f15: true,
-            f16: false,
-            f17: false,
-            f18: true,
-            f19: false,
-            f20: true,
-        };
-        let pulses = encode_dcc_packet(&packet).unwrap();
-        assert!(validate_full(&packet, &pulses).is_ok());
-    }
-
-    #[test]
-    fn test_full_validation_function_group4_long_address() {
-        let addr = DccAddress::new_long(1000).unwrap();
-        let packet = DccPacket::FunctionGroup4 {
-            address: addr,
-            f21: false,
-            f22: true,
-            f23: false,
-            f24: true,
-            f25: true,
-            f26: false,
-            f27: false,
-            f28: true,
-        };
-        let pulses = encode_dcc_packet(&packet).unwrap();
-        assert!(validate_full(&packet, &pulses).is_ok());
     }
 
     #[test]
@@ -927,20 +830,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_complete_function_group1() {
-        let addr = DccAddress::new_short(7).unwrap();
-        let packet = DccPacket::FunctionGroup1 {
-            address: addr,
-            fl: true,
-            f1: true,
-            f2: false,
-            f3: true,
-            f4: false,
-        };
-        assert!(validate_complete(&packet).is_ok());
-    }
-
-    #[test]
     fn test_validate_complete_service_mode() {
         let packet = DccPacket::ServiceModeVerifyByte {
             cv: service_cv(1),
@@ -963,14 +852,7 @@ mod tests {
                 address: addr,
                 direction: Direction::Forward,
             },
-            DccPacket::FunctionGroup1 {
-                address: addr,
-                fl: true,
-                f1: true,
-                f2: false,
-                f3: true,
-                f4: false,
-            },
+            DccPacket::function_group(addr, FunctionGroupKind::G1, 0b10101),
             DccPacket::PomReadByte {
                 address: addr,
                 cv: pom_cv(29),

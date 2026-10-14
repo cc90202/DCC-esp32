@@ -261,6 +261,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::dcc::FunctionGroupKind;
     use crate::dcc::packet::*;
 
     fn service_cv(cv: u16) -> ServiceModeCv {
@@ -357,50 +358,7 @@ mod tests {
             DccPacket::Reset,
             DccPacket::speed_28step(addr_short, 28, Direction::Forward).unwrap(),
             DccPacket::speed_128step(addr_long, 126, Direction::Reverse).unwrap(),
-            DccPacket::FunctionGroup1 {
-                address: addr_long,
-                fl: true,
-                f1: true,
-                f2: true,
-                f3: true,
-                f4: true,
-            },
-            DccPacket::FunctionGroup2A {
-                address: addr_long,
-                f5: true,
-                f6: true,
-                f7: true,
-                f8: true,
-            },
-            DccPacket::FunctionGroup2B {
-                address: addr_long,
-                f9: true,
-                f10: true,
-                f11: true,
-                f12: true,
-            },
-            DccPacket::FunctionGroup3 {
-                address: addr_long,
-                f13: true,
-                f14: true,
-                f15: true,
-                f16: true,
-                f17: true,
-                f18: true,
-                f19: true,
-                f20: true,
-            },
-            DccPacket::FunctionGroup4 {
-                address: addr_long,
-                f21: true,
-                f22: true,
-                f23: true,
-                f24: true,
-                f25: true,
-                f26: true,
-                f27: true,
-                f28: true,
-            },
+            DccPacket::function_group(addr_long, FunctionGroupKind::G4, u8::MAX),
             DccPacket::ServiceModeVerifyByte {
                 cv: service_cv(256),
                 value: 255,

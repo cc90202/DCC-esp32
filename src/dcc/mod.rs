@@ -32,6 +32,7 @@
 pub(crate) mod channels;
 pub(crate) mod cv;
 pub(crate) mod encoder;
+pub(crate) mod function_groups;
 #[cfg(test)]
 mod golden_tests;
 pub(crate) mod packet;
@@ -148,6 +149,8 @@ pub use cv::{
 };
 #[doc(inline)]
 pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_dcc_packet};
+#[doc(inline)]
+pub use function_groups::FunctionGroupKind;
 #[cfg(target_arch = "riscv32")]
 pub(crate) use packet::PackedAddressFlags;
 #[doc(inline)]
