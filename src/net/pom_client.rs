@@ -8,7 +8,7 @@
 
 use core::cell::Cell;
 
-use defmt::warn;
+use defmt::{info, warn};
 
 use super::correlated::{SendMode, correlated_request};
 use crate::application::LocoSlots;
@@ -177,7 +177,15 @@ pub(super) async fn handle_cv_pom_read(
         .await,
     );
     match reply {
-        PomOutcome::Value(value) => encoded_len(z21_proto::encode_cv_result(cv, value, out)),
+        PomOutcome::Value(value) => {
+            info!(
+                "POM read addr={} cv={} value={}",
+                address.value(),
+                cv,
+                value
+            );
+            encoded_len(z21_proto::encode_cv_result(cv, value, out))
+        }
         PomOutcome::Ack | PomOutcome::Nack | PomOutcome::Unavailable => {
             warn!(
                 "POM read addr={} cv={} completed without value",
