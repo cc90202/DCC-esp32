@@ -56,7 +56,7 @@ impl PackedDccAddress {
 ///
 /// The address occupies bits `0..=15` (see [`PackedDccAddress`]); flag `n`
 /// (0-based) occupies bit `16 + n`. This is the common backing storage for
-/// `track_output::PackedRailcomPacketMetadata`, which records the POM mode and
+/// `cutout_metadata::PackedRailcomPacketMetadata`, which records the POM mode and
 /// whether a separately stored request identifier is present.
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

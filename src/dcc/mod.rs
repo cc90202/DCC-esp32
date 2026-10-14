@@ -172,7 +172,7 @@ pub use cv::{
 pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_dcc_packet};
 #[doc(inline)]
 pub use function_groups::FunctionGroupKind;
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) use packet::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{
