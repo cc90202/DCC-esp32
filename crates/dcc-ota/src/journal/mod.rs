@@ -4,7 +4,7 @@
 //! A [`Record`] changes only through the transitions below, each of which
 //! checks the step it starts from, and [`Update`] carries the candidate in
 //! every step that has one, so an inconsistent record cannot be built
-//! outside this module. [`store`] persists it so that a power cut at any
+//! outside this module. The `store` submodule persists it so that a power cut at any
 //! byte leaves either the old or the new record.
 
 mod boot;

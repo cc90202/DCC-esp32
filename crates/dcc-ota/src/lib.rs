@@ -9,9 +9,9 @@
 //! - [`http`] frames the update requests the device accepts;
 //! - [`writer`] streams an image into the inactive slot, publishing it only
 //!   after a read-back hash;
-//! - [`journal`] and [`otadata`] persist the update history and the
+//! - [`journal`] and `otadata` persist the update history and the
 //!   bootloader's selection so that a power cut at any byte leaves one
-//!   consistent state, and [`sequence`] orders their writes for each
+//!   consistent state, and `sequence` orders their writes for each
 //!   transition;
 //! - [`admission`], [`trial`], [`status`] and [`notice`] hold the policies the
 //!   runtime applies: who may start an update, when a trial is confirmed, what

@@ -54,7 +54,7 @@ pub fn is_outage(previous: Option<Beat>, now: Beat) -> bool {
     previous.is_some_and(|previous| now.since(previous) >= MAX_SILENCE)
 }
 
-/// Whether every task has beaten within [`MAX_SILENCE`] of `now`; a task
+/// Whether every task has beaten within the silence limit of [`is_outage`]; a task
 /// that never beat is not alive.
 pub fn all_alive(beats: impl IntoIterator<Item = Option<Beat>>, now: Beat) -> bool {
     beats

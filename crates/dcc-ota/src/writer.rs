@@ -192,7 +192,7 @@ impl<'a> Writer<'a> {
     }
 
     /// Bytes already durable in flash; the first sector is not counted until
-    /// [`Self::commit_first`].
+    /// the whole image has been verified and that sector is committed last.
     #[must_use]
     pub const fn written(&self) -> u32 {
         match self.step {
