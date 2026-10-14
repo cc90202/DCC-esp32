@@ -111,8 +111,10 @@ embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 # Declared under a target cfg because embassy-time here carries the `std`
 # feature: unconditional dev-dependencies are pulled in whenever any tool builds
 # test targets for riscv32, and `std` does not exist on a bare-metal target.
+# The Embassy crates repeat the firmware's declarations with host features; the
+# two target sections cannot share one `workspace = true` entry. `heapless`
+# comes from the platform-independent dependencies above.
 [target.'cfg(not(target_arch = "riscv32"))'.dev-dependencies]
-heapless = { workspace = true }
 embassy-futures = "0.1.2"
 embassy-sync = "0.7.2"
 embassy-time = { version = "0.5.0", features = ["std", "generic-queue-8"] }
