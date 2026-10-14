@@ -16,7 +16,7 @@ mod startup_sequence;
 pub(crate) use error::BootFailureChannel;
 use error::log_degraded_boot_error;
 pub use error::{
-    BootAction, BootError, CriticalHardwareInit, CriticalTask, CriticalTaskInit, DccSelfCheckError,
+    BootAction, BootError, CriticalHardwareInit, CriticalTaskInit, DccSelfCheckError,
     WifiConfigInitError,
 };
 use hardware::{
@@ -72,7 +72,9 @@ use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
 use crate::system_status::channels::{
     BootReadyChannel, DisplayChannel, FaultEventChannel, NetStatusChannel, SystemStatusChannel,
 };
-use crate::system_status::{BootStep, DisplayEvent, FaultManagerState, SystemStatusEvent};
+use crate::system_status::{
+    BootStep, CriticalTask, DisplayEvent, FaultManagerState, SystemStatusEvent,
+};
 use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.
@@ -178,13 +180,8 @@ async fn load_boot_wifi_decision(
     // credentials all flow through `decide_provisioning`.
     let (decision, credentials) = {
         let mut store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
-        load_wifi_credentials_and_decision(&mut store, boot_button_override, flag).map_err(
-            |error| {
-                BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-                    WifiConfigInitError::Store(error),
-                ))
-            },
-        )?
+        load_wifi_credentials_and_decision(&mut store, boot_button_override, flag)
+            .map_err(WifiConfigInitError::Store)?
     };
 
     Ok(WifiBootDecision {
@@ -463,9 +460,9 @@ async fn activate_safe_runtime(
     info!("boot: reset sequence complete (5 packets)");
 
     let short_pin = new_short_detect_input(short_detect_pin);
-    let fault_state_receiver = FAULT_STATE.receiver().ok_or(BootError::CriticalTaskInit(
-        CriticalTaskInit::FaultStateReceiverUnavailable,
-    ))?;
+    let fault_state_receiver = FAULT_STATE
+        .receiver()
+        .ok_or(CriticalTaskInit::FaultStateReceiverUnavailable)?;
     spawn_critical(
         spawner,
         short_detector_task(
@@ -533,7 +530,7 @@ async fn run_setup_mode(
     let store = open_wifi_config_store(&mut flash, partition_table_buffer)?;
     run_provisioning_ap(spawner, hardware.wifi, store, DISPLAY_CHANNEL.sender())
         .await
-        .map_err(|error| BootError::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(error)))
+        .map_err(|error| CriticalTaskInit::ProvisioningAp(error).into())
 }
 
 /// The Wi-Fi boot decision. In update recovery a failure ends the boot
@@ -598,11 +595,9 @@ pub async fn run(
     } = wifi_decision;
 
     let credentials = match decision {
-        ProvisioningDecision::StationMode => {
-            credentials.ok_or(BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-                WifiConfigInitError::Store(EspWifiConfigStoreError::MissingCredentials),
-            )))?
-        }
+        ProvisioningDecision::StationMode => credentials.ok_or(WifiConfigInitError::Store(
+            EspWifiConfigStoreError::MissingCredentials,
+        ))?,
         ProvisioningDecision::ProvisioningMode(reason) => {
             warn!(
                 "boot: WiFi provisioning selected ({:?}); safe setup mode active",

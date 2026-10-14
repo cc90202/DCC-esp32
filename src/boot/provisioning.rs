@@ -10,15 +10,13 @@ use crate::net::wifi_config::{
     EspWifiConfigStore, ProvisioningFlagStore, wifi_config_store_from_partition,
 };
 
-use super::{BootError, CriticalTaskInit, WifiConfigInitError};
+use super::{BootError, WifiConfigInitError};
 
 /// Locks the shared flash for the WiFi configuration store.
 pub(super) async fn lock_flash() -> Result<FlashGuard, BootError> {
     crate::flash::lock()
         .await
-        .ok_or(BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-            WifiConfigInitError::FlashUnavailable,
-        )))
+        .ok_or_else(|| WifiConfigInitError::FlashUnavailable.into())
 }
 
 /// Open the `dcc_cfg` flash partition as the WiFi configuration store.
@@ -26,11 +24,8 @@ pub(super) fn open_wifi_config_store<'a, 'd>(
     flash: &'a mut FlashStorage<'d>,
     partition_table_buffer: &'a mut [u8; PARTITION_TABLE_MAX_LEN],
 ) -> Result<EspWifiConfigStore<'a, 'd>, BootError> {
-    wifi_config_store_from_partition(flash, partition_table_buffer).map_err(|error| {
-        BootError::CriticalTaskInit(CriticalTaskInit::WifiConfig(
-            WifiConfigInitError::Partition(error),
-        ))
-    })
+    wifi_config_store_from_partition(flash, partition_table_buffer)
+        .map_err(|error| WifiConfigInitError::Partition(error).into())
 }
 
 /// E-stop the track, persist the next-boot flag, then reboot into setup mode.

@@ -64,7 +64,7 @@ pub(super) async fn wait_for_runtime_ready(
                 match event {
                     BootReadyEvent::DisplayReady => {}
                     BootReadyEvent::DisplayDegraded(reason) => {
-                        log_degraded_boot_error(BootError::OptionalPeripheralInit(reason));
+                        log_degraded_boot_error(reason.into());
                     }
                     BootReadyEvent::DccEngine => ready.record(CriticalReady::DccEngine),
                     BootReadyEvent::StatusLed => ready.record(CriticalReady::StatusLed),
@@ -81,11 +81,9 @@ pub(super) async fn wait_for_runtime_ready(
                     BootReadyEvent::LeaseWatchdog => ready.record(CriticalReady::LeaseWatchdog),
                 }
             }
-            Ok(Either::Second(failure)) => return Err(BootError::CriticalTaskInit(failure)),
+            Ok(Either::Second(failure)) => return Err(failure.into()),
             Err(_) => {
-                return Err(BootError::CriticalTaskInit(
-                    CriticalTaskInit::ReadinessTimeout,
-                ));
+                return Err(CriticalTaskInit::ReadinessTimeout.into());
             }
         }
     }
