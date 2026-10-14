@@ -156,7 +156,7 @@ pub async fn pom_actor_task(
     loop {
         let request = request_receiver.receive().await;
         let request_id = request.request_id;
-        if !crate::track_authority::accepts(request.permit, Instant::now().as_millis()) {
+        if !crate::track_authority::accepts(request.permit) {
             response_sender.send(PomResponse::Nack { request_id }).await;
             continue;
         }

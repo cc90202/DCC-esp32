@@ -14,7 +14,7 @@ use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpEndpoint, Stack};
-use embassy_time::{Duration, Instant, with_timeout};
+use embassy_time::{Duration, with_timeout};
 use static_cell::StaticCell;
 
 use crate::application::LocoSlots;
@@ -167,7 +167,7 @@ async fn handle_udp_datagram(
     state: &mut Z21LoopState,
     io: &Z21LoopIo,
 ) {
-    let observed_at_ms = Instant::now().as_millis();
+    let observed_at_ms = crate::clock::now_ms();
     log_datagram(datagram, endpoint);
 
     for (frame_index, boundary) in z21_proto::iter_frames(datagram).enumerate() {

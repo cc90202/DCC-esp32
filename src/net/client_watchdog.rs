@@ -65,9 +65,7 @@ pub(crate) async fn client_watchdog_task(context: ClientWatchdogContext) -> ! {
     announce_ready(ready_sender, BootReadyEvent::LeaseWatchdog).await;
 
     loop {
-        let fallback_wake = Instant::now()
-            .as_millis()
-            .saturating_add(Z21_KEEPALIVE_TIMEOUT_MS);
+        let fallback_wake = crate::clock::now_ms().saturating_add(Z21_KEEPALIVE_TIMEOUT_MS);
         let wake_ms = policy.next_deadline_ms().unwrap_or(fallback_wake);
 
         match select(
@@ -77,12 +75,12 @@ pub(crate) async fn client_watchdog_task(context: ClientWatchdogContext) -> ! {
         .await
         {
             Either::First(request) => {
-                let decision = policy.handle(request, Instant::now().as_millis());
+                let decision = policy.handle(request, crate::clock::now_ms());
                 apply_decision(decision, &fault_sender, &trip_sender).await;
                 response_sender.send(decision).await;
             }
             Either::Second(_) => {
-                let Some(decision) = policy.on_timer(Instant::now().as_millis()) else {
+                let Some(decision) = policy.on_timer(crate::clock::now_ms()) else {
                     continue;
                 };
                 apply_decision(decision, &fault_sender, &trip_sender).await;

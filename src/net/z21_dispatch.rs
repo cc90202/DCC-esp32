@@ -117,7 +117,7 @@ async fn route_command(
                 warn!("Z21 power-on rejected without a controller lease");
                 return 0;
             };
-            if !crate::track_authority::accepts(permit, embassy_time::Instant::now().as_millis()) {
+            if !crate::track_authority::accepts(permit) {
                 warn!("Z21 power-on rejected with an expired controller lease");
                 return 0;
             }

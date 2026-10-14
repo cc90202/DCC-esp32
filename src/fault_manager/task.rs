@@ -1,7 +1,7 @@
 //! Firmware fault-manager task: performs the side effects that
 //! [`FaultLoop::step`] decides, in a fixed order, for each fault event.
 
-use embassy_time::{Duration, Instant, with_timeout};
+use embassy_time::{Duration, with_timeout};
 
 use super::policy::FaultDecision;
 use super::power_fence;
@@ -50,9 +50,8 @@ fn apply_track_power(event: FaultEvent, enabled: bool, track_output: &mut TrackO
     let FaultEvent::NetworkResume(permit) = event else {
         return track_output.set_track_enabled(enabled);
     };
-    crate::track_authority::apply_if_current(permit, Instant::now().as_millis(), || {
-        track_output.set_track_enabled(enabled)
-    }) == Some(true)
+    crate::track_authority::apply_if_current(permit, || track_output.set_track_enabled(enabled))
+        == Some(true)
 }
 
 /// Tells whoever waits that a stop or an arming took effect. Returns true

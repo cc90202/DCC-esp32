@@ -69,7 +69,7 @@ pub fn suppress_short_edges_for(duration: Duration) {
         SHORT_SUPPRESSION
             .borrow(cs)
             .set(ShortSuppression::starting_at(
-                embassy_time::Instant::now().as_millis(),
+                crate::clock::now_ms(),
                 duration.as_millis(),
             ));
     });
@@ -81,7 +81,7 @@ fn short_edges_suppressed() -> bool {
         SHORT_SUPPRESSION
             .borrow(cs)
             .get()
-            .is_active_at(embassy_time::Instant::now().as_millis())
+            .is_active_at(crate::clock::now_ms())
     })
 }
 
