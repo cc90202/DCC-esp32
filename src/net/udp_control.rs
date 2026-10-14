@@ -160,7 +160,7 @@ fn log_datagram(datagram: &[u8], endpoint: IpEndpoint) {
 }
 
 async fn handle_udp_datagram(
-    socket: &mut UdpSocket<'_>,
+    socket: &UdpSocket<'_>,
     datagram: &[u8],
     endpoint: IpEndpoint,
     send_buf: &mut [u8],
@@ -258,7 +258,7 @@ async fn handle_udp_datagram(
 }
 
 async fn send_unknown_command_response(
-    socket: &mut UdpSocket<'_>,
+    socket: &UdpSocket<'_>,
     endpoint: IpEndpoint,
     send_buf: &mut [u8],
 ) {
@@ -272,7 +272,7 @@ async fn send_unknown_command_response(
 }
 
 async fn broadcast_status(
-    socket: &mut UdpSocket<'_>,
+    socket: &UdpSocket<'_>,
     event: crate::system_status::SystemStatusEvent,
     send_buf: &mut [u8],
     state: &mut Z21LoopState,
@@ -302,7 +302,7 @@ async fn broadcast_status(
     }
 }
 
-async fn run_z21_loop(mut socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
+async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
     let mut state = Z21LoopState::new();
     let mut recv_buf = [0u8; 256];
     let mut send_buf = [0u8; 64];
@@ -326,7 +326,7 @@ async fn run_z21_loop(mut socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
         match event {
             Either3::First(Ok((len, metadata))) => {
                 handle_udp_datagram(
-                    &mut socket,
+                    &socket,
                     &recv_buf[..len],
                     metadata.endpoint,
                     &mut send_buf,
@@ -340,7 +340,7 @@ async fn run_z21_loop(mut socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
                 warn!("Z21 UDP receive failed");
             }
             Either3::Second(event) => {
-                broadcast_status(&mut socket, event, &mut send_buf, &mut state).await;
+                broadcast_status(&socket, event, &mut send_buf, &mut state).await;
             }
             Either3::Third(trip) => {
                 let owner_endpoint = state.lease_owner.filter(|owner| owner.addr == trip.client);
@@ -447,7 +447,7 @@ async fn authorize_command(
             observed_at_ms,
         })
         .await;
-    match lease_verdict(response_receiver.receive().await, activity) {
+    match lease_verdict(&response_receiver.receive().await, activity) {
         LeaseVerdict::ExecuteWithoutLeaseUpdate => CommandAuthorization::ExecuteWithoutLeaseUpdate,
         LeaseVerdict::ExecuteForOwner { permit } => CommandAuthorization::ExecuteForOwner {
             owner: endpoint,

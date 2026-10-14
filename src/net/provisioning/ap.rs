@@ -82,6 +82,10 @@ fn access_point_mode_config(credentials: &WifiCredentials) -> ModeConfig {
     )
 }
 
+#[allow(
+    clippy::default_trait_access,
+    reason = "the DNS list is embassy-net's own heapless Vec, a version this crate does not depend on"
+)]
 fn provisioning_net_config() -> Config {
     Config::ipv4_static(StaticConfigV4 {
         address: Ipv4Cidr::new(SERVER_IP, PREFIX_LEN),

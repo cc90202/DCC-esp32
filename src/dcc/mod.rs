@@ -208,6 +208,23 @@ mod frame_tests {
     }
 
     #[test]
+    fn frame_carries_the_railcom_target_of_its_packet() {
+        let packet = DccPacket::speed_128step(
+            DccAddress::new_short(3).expect("valid test address"),
+            4,
+            Direction::Forward,
+        )
+        .expect("valid speed packet");
+        let frame = DccFrame::new(packet, CutoutMode::Telemetry);
+
+        assert_eq!(
+            frame.railcom_target_address(),
+            packet.railcom_target_address()
+        );
+        assert!(frame.railcom_target_address().is_some());
+    }
+
+    #[test]
     fn pom_cutout_without_request_id_fails_closed() {
         let frame = DccFrame::new(DccPacket::Idle, CutoutMode::PomRead);
 

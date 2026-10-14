@@ -18,7 +18,7 @@
 //! [`Manifest::authenticate`], so code that writes an image can only be
 //! handed an authenticated one.
 
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
 use crate::{
@@ -114,7 +114,7 @@ impl Ineligible {
     }
 }
 
-/// Builds a header with a zero signature; sign bytes `0..SIGNED_LEN`.
+/// Builds a header with a zero signature, for [`sign_header`] to sign.
 #[must_use]
 pub fn unsigned_header(
     version: Version,
@@ -132,6 +132,13 @@ pub fn unsigned_header(
     header[PROJECT_AT..PROJECT_AT + PROJECT.len()].copy_from_slice(PROJECT);
     header[KEY_ID_AT..KEY_ID_AT + 8].copy_from_slice(&key_id.0);
     header
+}
+
+/// Signs bytes `0..SIGNED_LEN` of `header` with `key` and stores the
+/// signature in the rest of it.
+pub fn sign_header(header: &mut [u8; HEADER_LEN], key: &SigningKey) {
+    let signature = key.sign(&header[..SIGNED_LEN]).to_bytes();
+    header[SIGNED_LEN..].copy_from_slice(&signature);
 }
 
 /// Header fields as decoded, before any signature check.
@@ -265,7 +272,7 @@ impl Manifest {
 mod tests {
     use super::*;
     use crate::testing::{manifest, signed, signing_key};
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::SigningKey;
 
     #[test]
     fn only_a_signed_canonical_header_authenticates() {
@@ -282,8 +289,7 @@ mod tests {
         for offset in [10, 14, 22, 28, 73, 104, 191] {
             let mut bad = header;
             bad[offset] = 1;
-            let signature = signing_key().sign(&bad[..SIGNED_LEN]).to_bytes();
-            bad[SIGNED_LEN..].copy_from_slice(&signature);
+            sign_header(&mut bad, &signing_key());
             assert_eq!(
                 Manifest::authenticate(&bad, &key),
                 Err(PackageError::Malformed),

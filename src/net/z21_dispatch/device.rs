@@ -6,7 +6,7 @@ use crate::z21 as z21_proto;
 use super::encoded_len;
 
 /// Arbitrary device serial reported to Z21 apps (no hardware identity exists).
-const DEFAULT_Z21_SERIAL_NUMBER: u32 = 0xC0FFEE01;
+const DEFAULT_Z21_SERIAL_NUMBER: u32 = 0xC0FF_EE01;
 
 pub(super) fn encode_serial_number(out: &mut [u8]) -> usize {
     encoded_len(z21_proto::encode_serial_number(

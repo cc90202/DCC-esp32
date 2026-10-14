@@ -539,5 +539,5 @@ pub(super) fn scheduler_tick_ms_for_slot_count(slot_count: usize) -> u64 {
 pub(super) fn allowed_slot_visits_without_function(slot_count: usize) -> u8 {
     let slot_period_ms = scheduler_tick_ms_for_slot_count(slot_count) * slot_count.max(1) as u64;
     let visits = (MAX_FUNCTION_REFRESH_MS / slot_period_ms).max(1);
-    visits.min(u8::MAX as u64) as u8
+    visits.min(u64::from(u8::MAX)) as u8
 }

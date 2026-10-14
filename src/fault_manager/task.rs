@@ -139,16 +139,14 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
     announce_ready(ready_sender, BootReadyEvent::FaultManager).await;
 
     loop {
-        let event = match loop_state.take_pending() {
-            Some(event) => event,
+        let event = if let Some(event) = loop_state.take_pending() {
+            event
+        } else if let Ok(event) = with_timeout(HEARTBEAT_PERIOD, receiver.receive()).await {
+            event
+        } else {
             // Wake up periodically so the heartbeat shows the loop is alive.
-            None => match with_timeout(HEARTBEAT_PERIOD, receiver.receive()).await {
-                Ok(event) => event,
-                Err(_) => {
-                    crate::liveness::beat(crate::liveness::Task::Fault);
-                    continue;
-                }
-            },
+            crate::liveness::beat(crate::liveness::Task::Fault);
+            continue;
         };
         crate::liveness::beat(crate::liveness::Task::Fault);
         if refused_while_inhibited(event, loop_state.state()) {

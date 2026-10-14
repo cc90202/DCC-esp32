@@ -90,6 +90,23 @@ mod tests {
     }
 
     #[test]
+    fn write_is_admitted_only_while_pom_is_allowed() {
+        let cv = PomCv::new(29).unwrap();
+        assert_eq!(
+            prepare_write(true, address(), 29, 7),
+            Ok(PomWritePlan {
+                address: address(),
+                cv,
+                value: 7,
+            })
+        );
+        assert_eq!(
+            prepare_write(false, address(), 29, 7),
+            Err(PomAdmissionError::TrackPowerOff)
+        );
+    }
+
+    #[test]
     fn read_plan_uses_confirmed_loco_format() {
         let mut slots = [None; 12];
         slots[0] = Some(state(SpeedFormat::Speed28));

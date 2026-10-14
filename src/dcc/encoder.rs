@@ -163,7 +163,7 @@ pub fn encode_dcc_packet(
         push_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
     }
 
-    encode_packet_tail(packet, &mut pulses, push_pulse)?;
+    encode_packet_tail(*packet, &mut pulses, push_pulse)?;
 
     Ok(pulses)
 }
@@ -172,11 +172,15 @@ pub fn encode_dcc_packet(
 ///
 /// Format: \[start_bit\]\[data_bytes\]\[end_bit\]
 #[cfg(any(test, target_arch = "riscv32"))]
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the waveform engine hands over the packet it borrows from its queue"
+)]
 pub(crate) fn encode_dcc_data_portion(packet: &DccPacket) -> Result<EncodedDccData, EncodeError> {
     let mut pulses = Vec::new();
     let mut dcc_duration_us = PREAMBLE_DURATION_US;
 
-    encode_packet_tail(packet, &mut pulses, |pulses, pulse| {
+    encode_packet_tail(*packet, &mut pulses, |pulses, pulse| {
         push_timed_pulse(pulses, &mut dcc_duration_us, pulse)
     })?;
 
@@ -187,7 +191,7 @@ pub(crate) fn encode_dcc_data_portion(packet: &DccPacket) -> Result<EncodedDccDa
 }
 
 fn encode_packet_tail<const N: usize>(
-    packet: &DccPacket,
+    packet: DccPacket,
     pulses: &mut Vec<PulseCode, N>,
     mut push: impl FnMut(&mut Vec<PulseCode, N>, PulseCode) -> Result<(), EncodeError>,
 ) -> Result<(), EncodeError> {
@@ -285,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_byte_encoding() {
-        let pulses = encode_byte(0b10101010);
+        let pulses = encode_byte(0b1010_1010);
 
         // Should be 8 pulses: 1,0,1,0,1,0,1,0
         assert_eq!(pulses.len(), 8);
@@ -375,15 +379,12 @@ mod tests {
 
         for packet in &packets {
             let pulses = encode_dcc_packet(packet)
-                .unwrap_or_else(|e| panic!("encode failed for {:?}: {:?}", packet, e));
+                .unwrap_or_else(|e| panic!("encode failed for {packet:?}: {e:?}"));
             // RMT conversion: 1 entry per pulse + 1 end marker
             let rmt_entries = pulses.len() + 1;
             assert!(
                 rmt_entries <= RMT_RAM_SLOTS,
-                "packet {:?} would produce {} RMT entries, exceeds {} RAM slots",
-                packet,
-                rmt_entries,
-                RMT_RAM_SLOTS,
+                "packet {packet:?} would produce {rmt_entries} RMT entries, exceeds {RMT_RAM_SLOTS} RAM slots",
             );
         }
     }

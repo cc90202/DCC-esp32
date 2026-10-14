@@ -192,7 +192,7 @@ impl<'a> Writer<'a> {
     }
 
     /// Bytes already durable in flash; the first sector is not counted until
-    /// [`Self::commit_first`].
+    /// the whole image has been verified and that sector is committed last.
     #[must_use]
     pub const fn written(&self) -> u32 {
         match self.step {
@@ -442,6 +442,57 @@ mod tests {
     }
 
     #[test]
+    fn a_one_sector_image_is_verified_from_the_held_first_sector() {
+        let image = release_image(SECTOR_SIZE, BuildKind::Release);
+        let mut flash = SimFlash::new(0, FLASH_SIZE);
+        let mut buffers = Buffers::new();
+        let mut writer = Writer::new(
+            manifest(&image),
+            Slot::A,
+            BuildKind::Release,
+            &mut buffers,
+            &mut flash,
+        )
+        .unwrap();
+        writer.push(&mut flash, &image).unwrap();
+        writer.seal(&mut flash).unwrap();
+        assert_eq!(writer.verify_step(&mut flash), Ok(true));
+        writer.commit_first(&mut flash).unwrap();
+        let target = Slot::B.offset() as usize;
+        assert_eq!(&flash.bytes[target..target + SECTOR_SIZE], &image[..]);
+    }
+
+    #[test]
+    fn progress_counts_received_bytes_and_durable_bytes_apart() {
+        let image = release_image(9120, BuildKind::Release);
+        let mut flash = SimFlash::new(0, FLASH_SIZE);
+        let mut buffers = Buffers::new();
+        let mut writer = Writer::new(
+            manifest(&image),
+            Slot::A,
+            BuildKind::Release,
+            &mut buffers,
+            &mut flash,
+        )
+        .unwrap();
+        let mut progress = std::vec::Vec::new();
+        for chunk in image.chunks(5000) {
+            writer.push(&mut flash, chunk).unwrap();
+            progress.push((writer.received(), writer.written()));
+        }
+        writer.seal(&mut flash).unwrap();
+        progress.push((writer.received(), writer.written()));
+        while !writer.verify_step(&mut flash).unwrap() {}
+        writer.commit_first(&mut flash).unwrap();
+        progress.push((writer.received(), writer.written()));
+        // The first sector counts as durable only once it is committed last.
+        assert_eq!(
+            progress,
+            [(5000, 0), (9120, 4096), (9120, 5024), (9120, 9120)]
+        );
+    }
+
+    #[test]
     fn a_read_back_mismatch_never_publishes_the_image() {
         let image = release_image(9120, BuildKind::Release);
         let mut flash = SimFlash::new(0, FLASH_SIZE);
@@ -503,7 +554,7 @@ mod tests {
             &mut flash,
         )
         .unwrap();
-        let mut other_version = image.clone();
+        let mut other_version = image;
         other_version[48..53].copy_from_slice(b"0.3.0");
         assert_eq!(
             writer.push(&mut flash, &other_version[..SECTOR_SIZE]),

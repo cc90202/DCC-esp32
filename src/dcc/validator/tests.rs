@@ -11,7 +11,7 @@ fn pom_cv(cv: u16) -> PomCv {
     PomCv::new(cv).expect("test POM CV must be valid")
 }
 
-fn assert_complete(packet: &DccPacket) {
+fn assert_complete(packet: DccPacket) {
     assert_eq!(validate_complete(packet), Ok(()), "{packet:?}");
 }
 
@@ -30,7 +30,7 @@ fn complete_validation_accepts_common_packet_kinds_at_short_and_long_addresses()
             value: 3,
         },
     ] {
-        assert_complete(&packet);
+        assert_complete(packet);
     }
 
     for address in [
@@ -54,14 +54,10 @@ fn complete_validation_accepts_common_packet_kinds_at_short_and_long_addresses()
                 value: 6,
             },
         ] {
-            assert_complete(&packet);
+            assert_complete(packet);
         }
         for layout in GROUP_LAYOUTS {
-            assert_complete(&DccPacket::function_group(
-                address,
-                layout.kind,
-                0b1010_0101,
-            ));
+            assert_complete(DccPacket::function_group(address, layout.kind, 0b1010_0101));
         }
     }
 }

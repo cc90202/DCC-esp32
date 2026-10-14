@@ -83,17 +83,22 @@ impl FaultPolicy {
             (FaultManagerState::Normal, FaultEvent::TrackPowerArmed) => {
                 scheduler_effects[0] = Some(SchedulerEffect::Resume);
             }
-            (FaultManagerState::EstopLatched, FaultEvent::TrackPowerArmed)
-            | (FaultManagerState::FaultLatched(_), FaultEvent::TrackPowerArmed) => {}
+            (
+                FaultManagerState::EstopLatched | FaultManagerState::FaultLatched(_),
+                FaultEvent::TrackPowerArmed,
+            ) => {}
             (FaultManagerState::Normal, FaultEvent::StopPressed) => {
                 self.state = FaultManagerState::EstopLatched;
                 scheduler_effects[0] = Some(SchedulerEffect::EmergencyStopAll);
                 scheduler_effects[1] = Some(SchedulerEffect::Pause);
                 status_effects[0] = Some(StatusEffect::EstopActive);
             }
-            (FaultManagerState::EstopLatched, FaultEvent::ResumeShortPressed)
-            | (FaultManagerState::EstopLatched, FaultEvent::NetworkResume(_))
-            | (FaultManagerState::EstopLatched, FaultEvent::ResumeLongPressed) => {
+            (
+                FaultManagerState::EstopLatched,
+                FaultEvent::ResumeShortPressed
+                | FaultEvent::NetworkResume(_)
+                | FaultEvent::ResumeLongPressed,
+            ) => {
                 self.state = FaultManagerState::Normal;
                 scheduler_effects[0] = Some(SchedulerEffect::Resume);
                 status_effects[0] = Some(StatusEffect::EstopCleared);
@@ -118,14 +123,19 @@ impl FaultPolicy {
                 self.state = FaultManagerState::FaultLatched(cause);
                 status_effects[0] = Some(StatusEffect::FaultLatched(cause));
             }
-            (FaultManagerState::Normal, FaultEvent::ResumeShortPressed)
-            | (FaultManagerState::Normal, FaultEvent::NetworkResume(_))
-            | (FaultManagerState::Normal, FaultEvent::ResumeLongPressed) => {
+            (
+                FaultManagerState::Normal,
+                FaultEvent::ResumeShortPressed
+                | FaultEvent::NetworkResume(_)
+                | FaultEvent::ResumeLongPressed,
+            ) => {
                 scheduler_effects[0] = Some(SchedulerEffect::Resume);
             }
             (FaultManagerState::EstopLatched, FaultEvent::StopPressed)
-            | (FaultManagerState::FaultLatched(_), FaultEvent::NetworkResume(_))
-            | (FaultManagerState::FaultLatched(_), FaultEvent::StopPressed) => {}
+            | (
+                FaultManagerState::FaultLatched(_),
+                FaultEvent::NetworkResume(_) | FaultEvent::StopPressed,
+            ) => {}
         }
 
         if scheduler_effects[0] == Some(SchedulerEffect::Resume) && self.track_enabled() {

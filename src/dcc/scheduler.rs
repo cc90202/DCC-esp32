@@ -355,7 +355,7 @@ impl TryFrom<u8> for FunctionIndex {
     type Error = InvalidFunctionIndex;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        FunctionIndex::new(value).ok_or(InvalidFunctionIndex)
+        Self::new(value).ok_or(InvalidFunctionIndex)
     }
 }
 

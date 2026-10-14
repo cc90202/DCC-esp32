@@ -133,6 +133,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "matches the borrowed-reply extractor the correlator takes"
+    )]
     fn reply_id(reply: &TestReply) -> TestId {
         reply.id
     }

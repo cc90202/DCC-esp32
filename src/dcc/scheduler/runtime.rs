@@ -128,7 +128,7 @@ pub async fn packet_scheduler_task(
 
         let cutout = match (cutout_allowed, class, packet) {
             (true, PacketClass::Programming, packet) => {
-                pom_cutout(&packet).unwrap_or(CutoutMode::PomWrite)
+                pom_cutout(packet).unwrap_or(CutoutMode::PomWrite)
             }
             (true, _, _) => CutoutMode::Telemetry,
             (false, _, _) => CutoutMode::None,

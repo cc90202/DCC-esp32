@@ -212,7 +212,7 @@ impl<'d, D: Device> Runtime<'d, D> {
                 let reason = s
                     .progress
                     .reason
-                    .or(rolling_back.then_some(Error::Refused(Refusal::PendingVerify)));
+                    .or_else(|| rolling_back.then_some(Error::Refused(Refusal::PendingVerify)));
                 Snapshot {
                     record: s.record,
                     boot_id: s.boot_id,

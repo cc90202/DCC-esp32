@@ -163,8 +163,10 @@ impl Notice {
     }
 }
 
+/// Every fixed text is asserted to fit [`NOTICE_COLUMNS`] at compile time
+/// above, so the empty fallback is never taken.
 fn fixed(text: &str) -> NoticeText {
-    NoticeText::try_from(text).expect("footer width checked at compile time")
+    NoticeText::try_from(text).unwrap_or_default()
 }
 
 fn formatted(args: core::fmt::Arguments<'_>, short: &str) -> NoticeText {

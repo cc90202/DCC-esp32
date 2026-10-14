@@ -72,7 +72,7 @@ pub(crate) fn parse_request(bytes: &[u8]) -> Result<ParsedRequest, ParseError> {
     match (metadata.request_line.method, metadata.request_line.path) {
         (Method::Get, "/") => Ok(ParsedRequest::GetRoot),
         (Method::Get, _) => Err(ParseError::NotFound),
-        (Method::Post, "/save") => parse_save_request(bytes, metadata),
+        (Method::Post, "/save") => parse_save_request(bytes, &metadata),
         (Method::Post, _) => Err(ParseError::NotFound),
     }
 }
@@ -105,7 +105,7 @@ fn parse_request_metadata(bytes: &[u8]) -> Result<RequestMetadata<'_>, ParseErro
 
 fn parse_save_request(
     bytes: &[u8],
-    metadata: RequestMetadata<'_>,
+    metadata: &RequestMetadata<'_>,
 ) -> Result<ParsedRequest, ParseError> {
     if !metadata.header_state.form_content_type {
         return Err(ParseError::UnsupportedContentType);
@@ -411,6 +411,121 @@ mod tests {
     fn duplicate_content_length_is_rejected() {
         let request = b"POST /save HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nabc";
         assert_eq!(parse_request(request), Err(ParseError::BadRequest));
+    }
+
+    #[test]
+    fn percent_escapes_accept_both_hex_digit_cases() {
+        let request = save_request("ssid=%4a%4A%4f%4F&password=password123");
+        let ParsedRequest::SaveCredentials(credentials) =
+            parse_request(request.as_bytes()).unwrap()
+        else {
+            panic!("expected credentials")
+        };
+
+        assert_eq!(credentials.ssid(), "JJOO");
+    }
+
+    /// Request head (request line, `headers`, filler headers, blank line) of
+    /// exactly `len` bytes.
+    fn head_of_len(request_line: &str, headers: &str, len: usize) -> std::string::String {
+        let mut head = std::format!("{request_line}\r\n{headers}");
+        let mut remaining = len - head.len() - 2;
+        let fillers = remaining.div_ceil(400);
+        for index in 0..fillers {
+            let size = remaining / (fillers - index);
+            head.push_str(&std::format!("X-Fill: {}\r\n", "a".repeat(size - 10)));
+            remaining -= size;
+        }
+        head.push_str("\r\n");
+        assert_eq!(head.len(), len);
+        head
+    }
+
+    #[test]
+    fn header_limits_admit_their_maximum_and_reject_one_byte_more() {
+        let line = |len: usize| std::format!("GET /{} HTTP/1.1", "a".repeat(len - 14));
+        assert_eq!(
+            parse_request(
+                std::format!("{}\r\nHost: a\r\n\r\n", line(MAX_REQUEST_LINE_BYTES)).as_bytes()
+            ),
+            Err(ParseError::NotFound)
+        );
+        assert_eq!(
+            parse_request(
+                std::format!("{}\r\nHost: a\r\n\r\n", line(MAX_REQUEST_LINE_BYTES + 1)).as_bytes()
+            ),
+            Err(ParseError::RequestLineTooLong)
+        );
+
+        let header = |len: usize| std::format!("X: {}", "a".repeat(len - 3));
+        for (len, expected) in [
+            (MAX_HEADER_LINE_BYTES, Ok(ParsedRequest::GetRoot)),
+            (MAX_HEADER_LINE_BYTES + 1, Err(ParseError::HeaderTooLarge)),
+        ] {
+            let request = std::format!("GET / HTTP/1.1\r\n{}\r\n\r\n", header(len));
+            assert_eq!(
+                parse_request(request.as_bytes()),
+                expected,
+                "header line {len}"
+            );
+        }
+
+        for (count, expected) in [
+            (MAX_HEADER_COUNT, Ok(ParsedRequest::GetRoot)),
+            (MAX_HEADER_COUNT + 1, Err(ParseError::HeaderTooLarge)),
+        ] {
+            let request = std::format!("GET / HTTP/1.1\r\n{}\r\n", "X: a\r\n".repeat(count));
+            assert_eq!(
+                parse_request(request.as_bytes()),
+                expected,
+                "{count} headers"
+            );
+        }
+
+        for (len, expected) in [
+            (MAX_HEADER_BYTES, Ok(ParsedRequest::GetRoot)),
+            (MAX_HEADER_BYTES + 1, Err(ParseError::HeaderTooLarge)),
+        ] {
+            let request = head_of_len("GET / HTTP/1.1", "", len);
+            assert_eq!(
+                parse_request(request.as_bytes()),
+                expected,
+                "head of {len} bytes"
+            );
+        }
+
+        for (len, expected) in [
+            (MAX_HEADER_BYTES, ParseError::EarlyEof),
+            (MAX_HEADER_BYTES + 1, ParseError::HeaderTooLarge),
+        ] {
+            let unterminated = "a".repeat(len);
+            assert_eq!(
+                parse_request(unterminated.as_bytes()),
+                Err(expected),
+                "{len} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn largest_request_is_accepted_and_one_more_byte_is_rejected() {
+        let fields = "ssid=DCC-Lab&password=password123&pad=";
+        let body = std::format!("{fields}{}", "a".repeat(MAX_BODY_BYTES - fields.len()));
+        let headers = std::format!(
+            "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {MAX_BODY_BYTES}\r\n"
+        );
+        let mut request = head_of_len("POST /save HTTP/1.1", &headers, MAX_HEADER_BYTES) + &body;
+        assert_eq!(request.len(), MAX_REQUEST_BYTES);
+        assert!(matches!(
+            parse_request(request.as_bytes()),
+            Ok(ParsedRequest::SaveCredentials(credentials)) if credentials.ssid() == "DCC-Lab"
+        ));
+
+        request.push('a');
+        assert_eq!(
+            parse_request(request.as_bytes()),
+            Err(ParseError::PayloadTooLarge)
+        );
     }
 
     #[test]

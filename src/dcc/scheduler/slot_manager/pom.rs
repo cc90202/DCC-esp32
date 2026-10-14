@@ -7,7 +7,7 @@ use crate::dcc::{DccPacket, PomRequestId};
 
 /// Cutout that answers a POM packet: read or write. `None` for any packet
 /// that is not a programming-on-main CV access.
-pub(in crate::dcc::scheduler) fn pom_cutout(packet: &DccPacket) -> Option<CutoutMode> {
+pub(in crate::dcc::scheduler) fn pom_cutout(packet: DccPacket) -> Option<CutoutMode> {
     match packet {
         DccPacket::PomReadByte { .. } => Some(CutoutMode::PomRead),
         DccPacket::PomWriteByte { .. } => Some(CutoutMode::PomWrite),
@@ -25,7 +25,7 @@ impl SlotManager {
         packet: DccPacket,
     ) -> bool {
         let (Some(target_address), Some(cutout)) =
-            (packet.railcom_target_address(), pom_cutout(&packet))
+            (packet.railcom_target_address(), pom_cutout(packet))
         else {
             return false;
         };

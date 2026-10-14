@@ -79,7 +79,7 @@ pub(crate) async fn client_watchdog_task(context: ClientWatchdogContext) -> ! {
                 apply_decision(decision, &fault_sender, &trip_sender).await;
                 response_sender.send(decision).await;
             }
-            Either::Second(_) => {
+            Either::Second(()) => {
                 let Some(decision) = policy.on_timer(crate::clock::now_ms()) else {
                     continue;
                 };

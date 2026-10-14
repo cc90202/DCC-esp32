@@ -1,0 +1,73 @@
+# cargo-deny configuration: security advisories, licenses, duplicate crate
+# versions and crate sources for the whole workspace. Run with
+# `cargo deny --workspace check`. Every exception below carries the crate
+# chain that pulls it in; delete the entry once that chain changes.
+
+[graph]
+# The firmware target and the host that runs the tests and the OTA tool.
+targets = ["riscv32imac-unknown-none-elf", "x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+# Vulnerabilities and yanked crates fail; unmaintained crates fail unless
+# listed here.
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste: proc macro used at build time by esp-hal 1.0.0 and riscv 0.15.0; no replacement upstream yet" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: proc macro used at build time by maybe-async-cfg 0.2.4, from ssd1306 0.10.0" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: build-script dependency through serde_yaml 0.9 in esp-config 0.6.1, which reads the esp-hal configuration; not linked into the firmware" },
+]
+
+[licenses]
+# Every license found in the dependency graph; a crate under any other
+# license fails until it is reviewed and added here.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace crates are not published and carry no license field.
+ignore = true
+
+[bans]
+# A second version of a crate warns. The duplicates below come from upstream
+# crates pinned to different majors and cannot be removed from this workspace
+# alone; they are skipped so that a new duplicate stands out.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+skip = [
+    { crate = "syn@1.0.109", reason = "maybe-async-cfg 0.2.4 (ssd1306) and proc-macro-error 1.0.4 still use syn 1" },
+    { crate = "syn@2.0.119", reason = "esp-hal-procmacros, defmt-macros, embassy-executor-macros and most proc macros use syn 2, while serde_derive, thiserror-impl and bitfield-macros moved to syn 3" },
+    { crate = "darling@0.20.11", reason = "embassy-executor-macros 0.7.0" },
+    { crate = "darling_core@0.20.11", reason = "embassy-executor-macros 0.7.0" },
+    { crate = "darling_macro@0.20.11", reason = "embassy-executor-macros 0.7.0" },
+    { crate = "darling@0.21.3", reason = "enumset_derive 0.15.0 (esp-hal)" },
+    { crate = "darling_core@0.21.3", reason = "enumset_derive 0.15.0 (esp-hal)" },
+    { crate = "darling_macro@0.21.3", reason = "enumset_derive 0.15.0 (esp-hal)" },
+    { crate = "heapless@0.8.0", reason = "embassy-net 0.8.0, embassy-sync 0.6/0.7 and smoltcp 0.12.0; the workspace and esp-radio use heapless 0.9" },
+    { crate = "embassy-sync@0.6.2", reason = "esp-sync 0.1.1 depends on both embassy-sync 0.6 and 0.7" },
+    { crate = "embedded-io@0.6.1", reason = "esp-hal 1.0.0 and esp-radio 0.17.0 implement both embedded-io 0.6 and 0.7; embassy-sync uses 0.6" },
+    { crate = "embedded-io-async@0.6.1", reason = "esp-hal 1.0.0 and esp-radio 0.17.0 implement both embedded-io-async 0.6 and 0.7; embassy-sync uses 0.6" },
+    { crate = "embedded-hal@0.2.7", reason = "embassy-embedded-hal 0.5.0 and embassy-time 0.5.1 keep the embedded-hal 0.2 compatibility impls" },
+    { crate = "nb@0.1.3", reason = "embedded-hal 0.2.7 (see above)" },
+    { crate = "defmt@0.3.100", reason = "compatibility release re-exporting defmt 1, used by embedded-io 0.6 and fugit 0.3" },
+    { crate = "bitflags@1.3.2", reason = "defmt 1.1.1 and smoltcp 0.12.0" },
+    { crate = "rand_core@0.6.4", reason = "esp-hal 1.0.0 implements both rand_core 0.6 and 0.9" },
+    { crate = "esp32c6@0.23.2", reason = "esp-rom-sys 0.1.4 is ahead of esp-hal 1.0.0, which uses esp32c6 0.22" },
+    { crate = "esp-metadata-generated@0.4.0", reason = "esp-rom-sys 0.1.4 is ahead of esp-hal 1.0.0, which uses esp-metadata-generated 0.3" },
+]
+
+[sources]
+# Only crates.io; no git or alternative registries.
+unknown-registry = "deny"
+unknown-git = "deny"

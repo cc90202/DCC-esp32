@@ -47,7 +47,7 @@ impl DccAddress {
         if addr == 0 || u16::from(addr) > Self::SHORT_MAX {
             None
         } else {
-            Some(DccAddress {
+            Some(Self {
                 kind: AddressKind::Short(addr),
             })
         }
@@ -60,7 +60,7 @@ impl DccAddress {
         if !(Self::LONG_MIN..=Self::LONG_MAX).contains(&addr) {
             None
         } else {
-            Some(DccAddress {
+            Some(Self {
                 kind: AddressKind::Long(addr),
             })
         }
@@ -133,35 +133,24 @@ impl DccAddress {
     /// Returns the numeric address value
     pub fn value(&self) -> u16 {
         match self.kind {
-            AddressKind::Short(addr) => addr as u16,
+            AddressKind::Short(addr) => u16::from(addr),
             AddressKind::Long(addr) => addr,
         }
     }
 
     /// Encode address to bytes according to NMRA S-9.2
     pub(super) fn to_bytes(self) -> Vec<u8, 2> {
-        let mut bytes = Vec::new();
         match self.kind {
-            AddressKind::Short(addr) => {
-                bytes
-                    .push(addr)
-                    .expect("short address must fit in two-byte buffer");
-            }
+            AddressKind::Short(addr) => Vec::from_array([addr]),
             AddressKind::Long(addr) => {
                 // Long address format: 11AAAAAA AAAAAAAA
                 // Top 6 bits in first byte (with 0xC0 prefix)
                 // Bottom 8 bits in second byte
                 let high = HighFragment::FLAG_MASK | ((addr >> 8) as u8);
                 let low = (addr & 0xFF) as u8;
-                bytes
-                    .push(high)
-                    .expect("long address high byte must fit in two-byte buffer");
-                bytes
-                    .push(low)
-                    .expect("long address low byte must fit in two-byte buffer");
+                Vec::from_array([high, low])
             }
         }
-        bytes
     }
 }
 

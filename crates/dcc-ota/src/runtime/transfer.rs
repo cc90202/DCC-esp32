@@ -69,6 +69,13 @@ impl Admitted {
     pub const fn image_len(&self) -> ImageLen {
         self.0.fields().image_len()
     }
+
+    /// Whether a request body of `content_length` bytes is exactly this
+    /// package: its header followed by the image it describes.
+    #[must_use]
+    pub const fn expects_body(&self, content_length: usize) -> bool {
+        content_length == HEADER_LEN + self.image_len().as_usize()
+    }
 }
 
 /// An image written, read back and made bootable in the inactive slot.
@@ -398,5 +405,19 @@ mod tests {
         ] {
             assert_eq!(ending_after(error), Ending::NotBootable, "{error:?}");
         }
+    }
+
+    #[test]
+    fn expects_body_matches_header_plus_image() {
+        let image = [0; 0x1000 + 1];
+        let admitted = Admitted(dcc_ota_format::testing::manifest(
+            dcc_ota_format::Version::new(1, 0, 0),
+            &image,
+        ));
+        let exact = HEADER_LEN + image.len();
+        assert!(admitted.expects_body(exact));
+        assert!(!admitted.expects_body(exact - 1));
+        assert!(!admitted.expects_body(exact + 1));
+        assert!(!admitted.expects_body(image.len()));
     }
 }

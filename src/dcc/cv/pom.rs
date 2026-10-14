@@ -127,7 +127,7 @@ pub struct PomTxStarted {
 /// types that flow through these channels.
 #[cfg(target_arch = "riscv32")]
 fn drain_channel<T: Copy, const N: usize>(
-    receiver: &crate::runtime_channels::RuntimeReceiver<T, N>,
+    receiver: crate::runtime_channels::RuntimeReceiver<T, N>,
 ) {
     while receiver.try_receive().is_ok() {}
 }
@@ -332,6 +332,27 @@ mod tests {
                 value: Some(0x55),
                 ack: false,
                 nack: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_pom_result_reports_a_nack_without_a_value() {
+        assert_eq!(
+            pom_result_from_railcom_items(
+                pom_id(3),
+                seq(5),
+                DccAddress::new_short(3),
+                true,
+                &[RailcomItem::Nack],
+            ),
+            Some(PomRailcomResult::Window {
+                request_id: pom_id(3),
+                packet_sequence: seq(5),
+                target_address: DccAddress::new_short(3),
+                value: None,
+                ack: false,
+                nack: true,
             })
         );
     }

@@ -82,6 +82,18 @@ mod tests {
     }
 
     #[test]
+    fn every_publication_moves_to_a_new_even_generation() {
+        let slot = SeqSlot::<1>::new();
+        let mut seen = [0; 3];
+        for generation in &mut seen {
+            slot.publish([1]);
+            *generation = slot.generation.load(Ordering::Relaxed);
+        }
+
+        assert_eq!(seen, [2, 4, 6]);
+    }
+
+    #[test]
     fn generation_wrap_never_reuses_the_unpublished_sentinel() {
         let slot = SeqSlot::<1>::new();
         slot.generation.store(u32::MAX - 1, Ordering::Relaxed);

@@ -146,7 +146,7 @@ fn apply_status_event(
     model: &mut StatusModel,
     prev_state: &mut LedState,
     event: SystemStatusEvent,
-    display_sender: &DisplaySender,
+    display_sender: DisplaySender,
 ) {
     model.apply(event);
     let new_state = model.led_state();
@@ -184,14 +184,14 @@ pub async fn status_led_task(
         if let Some(period) = blink_period_for(now_shown) {
             if let Ok(event) = with_timeout(period, status_receiver.receive()).await {
                 blink_on = true;
-                apply_status_event(&mut model, &mut prev_state, event, &display_sender);
+                apply_status_event(&mut model, &mut prev_state, event, display_sender);
             } else {
                 blink_on = !blink_on;
             }
         } else {
             let event = status_receiver.receive().await;
             blink_on = true;
-            apply_status_event(&mut model, &mut prev_state, event, &display_sender);
+            apply_status_event(&mut model, &mut prev_state, event, display_sender);
         }
     }
 }

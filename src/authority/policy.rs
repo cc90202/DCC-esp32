@@ -250,10 +250,10 @@ pub(crate) enum LeaseVerdict {
 /// not own the lease are harmless; any other rejected activity is refused.
 #[must_use]
 pub(crate) fn lease_verdict<C>(
-    decision: LeaseDecision<C>,
+    decision: &LeaseDecision<C>,
     activity: LeaseActivity,
 ) -> LeaseVerdict {
-    match decision {
+    match *decision {
         LeaseDecision::Acquired(permit) | LeaseDecision::Renewed(permit) => {
             LeaseVerdict::ExecuteForOwner {
                 permit: Some(permit),
@@ -500,7 +500,7 @@ mod tests {
     fn rejected_keepalive_executes_without_lease_update() {
         let decision = LeaseDecision::<u8>::Rejected(LeaseRejection::OwnedByAnotherClient);
         assert_eq!(
-            lease_verdict(decision, LeaseActivity::KeepAlive),
+            lease_verdict(&decision, LeaseActivity::KeepAlive),
             LeaseVerdict::ExecuteWithoutLeaseUpdate
         );
     }
@@ -509,7 +509,7 @@ mod tests {
     fn rejected_command_is_refused() {
         for activity in [LeaseActivity::Acquire, LeaseActivity::Logoff] {
             let decision = LeaseDecision::<u8>::Rejected(LeaseRejection::NoActiveLease);
-            assert_eq!(lease_verdict(decision, activity), LeaseVerdict::Reject);
+            assert_eq!(lease_verdict(&decision, activity), LeaseVerdict::Reject);
         }
     }
 
@@ -520,14 +520,14 @@ mod tests {
         };
         assert_eq!(
             lease_verdict(
-                LeaseDecision::<u8>::Acquired(permit()),
+                &LeaseDecision::<u8>::Acquired(permit()),
                 LeaseActivity::Acquire
             ),
             expected
         );
         assert_eq!(
             lease_verdict(
-                LeaseDecision::<u8>::Renewed(permit()),
+                &LeaseDecision::<u8>::Renewed(permit()),
                 LeaseActivity::Acquire
             ),
             expected
@@ -538,7 +538,7 @@ mod tests {
     fn maintained_carries_no_permit() {
         assert_eq!(
             lease_verdict(
-                LeaseDecision::<u8>::Maintained(permit()),
+                &LeaseDecision::<u8>::Maintained(permit()),
                 LeaseActivity::KeepAlive
             ),
             LeaseVerdict::ExecuteForOwner { permit: None }
@@ -556,7 +556,7 @@ mod tests {
                 client: 7_u8,
                 reason: TripReason::OwnerLogoff,
             };
-            assert_eq!(lease_verdict(decision, activity), LeaseVerdict::Trip);
+            assert_eq!(lease_verdict(&decision, activity), LeaseVerdict::Trip);
         }
     }
 }

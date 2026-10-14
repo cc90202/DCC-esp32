@@ -1,9 +1,12 @@
 [package]
-edition      = "2024"
-name         = "ota-pack"
-publish      = false
-rust-version = "1.88"
-version      = "0.1.0"
+edition.workspace      = true
+name                   = "ota-pack"
+publish.workspace      = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[lints]
+workspace = true
 
 [dependencies]
 anyhow         = "1"

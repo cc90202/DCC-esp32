@@ -106,7 +106,7 @@ static POM_RAILCOM_RESULTS: PomRailcomResultChannel = PomRailcomResultChannel::n
 static WIFI_PARTITION_TABLE_BUFFER: StaticCell<[u8; PARTITION_TABLE_MAX_LEN]> = StaticCell::new();
 
 fn spawn_critical<S>(
-    spawner: &Spawner,
+    spawner: Spawner,
     token: SpawnToken<S>,
     task: CriticalTask,
 ) -> Result<(), BootError> {
@@ -155,7 +155,7 @@ fn spawn_display(
     };
 
     spawn_critical(
-        spawner,
+        *spawner,
         display_task_wrapper(i2c, DISPLAY_CHANNEL.receiver(), BOOT_READY.sender()),
         CriticalTask::Display,
     )?;
@@ -235,7 +235,7 @@ async fn start_dcc_core(
     info!("boot: track SLEEP GPIO18 held LOW; RailCom cutout/run GPIO4 held inactive HIGH");
 
     spawn_critical(
-        spawner,
+        *spawner,
         client_watchdog_task(ClientWatchdogContext {
             request_receiver: LEASE_REQUESTS.receiver(),
             response_sender: LEASE_RESPONSES.sender(),
@@ -247,7 +247,7 @@ async fn start_dcc_core(
     )?;
 
     spawn_critical(
-        spawner,
+        *spawner,
         dcc_engine_task_wrapper(
             receiver,
             FAULT_CHANNEL.sender(),
@@ -259,7 +259,7 @@ async fn start_dcc_core(
     info!("boot: DCC engine task spawned");
 
     spawn_critical(
-        spawner,
+        *spawner,
         status_led_task(
             SYSTEM_STATUS.receiver(),
             green_led,
@@ -272,7 +272,7 @@ async fn start_dcc_core(
     info!("boot: status LED task spawned");
 
     spawn_critical(
-        spawner,
+        *spawner,
         scheduler_task_wrapper(
             POWER_QUIESCE.receiver(),
             command_receiver,
@@ -288,12 +288,12 @@ async fn start_dcc_core(
 
     #[cfg(feature = "bench-diag")]
     {
-        spawn_critical(spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
+        spawn_critical(*spawner, railcom_diag_task(), CriticalTask::RailcomDiag)?;
         info!("boot: RailCom diagnostics task spawned");
     }
 
     spawn_critical(
-        spawner,
+        *spawner,
         pom_actor_task(
             POM_REQUESTS.receiver(),
             POM_RESPONSES.sender(),
@@ -304,7 +304,7 @@ async fn start_dcc_core(
         CriticalTask::PomActor,
     )?;
     spawn_critical(
-        spawner,
+        *spawner,
         pom_cutout_monitor_task(POM_TX_STARTED.sender()),
         CriticalTask::PomCutoutMonitor,
     )?;
@@ -325,12 +325,12 @@ fn spawn_railcom_runtime(
 ) -> Result<(), BootError> {
     let railcom_uart_rx = initialize_railcom_receiver(uart, rx_pin)?;
     spawn_critical(
-        spawner,
+        *spawner,
         railcom_isr_capture_task_wrapper(railcom_uart_rx, RAILCOM_RUNTIME_RESULTS.sender()),
         CriticalTask::RailcomIsrCapture,
     )?;
     spawn_critical(
-        spawner,
+        *spawner,
         railcom_uart_runtime_dispatch_task(
             RAILCOM_RUNTIME_RESULTS.receiver(),
             POM_RAILCOM_RESULTS.sender(),
@@ -348,7 +348,7 @@ async fn spawn_network_runtime(
     credentials: WifiCredentials,
 ) -> Result<(), BootError> {
     spawn_critical(
-        &spawner,
+        spawner,
         net_task_wrapper(NetTaskWrapperContext {
             spawner,
             wifi,
@@ -407,7 +407,7 @@ async fn activate_safe_runtime(
     info!("boot: power-on idle burst complete (20 packets)");
 
     spawn_critical(
-        spawner,
+        *spawner,
         fault_effects_task(FaultEffectsTaskContext {
             effects_signal: &FAULT_EFFECTS,
             scheduler_sender: scheduler_commands.sender(),
@@ -418,7 +418,7 @@ async fn activate_safe_runtime(
         CriticalTask::FaultEffects,
     )?;
     spawn_critical(
-        spawner,
+        *spawner,
         fault_manager_task(FaultManagerTaskContext {
             receiver: FAULT_CHANNEL.receiver(),
             power_quiesce_sender: POWER_QUIESCE.sender(),
@@ -433,7 +433,7 @@ async fn activate_safe_runtime(
     info!("boot: fault manager task spawned");
 
     spawn_critical(
-        spawner,
+        *spawner,
         provisioning_request_task(partition_table_buffer, PROVISIONING_REQUESTS.receiver()),
         CriticalTask::ProvisioningRequest,
     )?;
@@ -441,12 +441,12 @@ async fn activate_safe_runtime(
 
     let stop_button = new_button_input(stop_pin);
     spawn_critical(
-        spawner,
+        *spawner,
         stop_button_task(stop_button, FAULT_CHANNEL.sender(), BOOT_READY.sender()),
         CriticalTask::StopButton,
     )?;
     spawn_critical(
-        spawner,
+        *spawner,
         resume_button_task(
             resume_button,
             FAULT_CHANNEL.sender(),
@@ -465,7 +465,7 @@ async fn activate_safe_runtime(
         .receiver()
         .ok_or(CriticalTaskInit::FaultStateReceiverUnavailable)?;
     spawn_critical(
-        spawner,
+        *spawner,
         short_detector_task(
             short_pin,
             FAULT_CHANNEL.sender(),
@@ -517,7 +517,7 @@ async fn run_setup_mode(
 
     // Setup-mode LED feedback: red blink, same pattern as WiFi connecting.
     spawn_critical(
-        &spawner,
+        spawner,
         provisioning_led_task(
             new_led_output(hardware.green_led_pin),
             new_led_output(hardware.red_led_pin),

@@ -94,12 +94,12 @@ fn test_encode_hwinfo() {
     // HW_TYPE = Z21 black = 0x00000200
     assert_eq!(
         u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
-        0x00000200
+        0x0000_0200
     );
     // FW_VERSION = 1.40 = 0x00000140
     assert_eq!(
         u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
-        0x00000140
+        0x0000_0140
     );
 }
 
@@ -275,6 +275,12 @@ fn test_parse_set_loco_function_rejects_out_of_range_index() {
     // F29 ON: low 6 bits encode 29, which is outside supported F0..F28 range.
     let frame = xbus_frame(0xE4, &[0xF8, 0x00, 0x03, 0x5D]);
     assert_eq!(parse_frame(&frame), Err(ParseError::InvalidFunction));
+    // F28 ON is the last supported function.
+    let frame = xbus_frame(0xE4, &[0xF8, 0x00, 0x03, 0x5C]);
+    assert!(matches!(
+        parse_frame(&frame),
+        Ok(Z21Command::SetLocoFunction { function: 28, .. })
+    ));
 }
 
 #[test]
@@ -384,6 +390,19 @@ fn test_parse_cv_pom_read_byte() {
     assert_eq!(cv, 1);
 }
 
+#[test]
+fn test_parse_cv_pom_reads_the_high_cv_bits_from_the_operation_byte() {
+    // CV 1024 is wire CV 0x3FF: the top two bits ride in the operation byte.
+    let frame = xbus_frame(0xE6, &[0x30, 0x00, 0x03, 0xE7, 0xFF, 0x00]);
+    assert_eq!(
+        parse_frame(&frame),
+        Ok(Z21Command::CvPomReadByte {
+            address: addr_short(3),
+            cv: 1024,
+        })
+    );
+}
+
 // --- Encode tests ---
 
 #[test]
@@ -428,11 +447,11 @@ fn test_encode_loco_mode() {
 #[test]
 fn test_encode_railcom_data() {
     let mut buf = [0u8; 24];
-    let n = encode_railcom_data(addr_short(3), 42, 1, &mut buf);
+    let n = encode_railcom_data(addr_long(1000), 42, 1, &mut buf);
     assert_eq!(n, Some(17));
     assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 17);
     assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 0x0088);
-    assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), 3);
+    assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), 1000);
     assert_eq!(u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]), 42);
     assert_eq!(u16::from_le_bytes([buf[10], buf[11]]), 1);
     assert_eq!(buf[13], 0);
@@ -470,6 +489,10 @@ fn test_encode_cv_result() {
         &[0x0A, 0x00, 0x40, 0x00, 0x64, 0x14, 0x00, 0x1C, 0x06]
     );
     assert_eq!(buf[9], 0x64 ^ 0x14 ^ 0x1C ^ 0x06);
+
+    // CV 1024 is wire CV 0x3FF, split over DB1 and DB2.
+    encode_cv_result(1024, 6, &mut buf).expect("CV 1024 is in range");
+    assert_eq!(&buf[6..8], &[0x03, 0xFF]);
 }
 
 #[test]
@@ -589,7 +612,7 @@ fn test_encode_unknown_command() {
 #[test]
 fn test_encode_serial_number() {
     let mut buf = [0u8; 32];
-    let n = encode_serial_number(0xDEADBEEF, &mut buf);
+    let n = encode_serial_number(0xDEAD_BEEF, &mut buf);
     assert_eq!(n, Some(8));
     assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 8);
     // little-endian
@@ -676,6 +699,39 @@ fn test_invalid_frame_too_short() {
 }
 
 #[test]
+fn every_command_cut_short_is_rejected_before_its_fields_are_read() {
+    let raw_frames: [&[u8]; 4] = [
+        &[0x05, 0x00, HEADER_GET_LOCOMODE as u8, 0x00, 0x00],
+        &[0x06, 0x00, HEADER_SET_LOCOMODE as u8, 0x00, 0xC3, 0xE8],
+        &[0x06, 0x00, HEADER_RAILCOM_GETDATA as u8, 0x00, 0x01, 0x03],
+        &[0x06, 0x00, HEADER_LOCONET_DETECTOR as u8, 0x00, 0x80, 0x00],
+    ];
+    for frame in raw_frames {
+        assert_eq!(
+            parse_frame(frame),
+            Err(ParseError::FrameTooShort),
+            "{frame:02X?}"
+        );
+    }
+
+    let xbus_frames = [
+        xbus_frame(XHEADER_GET_VERSION, &[]),
+        xbus_frame(XHEADER_SET_LOCO_ESTOP, &[0x00]),
+        xbus_frame(XHEADER_GET_LOCO_INFO, &[0xF0, 0x00]),
+        xbus_frame(XHEADER_SET_LOCO_DRIVE, &[0x13, 0x00, 0x03]),
+        xbus_frame(XHEADER_CV_POM, &[0x30, 0x00, 0x03, 0xEC, 0x1C]),
+        xbus_frame(XHEADER_GET_FIRMWARE_VERSION, &[]),
+    ];
+    for frame in &xbus_frames {
+        assert_eq!(
+            parse_frame(frame),
+            Err(ParseError::FrameTooShort),
+            "{frame:02X?}"
+        );
+    }
+}
+
+#[test]
 fn test_invalid_frame_len_mismatch() {
     // Says len=8 but only 4 bytes
     let buf = [0x08, 0x00, 0x10, 0x00];
@@ -731,19 +787,24 @@ fn test_loco_address_long_encoding() {
 
 #[test]
 fn test_function_bitmask_f0_f28() {
-    // Set F0 and F28, encode loco_info, verify DB4 (buf[9]) and DB7 (buf[12])
+    // F1 and F4 stay off so no neighbouring bit leaks into their places in
+    // DB4; F5/F12, F13 and F28 mark the edges of DB5, DB6 and DB7.
+    let on = [0, 2, 3, 5, 12, 13, 28];
     let state = LocoInfo {
-        address: addr_short(1),
+        address: addr_long(1000),
         speed: LogicalSpeed::zero(SpeedFormat::Speed128),
         direction: Direction::Forward,
-        functions: FunctionState::from_bits((1 << 0) | (1 << 28)).unwrap(), // F0 and F28
+        functions: FunctionState::from_bits(on.iter().fold(0, |bits, f| bits | (1 << f))).unwrap(),
     };
     let mut buf = [0u8; 32];
     encode_loco_info(&state, &mut buf).expect("test response buffer must fit");
-    // DB4 (buf[9]): F0 in bit4 → 0b00010000 = 0x10
-    assert_eq!(buf[9] & 0x10, 0x10, "F0 should be in DB4 bit4");
-    // DB7 (buf[12]): F28 in bit7 → 0x80
-    assert_eq!(buf[12] & 0x80, 0x80, "F28 should be in DB7 bit7");
+    assert_eq!(
+        &buf[5..7],
+        &[0xC3, 0xE8],
+        "long address 1000, flag bits set"
+    );
+    // DB4 = 0DSLFGHJ: L=F0, F=F4, G=F3, H=F2, J=F1.
+    assert_eq!(&buf[9..13], &[0b0001_0110, 0x81, 0x01, 0x80]);
 }
 
 #[test]
@@ -808,6 +869,9 @@ fn test_encode_turnout_info_unknown_state() {
     assert_eq!(buf[6], 0x05); // AddrL
     assert_eq!(buf[7], 0x00); // DB2: state unknown
     assert_eq!(buf[8], 0x43 ^ 0x05); // XCS
+
+    encode_turnout_info(addr_long(300), &mut buf).expect("test response buffer must fit");
+    assert_eq!(&buf[5..7], &[0x01, 0x2C], "address 300 high byte first");
 }
 
 #[test]

@@ -245,7 +245,7 @@ impl SlotManager {
             .iter()
             .any(|slot| !slot.speed.is_zero())
             .then(|| self.advance_mutation_sequence());
-        for slot in self.slots.iter_mut() {
+        for slot in &mut self.slots {
             if !slot.speed.is_zero() {
                 slot.stopped_since = stopped_since;
             }

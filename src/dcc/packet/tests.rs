@@ -197,6 +197,7 @@ fn test_packed_address_flags_roundtrip() {
 
     let packed = PackedAddressFlags::new(Some(short))
         .with_flag(0, true)
+        .with_flag(0, true)
         .with_flag(1, false);
 
     assert_eq!(packed.address(), Some(short));
@@ -216,13 +217,17 @@ fn test_packed_address_flags_no_flags_set_by_default() {
 
 #[test]
 fn test_packed_address_flags_field_replaces_previous_value() {
-    let packed = PackedAddressFlags::new(None)
-        .with_field(0, 2, 1)
-        .with_field(0, 2, 3);
+    let short = DccAddress::new_short(3).unwrap();
+    let packed = PackedAddressFlags::new(Some(short))
+        .with_field(2, 2, 3)
+        .with_field(2, 2, 1);
 
-    assert_eq!(packed.field(0, 2), 3);
-    assert!(packed.flag(0));
-    assert!(packed.flag(1));
+    assert_eq!(packed.field(2, 2), 1);
+    assert_eq!(packed.address(), Some(short));
+    assert_eq!(
+        [0, 1, 2, 3].map(|index| packed.flag(index)),
+        [false, false, true, false]
+    );
 }
 
 #[test]

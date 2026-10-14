@@ -1,7 +1,12 @@
 //! Fixtures for tests: well-formed images and packages signed with a fixed
 //! key. Never part of a firmware build.
 
-use ed25519_dalek::{Signer, SigningKey};
+#![allow(
+    clippy::expect_used,
+    reason = "fixtures for tests: a fixture that cannot be built is a failed test"
+)]
+
+use ed25519_dalek::SigningKey;
 
 use crate::{
     Digest, ImageLen, Version,
@@ -14,7 +19,7 @@ use crate::{
             VERSION_FIELD,
         },
     },
-    package::{HEADER_LEN, KeyId, Manifest, SIGNED_LEN, unsigned_header},
+    package::{HEADER_LEN, KeyId, Manifest, sign_header, unsigned_header},
     target::{ESP32C6_CHIP_ID, PROJECT},
 };
 
@@ -77,8 +82,7 @@ pub fn signed(version: Version, image_len: ImageLen, digest: Digest) -> [u8; HEA
     let signing = signing_key();
     let key_id = KeyId::of(&signing.verifying_key());
     let mut header = unsigned_header(version, image_len, digest, key_id);
-    let signature = signing.sign(&header[..SIGNED_LEN]).to_bytes();
-    header[SIGNED_LEN..].copy_from_slice(&signature);
+    sign_header(&mut header, &signing);
     header
 }
 

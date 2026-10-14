@@ -14,11 +14,11 @@ use dcc_ota_format::{
     Digest, ImageLen,
     image::{self, BuildKind, EmbeddedKey, ImageError, Inspected},
     package::{
-        HEADER_LEN, KeyId, Manifest, PackageError, SIGNED_LEN, UnverifiedManifest, unsigned_header,
+        HEADER_LEN, KeyId, Manifest, PackageError, UnverifiedManifest, sign_header, unsigned_header,
     },
     target::{CHIP_NAME, PROJECT_NAME},
 };
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use zeroize::Zeroizing;
 
 /// Longest package: header plus one full slot.
@@ -193,8 +193,7 @@ fn sign(
         "embedded key differs: rotation requires explicit --rotate-to matching the new key"
     );
     let mut header = unsigned_header(version, len, Digest::of(image), KeyId::of(&signer));
-    let signature = key.sign(&header[..SIGNED_LEN]).to_bytes();
-    header[SIGNED_LEN..].copy_from_slice(&signature);
+    sign_header(&mut header, key);
     Ok([&header[..], image].concat())
 }
 

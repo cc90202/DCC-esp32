@@ -9,7 +9,7 @@ use alloc::string::ToString;
 use core::fmt;
 use defmt::{info, warn};
 use embassy_executor::Spawner;
-use embassy_net::{Config, Stack, StackResources};
+use embassy_net::{Config, DhcpConfig, Stack, StackResources};
 use embassy_time::{Duration, Timer};
 use esp_radio::wifi::{
     AuthMethod, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent,
@@ -119,7 +119,7 @@ pub(super) async fn start_network_stack(
         .map_err(NetInitError::WifiBringup)?;
     info!("WiFi started, connecting to SSID: {}", credentials.ssid());
 
-    let net_config = Config::dhcpv4(Default::default());
+    let net_config = Config::dhcpv4(DhcpConfig::default());
     let seed = radio::stack_seed();
     let resources = NET_RESOURCES.init(StackResources::new());
     let (stack, runner) = embassy_net::new(interfaces.sta, net_config, resources, seed);
@@ -167,20 +167,17 @@ pub(super) async fn connection_task(
         match state {
             ConnectionState::Connecting => {
                 status_sender.send(SystemStatusEvent::WifiConnecting).await;
-                match controller.connect_async().await {
-                    Ok(_) => {
-                        info!("WiFi connected");
-                        status_sender.send(SystemStatusEvent::WifiConnected).await;
-                        state = ConnectionState::Connected;
-                    }
-                    Err(_) => {
-                        crate::liveness::network_ready(false);
-                        warn!("WiFi connect failed, retrying in 5s");
-                        status_sender
-                            .send(SystemStatusEvent::WifiDisconnected)
-                            .await;
-                        Timer::after(Duration::from_secs(5)).await;
-                    }
+                if controller.connect_async().await.is_ok() {
+                    info!("WiFi connected");
+                    status_sender.send(SystemStatusEvent::WifiConnected).await;
+                    state = ConnectionState::Connected;
+                } else {
+                    crate::liveness::network_ready(false);
+                    warn!("WiFi connect failed, retrying in 5s");
+                    status_sender
+                        .send(SystemStatusEvent::WifiDisconnected)
+                        .await;
+                    Timer::after(Duration::from_secs(5)).await;
                 }
             }
             ConnectionState::Connected => {

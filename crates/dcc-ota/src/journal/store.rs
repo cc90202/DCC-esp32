@@ -135,12 +135,11 @@ mod tests {
             let result = save(&mut flash, first);
             flash.cut = None;
             let found = load(&mut flash);
-            match result {
-                Ok(saved) => assert_eq!(found, Ok(Some(saved))),
-                Err(_) => {
-                    assert_eq!(found, Ok(None), "call {call}, prefix {prefix}");
-                    assert!(save(&mut flash, first).is_ok(), "the save can be repeated");
-                }
+            if let Ok(saved) = result {
+                assert_eq!(found, Ok(Some(saved)));
+            } else {
+                assert_eq!(found, Ok(None), "call {call}, prefix {prefix}");
+                assert!(save(&mut flash, first).is_ok(), "the save can be repeated");
             }
         }
     }
@@ -165,6 +164,36 @@ mod tests {
         assert_eq!(
             &flash.bytes[SECTOR_SIZE..SECTOR_SIZE + RECORD_SIZE],
             &encode(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn two_sectors_of_one_generation_must_hold_the_same_record() {
+        let record = Record {
+            generation: 3,
+            ..Record::installed(image(Slot::A, 0))
+        };
+        let mut flash = journal();
+        flash.bytes[..RECORD_SIZE].copy_from_slice(&encode(&record).unwrap());
+        flash.bytes[SECTOR_SIZE..SECTOR_SIZE + RECORD_SIZE]
+            .copy_from_slice(&encode(&record).unwrap());
+        assert_eq!(load(&mut flash), Ok(Some(record)));
+
+        let other = Record {
+            generation: 3,
+            ..Record::installed(image(Slot::A, 1))
+        };
+        flash.bytes[SECTOR_SIZE..SECTOR_SIZE + RECORD_SIZE]
+            .copy_from_slice(&encode(&other).unwrap());
+        assert_eq!(load(&mut flash), Err(StateError::Corrupt));
+    }
+
+    #[test]
+    fn a_flash_ending_inside_the_second_sector_is_unsuitable() {
+        let mut flash = SimFlash::new(JOURNAL_OFFSET, SECTORS * SECTOR_SIZE - 4);
+        assert_eq!(
+            load(&mut flash),
+            Err(StateError::Flash(FlashError::Unsuitable))
         );
     }
 

@@ -136,6 +136,69 @@ fn unexpired_loco_request_is_applied_before_its_deadline() {
     ));
 }
 
+fn loco_message(request: LocoRequest, permit: Option<LeasePermit>) -> LocoRequestMessage {
+    LocoRequestMessage {
+        request_id: LocoRequestId::new(6),
+        request: SchedulerRequest::Loco { request, permit },
+        deadline: LocoRequestDeadline::from_ticks(101),
+    }
+}
+
+#[test]
+fn lease_bound_request_needs_a_permit_both_authority_and_scheduler_accept() {
+    let permit = permit();
+    let stale = LeasePermit::new(LeaseEpoch::new(2), u64::MAX);
+    let mut manager = SlotManager::new();
+    manager.reset_for_lease(permit);
+    let set_speed = LocoRequest::SetSpeed {
+        address: addr(3),
+        speed: ls(10, SpeedFormat::Speed128),
+        direction: Direction::Forward,
+    };
+
+    for (permit, authority_accepts) in [(None, true), (Some(permit), false), (Some(stale), true)] {
+        let message = loco_message(set_speed, permit);
+        assert_eq!(
+            handle_loco_request_message(
+                &mut manager,
+                message,
+                100,
+                |_| authority_accepts,
+                |_| true
+            )
+            .result,
+            LocoRequestResult::Rejected,
+            "permit {permit:?}, authority accepts: {authority_accepts}"
+        );
+    }
+    assert!(manager.is_empty());
+
+    let get_state = loco_message(LocoRequest::GetState { address: addr(3) }, None);
+    assert_eq!(
+        handle_loco_request_message(&mut manager, get_state, 100, |_| false, |_| false).result,
+        LocoRequestResult::NotFound
+    );
+}
+
+#[test]
+fn lease_reset_refused_by_the_authority_leaves_the_scheduler_untouched() {
+    let mut manager = SlotManager::new();
+    assert!(manager.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    drain_pending_slot_transmissions(&mut manager);
+    let message = LocoRequestMessage {
+        request_id: LocoRequestId::new(8),
+        request: SchedulerRequest::ResetForLease { permit: permit() },
+        deadline: LocoRequestDeadline::from_ticks(101),
+    };
+
+    assert_eq!(
+        handle_loco_request_message(&mut manager, message, 100, |_| false, |_| true).result,
+        LocoRequestResult::Rejected
+    );
+    assert!(!manager.accepts_lease(permit()));
+    assert_eq!(manager.loco_snapshot(addr(3)).unwrap().speed.value(), 10);
+}
+
 #[test]
 fn reset_barrier_stops_motion_and_clears_pending_pom() {
     let permit = permit();
@@ -148,6 +211,7 @@ fn reset_barrier_stops_motion_and_clears_pending_pom() {
             cv: pom_cv(1),
         },
     ));
+    assert!(manager.railcom_telemetry_packet(DccPacket::Idle));
     let message = LocoRequestMessage {
         request_id: LocoRequestId::new(7),
         request: SchedulerRequest::ResetForLease { permit },
@@ -159,13 +223,30 @@ fn reset_barrier_stops_motion_and_clears_pending_pom() {
         LocoRequestResult::LeaseReset(permit.epoch())
     );
     assert!(manager.loco_snapshot(addr(3)).unwrap().speed.is_zero());
-    assert_ne!(
-        manager.build_next_packet(),
-        Some(DccPacket::PomReadByte {
-            address: addr(3),
-            cv: pom_cv(1),
-        })
-    );
+    for _ in 0..16 {
+        let packet = manager.build_next_packet();
+        assert!(
+            !matches!(
+                packet,
+                Some(DccPacket::PomReadByte { .. } | DccPacket::Idle) | None
+            ),
+            "work queued under the old lease was emitted: {packet:?}"
+        );
+    }
+}
+
+#[test]
+fn queued_railcom_telemetry_goes_out_once_after_dirty_traffic_and_before_refresh() {
+    let mut manager = SlotManager::new();
+    assert!(manager.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    assert!(manager.railcom_telemetry_packet(DccPacket::Idle));
+    assert!(!manager.railcom_telemetry_packet(DccPacket::Idle));
+
+    let speed = DccPacket::speed_128step(addr(3), 10, Direction::Forward);
+    assert_eq!(manager.build_next_packet(), speed);
+    assert_eq!(manager.build_next_packet(), Some(DccPacket::Idle));
+    assert_eq!(manager.build_next_packet(), speed);
+    assert!(manager.railcom_telemetry_packet(DccPacket::Idle));
 }
 
 #[test]
@@ -842,7 +923,7 @@ fn test_function_refresh_fairness_speed_then_function() {
     let _ = set_function(&mut mgr, addr(1), 1, true);
 
     // Drain dirty speed + dirty function groups.
-    for _ in 0..(1 + usize::from(DIRTY_FUNCTION_RETRY_COUNT)) {
+    for _ in 0..=usize::from(DIRTY_FUNCTION_RETRY_COUNT) {
         let _ = mgr.build_next_packet();
     }
 
@@ -967,6 +1048,71 @@ fn test_f13_f28_dirty_and_refresh() {
         }
     }
     assert!(seen_fg3 && seen_fg4, "Both FG3 and FG4 should be emitted");
+}
+
+fn function_group_of(packet: Option<DccPacket>) -> (FunctionGroupKind, u8) {
+    match packet {
+        Some(DccPacket::FunctionGroup { kind, bits, .. }) => (kind, bits),
+        other => panic!("expected a function group packet, got {other:?}"),
+    }
+}
+
+#[test]
+fn every_dirty_function_group_is_repeated_the_full_retry_count_in_rotation() {
+    let mut mgr = SlotManager::new();
+    // A slot with a speed alternates speed and function packets in its
+    // refresh, so only the retries can send function packets back to back.
+    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    drain_pending_slot_transmissions(&mut mgr);
+    for function in [0, 5, 9, 13, 21] {
+        assert!(set_function(&mut mgr, addr(3), function, true));
+    }
+    let one_round = [
+        (FunctionGroupKind::G1, 0b1_0000),
+        (FunctionGroupKind::G2a, 1),
+        (FunctionGroupKind::G2b, 1),
+        (FunctionGroupKind::G3, 1),
+        (FunctionGroupKind::G4, 1),
+    ];
+
+    for _ in 0..DIRTY_FUNCTION_RETRY_COUNT {
+        for expected in one_round {
+            assert_eq!(function_group_of(mgr.build_next_packet()), expected);
+        }
+    }
+    assert!(!mgr.has_pending_slot_transmissions_for_test());
+}
+
+#[test]
+fn function_refresh_rotates_through_every_active_group() {
+    let mut mgr = SlotManager::new();
+    assert!(set_function(&mut mgr, addr(3), 0, true));
+    assert!(set_function(&mut mgr, addr(3), 13, true));
+    drain_pending_slot_transmissions(&mut mgr);
+
+    let first = function_group_of(mgr.build_next_packet()).0;
+    let second = function_group_of(mgr.build_next_packet()).0;
+    assert_ne!(first, second);
+    assert_eq!(function_group_of(mgr.build_next_packet()).0, first);
+    assert_eq!(function_group_of(mgr.build_next_packet()).0, second);
+}
+
+#[test]
+fn function_refresh_budget_fits_the_refresh_deadline_at_every_slot_count() {
+    assert_eq!(scheduler_tick_ms_for_slot_count(1), 120);
+    assert_eq!(scheduler_tick_ms_for_slot_count(12), 10);
+    for slot_count in 1..=LOCO_SLOT_CAPACITY {
+        let slot_period_ms = scheduler_tick_ms_for_slot_count(slot_count) * slot_count as u64;
+        let visits = u64::from(allowed_slot_visits_without_function(slot_count));
+        assert!(
+            visits * slot_period_ms <= MAX_FUNCTION_REFRESH_MS,
+            "{slot_count} slots"
+        );
+        assert!(
+            (visits + 1) * slot_period_ms > MAX_FUNCTION_REFRESH_MS,
+            "{slot_count} slots"
+        );
+    }
 }
 
 #[test]
@@ -1461,11 +1607,10 @@ fn test_ensure_railcom_refresh_slot_does_not_modify_existing_slot() {
 fn test_function_group_refreshed_after_all_off() {
     let mut mgr = SlotManager::new();
     let _ = set_function(&mut mgr, addr(3), 0, true);
-    // No dirty speed packet when slot is created by function-only command
-    mgr.build_next_packet(); // dirty G1 with FL on
+    drain_pending_slot_transmissions(&mut mgr);
 
     let _ = set_function(&mut mgr, addr(3), 0, false);
-    mgr.build_next_packet(); // dirty G1 with FL off
+    drain_pending_slot_transmissions(&mut mgr);
 
     // After: functions=0, known_groups=0b00001
     // The refresh loop MUST continue sending G1
@@ -1540,7 +1685,7 @@ fn test_railcom_budget_enforces_gap_between_refresh_cutouts() {
         railcom_scheduler_stats(),
         RailcomSchedulerStats {
             cutout_granted_count: 2,
-            cutout_skipped_budget_count: RAILCOM_MIN_PACKET_GAP as u32,
+            cutout_skipped_budget_count: u32::from(RAILCOM_MIN_PACKET_GAP),
             cutout_skipped_priority_count: 0,
             ..Default::default()
         }
@@ -1605,7 +1750,7 @@ fn test_railcom_budget_preserves_priority_during_command_burst_then_recovers() {
         railcom_scheduler_stats(),
         RailcomSchedulerStats {
             cutout_granted_count: 2,
-            cutout_skipped_budget_count: (RAILCOM_MIN_PACKET_GAP - 3) as u32,
+            cutout_skipped_budget_count: u32::from(RAILCOM_MIN_PACKET_GAP - 3),
             cutout_skipped_priority_count: 3,
             ..Default::default()
         }
@@ -1656,7 +1801,7 @@ fn pom_cutout_maps_read_and_write() {
     let speed = DccPacket::speed_128step(addr(3), 10, Direction::Forward)
         .expect("test speed must be valid");
 
-    assert_eq!(pom_cutout(&read), Some(CutoutMode::PomRead));
-    assert_eq!(pom_cutout(&write), Some(CutoutMode::PomWrite));
-    assert_eq!(pom_cutout(&speed), None);
+    assert_eq!(pom_cutout(read), Some(CutoutMode::PomRead));
+    assert_eq!(pom_cutout(write), Some(CutoutMode::PomWrite));
+    assert_eq!(pom_cutout(speed), None);
 }

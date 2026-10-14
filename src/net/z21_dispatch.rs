@@ -51,13 +51,11 @@ pub(super) const fn classify_lease_activity(command: Z21Command) -> LeaseClassif
 }
 
 pub(in crate::net) fn encoded_len(result: Option<usize>) -> usize {
-    match result {
-        Some(len) => len,
-        None => {
-            warn!("Z21 response buffer too short or response input invalid");
-            0
-        }
-    }
+    let Some(len) = result else {
+        warn!("Z21 response buffer too short or response input invalid");
+        return 0;
+    };
+    len
 }
 
 /// Route one already parsed Z21 command and build any immediate response.
@@ -108,10 +106,10 @@ async fn route_command(
         Z21Command::GetFirmwareVersion => device::encode_firmware_version(out),
         Z21Command::GetTurnoutInfo { address } => device::encode_unknown_turnout(address, out),
 
-        Z21Command::GetSystemState => track::encode_current_system_state(ctx.status_model, out),
+        Z21Command::GetSystemState => track::encode_current_system_state(*ctx.status_model, out),
         // Z21 apps expect an immediate state push after subscription.
-        Z21Command::SetBroadcastFlags => track::encode_current_system_state(ctx.status_model, out),
-        Z21Command::GetStatus => track::encode_current_status(ctx.status_model, out),
+        Z21Command::SetBroadcastFlags => track::encode_current_system_state(*ctx.status_model, out),
+        Z21Command::GetStatus => track::encode_current_status(*ctx.status_model, out),
         Z21Command::SetTrackPowerOn => {
             let Some(permit) = ctx.lease_permit else {
                 warn!("Z21 power-on rejected without a controller lease");

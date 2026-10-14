@@ -4,7 +4,7 @@
 //! A [`Record`] changes only through the transitions below, each of which
 //! checks the step it starts from, and [`Update`] carries the candidate in
 //! every step that has one, so an inconsistent record cannot be built
-//! outside this module. [`store`] persists it so that a power cut at any
+//! outside this module. The `store` submodule persists it so that a power cut at any
 //! byte leaves either the old or the new record.
 
 mod boot;
@@ -238,10 +238,8 @@ impl Record {
 
     /// Raises the failed-boot floor to `image`, never lowering it.
     fn reject(&mut self, image: ImageId) {
-        self.rejected = Some(
-            self.rejected
-                .map_or(image.version(), |floor| floor.max(image.version())),
-        );
+        let version = image.version();
+        self.rejected = Some(self.rejected.map_or(version, |floor| floor.max(version)));
     }
 }
 

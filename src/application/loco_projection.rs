@@ -174,6 +174,34 @@ mod tests {
     }
 
     #[test]
+    fn replacement_onto_a_projected_address_clears_only_the_removed_one() {
+        let mut slots = [None; 12];
+        slots[0] = Some(LocoState::from(snapshot(5, 0)));
+        slots[1] = Some(LocoState::from(snapshot(2, 0)));
+        slots[2] = Some(LocoState::from(snapshot(1, 0)));
+        let inserted = snapshot(2, 9);
+
+        assert_eq!(
+            apply_loco_result(
+                &mut slots,
+                LocoRequestResult::Replaced {
+                    removed: address(1),
+                    inserted,
+                },
+            ),
+            Ok(Some(LocoState::from(inserted)))
+        );
+        assert_eq!(
+            slots[..3],
+            [
+                Some(LocoState::from(snapshot(5, 0))),
+                Some(LocoState::from(inserted)),
+                None
+            ]
+        );
+    }
+
+    #[test]
     fn full_projection_without_confirmed_removed_address_is_not_guessed() {
         let mut slots = [None; 12];
         for (index, slot) in slots.iter_mut().enumerate() {

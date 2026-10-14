@@ -225,6 +225,33 @@ mod tests {
     }
 
     #[test]
+    fn a_selection_matches_only_its_own_slot_and_state() {
+        let mut flash = otadata();
+        select(&mut flash, Slot::B, EntryState::New).unwrap();
+        assert_eq!(is_selected(&mut flash, Slot::B, EntryState::New), Ok(true));
+        assert_eq!(
+            is_selected(&mut flash, Slot::B, EntryState::Valid),
+            Ok(false)
+        );
+        assert_eq!(is_selected(&mut flash, Slot::A, EntryState::New), Ok(false));
+    }
+
+    #[test]
+    fn removing_a_slot_no_entry_selects_erases_nothing() {
+        let mut flash = otadata();
+        select(&mut flash, Slot::B, EntryState::Valid).unwrap();
+        flash.start_log();
+        assert_eq!(remove_slot(&mut flash, Slot::A), Ok(()));
+        assert!(flash.erased.is_empty(), "erased {:x?}", flash.erased);
+    }
+
+    #[test]
+    fn a_flash_ending_inside_the_second_sector_is_unsuitable() {
+        let mut flash = SimFlash::new(OTADATA_OFFSET, 2 * SECTOR_SIZE - 4);
+        assert_eq!(read(&mut flash), Err(FlashError::Unsuitable));
+    }
+
+    #[test]
     fn invalid_entries_are_ignored_and_overflow_is_refused() {
         let mut flash = otadata();
         for state in [INVALID, ABORTED] {

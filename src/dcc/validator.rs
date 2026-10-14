@@ -105,12 +105,12 @@ impl core::error::Error for ValidationError {}
 /// valid "1" nor a valid "0".
 pub fn validate_timing(pulses: &[PulseCode]) -> Result<(), ValidationError> {
     for pulse in pulses {
-        classify_pulse(pulse)?;
+        classify_pulse(*pulse)?;
     }
     Ok(())
 }
 
-fn classify_pulse(pulse: &PulseCode) -> Result<DccBitKind, ValidationError> {
+fn classify_pulse(pulse: PulseCode) -> Result<DccBitKind, ValidationError> {
     if (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length1) {
         if (ONE_BIT_MIN_US..=ONE_BIT_MAX_US).contains(&pulse.length2) {
             return Ok(DccBitKind::One);
@@ -138,12 +138,12 @@ fn classify_pulse(pulse: &PulseCode) -> Result<DccBitKind, ValidationError> {
 }
 
 /// Returns true if a pulse represents a "1" bit
-fn is_one_bit(pulse: &PulseCode) -> bool {
+fn is_one_bit(pulse: PulseCode) -> bool {
     matches!(classify_pulse(pulse), Ok(DccBitKind::One))
 }
 
 /// Returns true if a pulse represents a "0" bit
-fn is_zero_bit(pulse: &PulseCode) -> bool {
+fn is_zero_bit(pulse: PulseCode) -> bool {
     matches!(classify_pulse(pulse), Ok(DccBitKind::Zero))
 }
 
@@ -161,7 +161,7 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
     }
 
     // Count preamble "1" bits
-    let preamble_count = pulses.iter().take_while(|p| is_one_bit(p)).count();
+    let preamble_count = pulses.iter().take_while(|p| is_one_bit(**p)).count();
 
     if preamble_count < 14 {
         return Err(ValidationError::InsufficientPreamble {
@@ -171,7 +171,7 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
 
     // Check start bit after preamble
     let mut pos = preamble_count;
-    if pos >= pulses.len() || !is_zero_bit(&pulses[pos]) {
+    if pos >= pulses.len() || !is_zero_bit(pulses[pos]) {
         return Err(ValidationError::MissingStartBit);
     }
     pos += 1; // skip start bit
@@ -194,13 +194,13 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
         pos += 8; // skip 8 data bit pulses
 
         // After 8 bits: expect "0" (inter-byte separator) or "1" (end bit)
-        if is_one_bit(&pulses[pos]) {
+        if is_one_bit(pulses[pos]) {
             // End bit: this should be the last pulse
             if pos != pulses.len() - 1 {
                 return Err(ValidationError::InvalidStructure);
             }
             break;
-        } else if is_zero_bit(&pulses[pos]) {
+        } else if is_zero_bit(pulses[pos]) {
             // Inter-byte separator, continue to next byte
             pos += 1;
         } else {
@@ -225,13 +225,13 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
 /// [`DCC_MAX_PACKET_BYTES`] bytes. Callers are tests, where a malformed stream
 /// is a bug to surface.
 pub(crate) fn decode_pulses(pulses: &[PulseCode]) -> heapless::Vec<u8, DCC_MAX_PACKET_BYTES> {
-    let preamble_count = pulses.iter().take_while(|p| is_one_bit(p)).count();
+    let preamble_count = pulses.iter().take_while(|p| is_one_bit(**p)).count();
     assert!(
         preamble_count >= 14,
         "preamble has {preamble_count} one bits, at least 14 required"
     );
     let mut bits = pulses[preamble_count..].iter().map(|pulse| {
-        match classify_pulse(pulse).expect("every pulse must be a valid DCC bit") {
+        match classify_pulse(*pulse).expect("every pulse must be a valid DCC bit") {
             DccBitKind::One => true,
             DccBitKind::Zero => false,
         }
@@ -309,9 +309,9 @@ pub fn validate_full(pulses: &[PulseCode]) -> Result<(), ValidationError> {
 ///
 /// Returns [`ValidationError::EncodingError`] if the packet cannot be encoded,
 /// otherwise the first error raised by [`validate_full`].
-pub fn validate_complete(packet: &DccPacket) -> Result<(), ValidationError> {
+pub fn validate_complete(packet: DccPacket) -> Result<(), ValidationError> {
     let pulses =
-        crate::dcc::encode_dcc_packet(packet).map_err(|_| ValidationError::EncodingError)?;
+        crate::dcc::encode_dcc_packet(&packet).map_err(|_| ValidationError::EncodingError)?;
     validate_full(&pulses)
 }
 

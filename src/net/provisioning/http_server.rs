@@ -32,12 +32,11 @@ where
 
     loop {
         info!("Provisioning HTTP listening on {}", SETUP_URL);
-        let abort = match socket.accept(HTTP_PORT).await {
-            Ok(()) => handle_connection(&mut socket, store).await,
-            Err(_) => {
-                warn!("Provisioning HTTP accept failed");
-                true
-            }
+        let abort = if socket.accept(HTTP_PORT).await.is_ok() {
+            handle_connection(&mut socket, store).await
+        } else {
+            warn!("Provisioning HTTP accept failed");
+            true
         };
         if abort {
             socket.abort();
@@ -78,26 +77,23 @@ where
         ParsedRequest::GetRoot => {
             let _ = send_response(socket, Status::Ok, "text/html; charset=utf-8", SETUP_PAGE).await;
         }
-        ParsedRequest::SaveCredentials(credentials) => match store.save(&credentials) {
-            Ok(()) => {
+        ParsedRequest::SaveCredentials(credentials) => {
+            if store.save(&credentials).is_ok() {
                 info!("WiFi credentials saved from provisioning form");
-                match send_response(socket, Status::Ok, "text/html; charset=utf-8", SAVE_OK_PAGE)
+                if send_response(socket, Status::Ok, "text/html; charset=utf-8", SAVE_OK_PAGE)
                     .await
+                    .is_ok()
                 {
-                    Ok(()) => {
-                        // Reboot only after the success page went out; a save
-                        // failure never reaches this arm, so a reboot with
-                        // unsaved credentials is impossible by construction.
-                        Timer::after(REBOOT_DELAY).await;
-                        info!("WiFi credentials saved; rebooting into station mode");
-                        crate::restart::restart();
-                    }
-                    Err(_) => {
-                        warn!("WiFi credential save succeeded but success response failed");
-                    }
+                    // Reboot only after the success page went out; a save
+                    // failure never reaches this branch, so a reboot with
+                    // unsaved credentials is impossible by construction.
+                    Timer::after(REBOOT_DELAY).await;
+                    info!("WiFi credentials saved; rebooting into station mode");
+                    crate::restart::restart();
+                } else {
+                    warn!("WiFi credential save succeeded but success response failed");
                 }
-            }
-            Err(_) => {
+            } else {
                 warn!("WiFi credential save failed");
                 let _ = send_response(
                     socket,
@@ -107,7 +103,7 @@ where
                 )
                 .await;
             }
-        },
+        }
     }
     false
 }

@@ -1,0 +1,14 @@
+# Functions allowed above the cognitive complexity limit of
+# scripts/check-complexity.sh, with the value they may not exceed. The list
+# only shrinks: lower a value when a function gets simpler, delete the line
+# when it drops within the limit, never add a line.
+#
+# Format: "<cognitive> <file>::<function>"
+30 src/dcc/scheduler/runtime.rs::packet_scheduler_task
+25 src/dcc/engine.rs::dcc_engine_task
+20 src/track_output.rs::cutout_timer_interrupt
+20 src/track_output.rs::cutout_timer_interrupt::<anonymous>
+20 src/z21/parsing.rs::parse_xbus
+16 src/dcc/scheduler/slot_manager/locomotives.rs::SlotManager::handle_loco_request
+16 src/net/udp_control.rs::handle_udp_datagram
+16 src/short_detector.rs::short_detector_task
