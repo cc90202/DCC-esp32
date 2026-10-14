@@ -1,0 +1,1012 @@
+# Mutants that survive the host tests, from the full run of 2026-10-14
+# (dcc-esp32, dcc-ota, dcc-ota-format; 1008 of 3654). scripts/run-mutants.sh
+# reports every missed mutant this list does not hold; line and column are
+# ignored when comparing. Regenerate it only from a full run.
+crates/dcc-ota-format/src/image/build.rs:126:12: delete ! in EmbeddedKey::decode
+crates/dcc-ota-format/src/image/build.rs:191:35: replace |= with &= in BuildScanner::feed
+crates/dcc-ota-format/src/image/build.rs:199:31: replace |= with &= in BuildScanner::feed
+crates/dcc-ota-format/src/image/build.rs:199:57: replace || with && in BuildScanner::feed
+crates/dcc-ota-format/src/image/build.rs:28:19: replace | with ^ in window
+crates/dcc-ota-format/src/image/build.rs:33:17: replace >= with < in starts_with_marker
+crates/dcc-ota-format/src/image/build.rs:34:9: replace && with || in starts_with_marker
+crates/dcc-ota-format/src/image/build.rs:37:13: replace == with != in starts_with_marker
+crates/dcc-ota-format/src/image/header.rs:128:13: replace || with && in Prefix::parse
+crates/dcc-ota-format/src/image/header.rs:129:13: replace || with && in Prefix::parse
+crates/dcc-ota-format/src/image/header.rs:174:23: replace > with == in Prefix::encoded_len
+crates/dcc-ota-format/src/image/header.rs:174:23: replace > with >= in Prefix::encoded_len
+crates/dcc-ota-format/src/image/header.rs:174:45: replace - with + in Prefix::encoded_len
+crates/dcc-ota-format/src/image/header.rs:174:45: replace - with / in Prefix::encoded_len
+crates/dcc-ota-format/src/image/header.rs:87:39: replace - with + in trailer_end
+crates/dcc-ota-format/src/image/header.rs:87:39: replace - with / in trailer_end
+crates/dcc-ota-format/src/image/mod.rs:50:9: replace ImageError::code -> &'static str with ""
+crates/dcc-ota-format/src/image/mod.rs:50:9: replace ImageError::code -> &'static str with "xyzzy"
+crates/dcc-ota-format/src/image/scanner.rs:134:15: replace < with <= in ImageScanner::scan_trailer
+crates/dcc-ota-format/src/image/scanner.rs:143:31: replace match guard self.header.is_some_and(|h| h.appended_hash) with true in ImageScanner::scan_trailer
+crates/dcc-ota-format/src/image/scanner.rs:163:13: replace || with && in ImageScanner::finish
+crates/dcc-ota-format/src/image/scanner.rs:76:66: replace < with <= in ImageScanner::feed
+crates/dcc-ota-format/src/image/scanner.rs:93:22: replace < with <= in ImageScanner::scan
+crates/dcc-ota-format/src/image/scanner.rs:93:22: replace < with == in ImageScanner::scan
+crates/dcc-ota-format/src/image/scanner.rs:94:27: replace ^= with &= in ImageScanner::scan
+crates/dcc-ota-format/src/image/scanner.rs:94:27: replace ^= with |= in ImageScanner::scan
+crates/dcc-ota-format/src/len.rs:44:9: replace ImageLen::as_usize -> usize with 0
+crates/dcc-ota-format/src/len.rs:44:9: replace ImageLen::as_usize -> usize with 1
+crates/dcc-ota-format/src/package.rs:109:9: replace Ineligible::code -> &'static str with ""
+crates/dcc-ota-format/src/package.rs:109:9: replace Ineligible::code -> &'static str with "xyzzy"
+crates/dcc-ota-format/src/package.rs:162:57: replace > with >= in UnverifiedManifest::decode
+crates/dcc-ota-format/src/package.rs:261:20: replace < with <= in Manifest::check_eligibility
+crates/dcc-ota-format/src/package.rs:83:9: replace PackageError::code -> &'static str with ""
+crates/dcc-ota-format/src/package.rs:83:9: replace PackageError::code -> &'static str with "xyzzy"
+crates/dcc-ota-format/src/testing.rs:48:20: replace % with + in fixture
+crates/dcc-ota-format/src/testing.rs:48:20: replace % with / in fixture
+crates/dcc-ota/src/error.rs:114:9: replace RequestError::code -> &'static str with ""
+crates/dcc-ota/src/error.rs:114:9: replace RequestError::code -> &'static str with "xyzzy"
+crates/dcc-ota/src/error.rs:164:9: replace Expired::code -> &'static str with ""
+crates/dcc-ota/src/error.rs:164:9: replace Expired::code -> &'static str with "xyzzy"
+crates/dcc-ota/src/error.rs:245:9: replace <impl core::error::Error for Error>::source -> Option<&(dyn core::error::Error +'static)> with None
+crates/dcc-ota/src/error.rs:41:9: replace FlashError::code -> &'static str with ""
+crates/dcc-ota/src/error.rs:41:9: replace FlashError::code -> &'static str with "xyzzy"
+crates/dcc-ota/src/error.rs:90:9: replace <impl core::error::Error for StateError>::source -> Option<&(dyn core::error::Error +'static)> with None
+crates/dcc-ota/src/image.rs:117:9: replace Hasher::digest -> Option<Digest> with None
+crates/dcc-ota/src/journal/codec.rs:205:43: replace | with ^ in check_envelope
+crates/dcc-ota/src/journal/codec.rs:205:58: replace | with ^ in check_envelope
+crates/dcc-ota/src/journal/store.rs:35:62: replace > with >= in scan
+crates/dcc-ota/src/journal/store.rs:57:66: replace - with + in never_committed
+crates/dcc-ota/src/journal/store.rs:99:62: replace - with + in save
+crates/dcc-ota/src/layout.rs:80:57: replace == with != in Slot::at
+crates/dcc-ota/src/notice.rs:159:9: replace Notice::awaits_track -> bool with false
+crates/dcc-ota/src/notice.rs:159:9: replace Notice::awaits_track -> bool with true
+crates/dcc-ota/src/notice.rs:99:13: replace < with ==
+crates/dcc-ota/src/notice.rs:99:13: replace < with >
+crates/dcc-ota/src/runtime/mod.rs:211:21: replace && with || in Runtime<'d, D>::status
+crates/dcc-ota/src/runtime/mod.rs:228:71: replace == with != in Runtime<'d, D>::status
+crates/dcc-ota/src/runtime/transfer.rs:270:19: replace != with == in UpdateGuard<'_, D>::push
+crates/dcc-ota/src/runtime/transfer.rs:327:61: replace == with != in UpdateGuard<'_, D>::activate
+crates/dcc-ota/src/runtime/trial.rs:35:27: replace && with || in Runtime<'_, D>::tick
+crates/dcc-ota/src/storage.rs:106:22: replace - with + in verify_erased
+crates/dcc-ota/src/storage.rs:15:15: replace && with || in divides_word
+crates/dcc-ota/src/storage.rs:34:9: replace || with && in check_geometry
+crates/dcc-ota/src/storage.rs:35:9: replace || with && in check_geometry
+crates/dcc-ota/src/writer.rs:74:9: replace <impl core::error::Error for TransferError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/boot.rs:113:5: replace spawn_critical -> Result<(), BootError> with Ok(())
+src/boot.rs:147:5: replace spawn_display -> Result<(), BootError> with Ok(())
+src/boot.rs:169:5: replace load_boot_wifi_decision -> Result<WifiBootDecision, BootError> with Ok(Default::default())
+src/boot.rs:174:42: replace || with && in load_boot_wifi_decision
+src/boot.rs:200:5: replace start_dcc_core -> Result<DccCore, BootError> with Ok(Default::default())
+src/boot.rs:326:5: replace spawn_railcom_runtime -> Result<(), BootError> with Ok(())
+src/boot.rs:350:5: replace spawn_network_runtime -> Result<(), BootError> with Ok(())
+src/boot.rs:393:5: replace activate_safe_runtime -> Result<(), BootError> with Ok(())
+src/boot.rs:508:5: replace run_setup_mode -> Result<(), BootError> with Ok(())
+src/boot.rs:509:9: replace && with || in run_setup_mode
+src/boot.rs:543:5: replace wifi_decision_unless_recovery -> Result<Option<WifiBootDecision>, BootError> with Ok(None)
+src/boot.rs:543:5: replace wifi_decision_unless_recovery -> Result<Option<WifiBootDecision>, BootError> with Ok(Some(Default::default()))
+src/boot.rs:545:23: replace match guard crate::ota::in_recovery() with false in wifi_decision_unless_recovery
+src/boot.rs:545:23: replace match guard crate::ota::in_recovery() with true in wifi_decision_unless_recovery
+src/boot.rs:557:5: replace run -> Result<(), BootError> with Ok(())
+src/boot/error.rs:109:9: replace BootError::action -> BootAction with Default::default()
+src/boot/error.rs:120:9: replace BootError::message -> &'static str with ""
+src/boot/error.rs:120:9: replace BootError::message -> &'static str with "xyzzy"
+src/boot/error.rs:132:5: replace degraded_peripheral_message -> &'static str with ""
+src/boot/error.rs:132:5: replace degraded_peripheral_message -> &'static str with "xyzzy"
+src/boot/error.rs:142:9: replace DccSelfCheckError::message -> &'static str with ""
+src/boot/error.rs:142:9: replace DccSelfCheckError::message -> &'static str with "xyzzy"
+src/boot/error.rs:155:9: replace CriticalHardwareInit::message -> &'static str with ""
+src/boot/error.rs:155:9: replace CriticalHardwareInit::message -> &'static str with "xyzzy"
+src/boot/error.rs:167:9: replace CriticalTaskInit::message -> &'static str with ""
+src/boot/error.rs:167:9: replace CriticalTaskInit::message -> &'static str with "xyzzy"
+src/boot/error.rs:179:9: replace <impl From<OptionalPeripheralInit> for BootError>::from -> Self with Default::default()
+src/boot/error.rs:185:9: replace <impl From<DccSelfCheckError> for BootError>::from -> Self with Default::default()
+src/boot/error.rs:191:9: replace <impl From<CriticalHardwareInit> for BootError>::from -> Self with Default::default()
+src/boot/error.rs:197:9: replace <impl From<CriticalTaskInit> for BootError>::from -> Self with Default::default()
+src/boot/error.rs:203:9: replace <impl From<WifiConfigInitError> for CriticalTaskInit>::from -> Self with Default::default()
+src/boot/error.rs:209:9: replace <impl From<WifiConfigInitError> for BootError>::from -> Self with Default::default()
+src/boot/error.rs:215:9: replace <impl fmt::Display for BootError>::fmt -> fmt::Result with Ok(Default::default())
+src/boot/error.rs:221:9: replace <impl core::error::Error for BootError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/boot/error.rs:221:9: replace <impl core::error::Error for BootError>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/boot/error.rs:233:9: replace <impl fmt::Display for DccSelfCheckError>::fmt -> fmt::Result with Ok(Default::default())
+src/boot/error.rs:241:9: replace <impl fmt::Display for CriticalHardwareInit>::fmt -> fmt::Result with Ok(Default::default())
+src/boot/error.rs:252:9: replace <impl core::error::Error for CriticalHardwareInit>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/boot/error.rs:252:9: replace <impl core::error::Error for CriticalHardwareInit>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/boot/error.rs:261:9: replace <impl fmt::Display for CriticalTaskInit>::fmt -> fmt::Result with Ok(Default::default())
+src/boot/error.rs:274:9: replace <impl core::error::Error for CriticalTaskInit>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/boot/error.rs:274:9: replace <impl core::error::Error for CriticalTaskInit>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/boot/error.rs:286:9: replace WifiConfigInitError::message -> &'static str with ""
+src/boot/error.rs:286:9: replace WifiConfigInitError::message -> &'static str with "xyzzy"
+src/boot/error.rs:296:9: replace <impl fmt::Display for WifiConfigInitError>::fmt -> fmt::Result with Ok(Default::default())
+src/boot/error.rs:306:9: replace <impl core::error::Error for WifiConfigInitError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/boot/error.rs:306:9: replace <impl core::error::Error for WifiConfigInitError>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/boot/error.rs:315:5: replace log_degraded_boot_error with ()
+src/boot/hardware.rs:19:5: replace start_async_runtime with ()
+src/boot/hardware.rs:30:5: replace initialize_display_bus -> Result<esp_hal::i2c::master::I2c<'static, esp_hal::Async>, BootError> with Ok(I2c::from(Default::default()))
+src/boot/hardware.rs:30:5: replace initialize_display_bus -> Result<esp_hal::i2c::master::I2c<'static, esp_hal::Async>, BootError> with Ok(I2c::from_iter([Default::default()]))
+src/boot/hardware.rs:30:5: replace initialize_display_bus -> Result<esp_hal::i2c::master::I2c<'static, esp_hal::Async>, BootError> with Ok(I2c::new())
+src/boot/hardware.rs:30:5: replace initialize_display_bus -> Result<esp_hal::i2c::master::I2c<'static, esp_hal::Async>, BootError> with Ok(I2c::new(Default::default()))
+src/boot/hardware.rs:45:5: replace initialize_dcc_rmt -> Result<(), BootError> with Ok(())
+src/boot/hardware.rs:86:5: replace initialize_railcom_receiver -> Result<UartRx<'static, esp_hal::Async>, BootError> with Ok(UartRx::from(Default::default()))
+src/boot/hardware.rs:86:5: replace initialize_railcom_receiver -> Result<UartRx<'static, esp_hal::Async>, BootError> with Ok(UartRx::from_iter([Default::default()]))
+src/boot/hardware.rs:86:5: replace initialize_railcom_receiver -> Result<UartRx<'static, esp_hal::Async>, BootError> with Ok(UartRx::new())
+src/boot/hardware.rs:86:5: replace initialize_railcom_receiver -> Result<UartRx<'static, esp_hal::Async>, BootError> with Ok(UartRx::new(Default::default()))
+src/boot/provisioning.rs:17:5: replace lock_flash -> Result<FlashGuard, BootError> with Ok(Default::default())
+src/boot/provisioning.rs:27:5: replace open_wifi_config_store -> Result<EspWifiConfigStore<'a, 'd>, BootError> with Ok(Default::default())
+src/boot/provisioning.rs:73:5: replace set_force_provisioning_on_next_boot -> Result<(), WifiConfigInitError> with Ok(())
+src/boot/readiness.rs:15:19: replace << with >>
+src/boot/readiness.rs:16:19: replace << with >>
+src/boot/readiness.rs:17:19: replace << with >>
+src/boot/readiness.rs:18:22: replace << with >>
+src/boot/readiness.rs:19:20: replace << with >>
+src/boot/readiness.rs:20:22: replace << with >>
+src/boot/readiness.rs:21:23: replace << with >>
+src/boot/readiness.rs:22:23: replace << with >>
+src/boot/readiness.rs:29:30: replace << with >>
+src/boot/readiness.rs:29:36: replace - with +
+src/boot/readiness.rs:29:36: replace - with /
+src/boot/readiness.rs:32:16: replace |= with &= in ReadySet::record
+src/boot/readiness.rs:32:9: replace ReadySet::record with ()
+src/boot/readiness.rs:36:16: replace == with != in ReadySet::is_complete
+src/boot/readiness.rs:36:9: replace ReadySet::is_complete -> bool with false
+src/boot/readiness.rs:36:9: replace ReadySet::is_complete -> bool with true
+src/boot/readiness.rs:52:5: replace wait_for_runtime_ready -> Result<(), BootError> with Ok(())
+src/boot/readiness.rs:55:11: delete ! in wait_for_runtime_ready
+src/boot/runtime_tasks.rs:150:5: replace railcom_diagnostics -> RailcomDiagnostics with Default::default()
+src/boot/runtime_tasks.rs:53:5: replace net_task_wrapper with ()
+src/boot/self_check.rs:10:5: replace log_packet_bytes with ()
+src/boot/self_check.rs:19:5: replace verify_boot_packet_encoding -> Result<(), BootError> with Ok(())
+src/boot/startup_sequence.rs:12:5: replace send_power_on_idle_burst with ()
+src/boot/startup_sequence.rs:21:5: replace send_decoder_reset_sequence with ()
+src/clock.rs:12:5: replace now -> Uptime with Default::default()
+src/clock.rs:17:5: replace now_ms -> u64 with 0
+src/clock.rs:17:5: replace now_ms -> u64 with 1
+src/clock.rs:22:5: replace since_boot -> Uptime with Default::default()
+src/clock.rs:27:5: replace deadline -> Instant with Default::default()
+src/clock.rs:32:5: replace ticks -> embassy_time::Duration with Default::default()
+src/clock.rs:37:5: replace hal -> esp_hal::time::Duration with Default::default()
+src/clock.rs:49:5: replace timed -> Result<F::Output, TimedOut> with Ok(Default::default())
+src/clock.rs:55:5: replace saturating_micros -> u64 with 0
+src/clock.rs:55:5: replace saturating_micros -> u64 with 1
+src/control_buttons.rs:108:5: replace wait_for_debounced_level with ()
+src/control_buttons.rs:130:5: replace classify_resume_button_press -> ResumePress with Default::default()
+src/control_buttons.rs:141:5: replace send_resume_action with ()
+src/control_buttons.rs:156:12: delete ! in send_resume_action
+src/control_buttons.rs:177:9: replace Refused::message -> &'static str with ""
+src/control_buttons.rs:177:9: replace Refused::message -> &'static str with "xyzzy"
+src/control_buttons.rs:215:30: replace || with && in resume_button_task
+src/control_buttons.rs:215:47: replace != with == in resume_button_task
+src/control_buttons.rs:235:5: replace new_button_input -> Input<'static> with Default::default()
+src/control_buttons.rs:74:9: replace ButtonLevel::is_active -> bool with false
+src/control_buttons.rs:74:9: replace ButtonLevel::is_active -> bool with true
+src/control_buttons.rs:86:5: replace wait_for_boot_provisioning_override -> bool with false
+src/control_buttons.rs:86:5: replace wait_for_boot_provisioning_override -> bool with true
+src/cutout.rs:27:9: replace RailcomChannel::index -> usize with 0
+src/cutout.rs:27:9: replace RailcomChannel::index -> usize with 1
+src/cutout.rs:51:13: delete match arm 1 in <impl TryFrom<u8> for RailcomChannel>::try_from
+src/cutout.rs:52:13: delete match arm 2 in <impl TryFrom<u8> for RailcomChannel>::try_from
+src/cutout.rs:71:9: replace PacketSequence::value -> u32 with 0
+src/cutout.rs:71:9: replace PacketSequence::value -> u32 with 1
+src/cutout.rs:88:33: replace < with <= in PacketSequence::is_at_or_after
+src/dcc/cv/pom.rs:132:5: replace drain_channel with ()
+src/dcc/cv/pom.rs:39:5: replace pom_runtime_stats -> PomRuntimeStats with Default::default()
+src/dcc/cv/pom.rs:92:9: replace PomResponse::request_id -> PomRequestId with Default::default()
+src/dcc/cv/pom/actor.rs:101:30: replace == with != in run_pom_attempt
+src/dcc/cv/pom/actor.rs:102:35: replace + with * in run_pom_attempt
+src/dcc/cv/pom/actor.rs:102:35: replace + with - in run_pom_attempt
+src/dcc/cv/pom/actor.rs:105:33: replace == with != in run_pom_attempt
+src/dcc/cv/pom/actor.rs:121:12: delete ! in run_pom_attempt
+src/dcc/cv/pom/actor.rs:135:5: replace enqueue_pom_burst with ()
+src/dcc/cv/pom/actor.rs:158:12: delete ! in pom_actor_task
+src/dcc/cv/pom/actor.rs:41:5: replace await_matching_pom_result -> PomResponse with Default::default()
+src/dcc/cv/pom/actor.rs:70:5: replace run_pom_attempt -> PomAttemptOutcome with Default::default()
+src/dcc/cv/pom/actor.rs:88:35: replace == with != in run_pom_attempt
+src/dcc/cv/pom/actor.rs:89:33: replace += with *= in run_pom_attempt
+src/dcc/cv/pom/actor.rs:89:33: replace += with -= in run_pom_attempt
+src/dcc/cv/pom/actor.rs:90:36: replace == with != in run_pom_attempt
+src/dcc/engine.rs:112:26: replace != with == in dcc_engine_task
+src/dcc/engine.rs:116:23: delete ! in dcc_engine_task
+src/dcc/engine.rs:118:21: replace && with || in dcc_engine_task
+src/dcc/engine.rs:118:24: delete ! in dcc_engine_task
+src/dcc/engine.rs:122:69: replace >= with < in dcc_engine_task
+src/dcc/engine.rs:134:20: delete ! in dcc_engine_task
+src/dcc/engine.rs:170:19: replace != with == in dcc_engine_task
+src/dcc/engine.rs:185:5: replace encode_packet_to_rmt_data -> Result<EncodedRmtPacket, EngineEncodeError> with Ok(Default::default())
+src/dcc/engine.rs:195:5: replace convert_pulse_to_rmt -> PulseCode with Default::default()
+src/dcc/engine.rs:209:5: replace convert_to_rmt -> Result<Vec<PulseCode, MAX_DATA_PULSES>, ()> with Ok(vec![Default::default()])
+src/dcc/engine.rs:209:5: replace convert_to_rmt -> Result<Vec<PulseCode, MAX_DATA_PULSES>, ()> with Ok(vec![])
+src/dcc/engine.rs:37:9: replace <impl core::fmt::Display for IdleWaveformBuildError>::fmt -> core::fmt::Result with Ok(Default::default())
+src/dcc/engine.rs:61:5: replace build_idle_rmt_buffer -> Result<IdleRmtBuffer, IdleWaveformBuildError> with Ok(Default::default())
+src/dcc/engine.rs:88:15: delete ! in dcc_engine_task
+src/dcc/engine.rs:90:26: replace != with == in dcc_engine_task
+src/dcc/function_groups.rs:123:38: replace | with ^ in group_bits
+src/dcc/mod.rs:112:9: replace DccFrame::fence -> Self with Default::default()
+src/dcc/mod.rs:123:9: replace DccFrame::fence_generation -> Option<PowerGeneration> with None
+src/dcc/mod.rs:71:9: replace PowerGeneration::get -> u32 with 0
+src/dcc/mod.rs:71:9: replace PowerGeneration::get -> u32 with 1
+src/dcc/packet.rs:229:13: replace | with ^ in DccPacket::encode_speed28_instruction
+src/dcc/packet.rs:230:13: replace | with ^ in DccPacket::encode_speed28_instruction
+src/dcc/packet.rs:236:47: replace | with ^ in DccPacket::encode_speed128_data
+src/dcc/packet.rs:241:21: replace | with ^ in DccPacket::encode_emergency_stop_instruction
+src/dcc/packet.rs:248:33: replace | with ^ in DccPacket::encode_cv_addr
+src/dcc/packet.rs:340:70: replace | with ^ in DccPacket::to_bytes
+src/dcc/packet.rs:341:71: replace | with ^ in DccPacket::to_bytes
+src/dcc/packet.rs:342:71: replace | with ^ in DccPacket::to_bytes
+src/dcc/packet.rs:365:58: replace | with ^ in DccPacket::to_bytes
+src/dcc/packet.rs:373:34: replace | with ^ in DccPacket::to_bytes
+src/dcc/packet.rs:383:46: replace | with ^ in DccPacket::to_bytes
+src/dcc/packet/address.rs:149:52: replace | with ^ in DccAddress::to_bytes
+src/dcc/packet/address.rs:194:31: replace | with ^ in HighFragment::compose
+src/dcc/packet/packed.rs:116:39: replace | with ^ in PackedAddressFlags::with_field
+src/dcc/packet/packed.rs:31:50: replace | with ^ in PackedDccAddress::from_address
+src/dcc/rmt_driver.rs:112:9: replace SharedPacket::empty -> Self with Default::default()
+src/dcc/rmt_driver.rs:136:9: replace <impl core::fmt::Display for InitError>::fmt -> core::fmt::Result with Ok(Default::default())
+src/dcc/rmt_driver.rs:181:5: replace timing_stats -> RmtTimingStats with Default::default()
+src/dcc/rmt_driver.rs:200:5: replace init -> Result<(), InitError> with Ok(())
+src/dcc/rmt_driver.rs:251:5: replace submit_packet with ()
+src/dcc/rmt_driver.rs:263:40: replace == with != in submit_packet
+src/dcc/rmt_driver.rs:292:51: replace == with != in is_consumed
+src/dcc/rmt_driver.rs:292:5: replace is_consumed -> bool with false
+src/dcc/rmt_driver.rs:292:5: replace is_consumed -> bool with true
+src/dcc/rmt_driver.rs:300:5: replace wait_for_packet_consumed with ()
+src/dcc/rmt_driver.rs:309:5: replace isr_heartbeat -> u32 with 0
+src/dcc/rmt_driver.rs:309:5: replace isr_heartbeat -> u32 with 1
+src/dcc/rmt_driver.rs:313:23: replace <= with > in build_idle_data
+src/dcc/rmt_driver.rs:313:46: replace || with && in build_idle_data
+src/dcc/rmt_driver.rs:313:5: replace build_idle_data -> Result<SharedPacket, InitError> with Ok(Default::default())
+src/dcc/rmt_driver.rs:313:65: replace != with == in build_idle_data
+src/dcc/rmt_driver.rs:318:62: replace - with + in build_idle_data
+src/dcc/rmt_driver.rs:318:62: replace - with / in build_idle_data
+src/dcc/rmt_driver.rs:319:19: replace > with < in build_idle_data
+src/dcc/rmt_driver.rs:319:19: replace > with == in build_idle_data
+src/dcc/rmt_driver.rs:319:19: replace > with >= in build_idle_data
+src/dcc/rmt_driver.rs:333:5: replace rmt_interrupt with ()
+src/dcc/rmt_driver.rs:336:8: delete ! in rmt_interrupt
+src/dcc/rmt_driver.rs:356:23: replace < with <= in rmt_interrupt
+src/dcc/rmt_driver.rs:356:23: replace < with == in rmt_interrupt
+src/dcc/rmt_driver.rs:356:23: replace < with > in rmt_interrupt
+src/dcc/rmt_driver.rs:363:32: delete ! in rmt_interrupt
+src/dcc/rmt_driver.rs:387:12: delete ! in rmt_interrupt
+src/dcc/rmt_driver.rs:396:23: replace < with <= in rmt_interrupt
+src/dcc/rmt_driver.rs:396:23: replace < with == in rmt_interrupt
+src/dcc/rmt_driver.rs:396:23: replace < with > in rmt_interrupt
+src/dcc/rmt_driver.rs:411:5: replace packet_len -> usize with 0
+src/dcc/rmt_driver.rs:411:5: replace packet_len -> usize with 1
+src/dcc/rmt_driver.rs:416:5: replace now_us -> u32 with 0
+src/dcc/rmt_driver.rs:416:5: replace now_us -> u32 with 1
+src/dcc/rmt_driver.rs:421:5: replace clear_tx_loop_interrupt with ()
+src/dcc/rmt_driver.rs:428:5: replace enable_tx_loop_interrupt with ()
+src/dcc/rmt_driver.rs:435:5: replace reset_tx_loop_counter with ()
+src/dcc/rmt_driver.rs:443:5: replace write_data_to_rmt_ram with ()
+src/dcc/rmt_driver.rs:458:41: replace * with + in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:458:41: replace * with / in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:458:64: replace + with * in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:458:64: replace + with - in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:469:33: replace + with * in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:469:33: replace + with - in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:481:36: replace - with + in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:481:36: replace - with / in write_data_to_rmt_ram
+src/dcc/rmt_driver.rs:494:5: replace packet_duration_us -> u32 with 0
+src/dcc/rmt_driver.rs:494:5: replace packet_duration_us -> u32 with 1
+src/dcc/rmt_driver.rs:495:9: replace + with * in packet_duration_us
+src/dcc/rmt_driver.rs:495:9: replace + with - in packet_duration_us
+src/dcc/rmt_driver.rs:497:53: replace + with * in packet_duration_us
+src/dcc/rmt_driver.rs:497:53: replace + with - in packet_duration_us
+src/dcc/rmt_driver.rs:53:64: replace * with +
+src/dcc/rmt_driver.rs:53:64: replace * with /
+src/dcc/rmt_driver.rs:82:9: replace PacketMeta::idle -> Self with Default::default()
+src/dcc/scheduler/core.rs:147:9: replace SchedulerCore::quiesce_for_power_on with ()
+src/dcc/scheduler/core.rs:171:9: replace SchedulerCore::pom_context_for_packet -> Option<(PomRequestId, CutoutMode)> with None
+src/dcc/scheduler/core.rs:171:9: replace SchedulerCore::pom_context_for_packet -> Option<(PomRequestId, CutoutMode)> with Some((Default::default(), Default::default()))
+src/dcc/scheduler/railcom_discovery.rs:41:33: replace + with * in RailcomDiscovery::restart
+src/dcc/scheduler/railcom_discovery.rs:41:33: replace + with - in RailcomDiscovery::restart
+src/dcc/scheduler/railcom_discovery.rs:41:9: replace RailcomDiscovery::restart with ()
+src/dcc/scheduler/railcom_discovery.rs:47:9: replace RailcomDiscovery::suspend with ()
+src/dcc/scheduler/railcom_discovery.rs:53:13: replace < with <= in RailcomDiscovery::is_due
+src/dcc/scheduler/railcom_discovery.rs:53:13: replace < with == in RailcomDiscovery::is_due
+src/dcc/scheduler/railcom_discovery.rs:53:13: replace < with > in RailcomDiscovery::is_due
+src/dcc/scheduler/railcom_discovery.rs:53:33: replace && with || in RailcomDiscovery::is_due
+src/dcc/scheduler/railcom_discovery.rs:53:40: replace >= with < in RailcomDiscovery::is_due
+src/dcc/scheduler/railcom_discovery.rs:53:9: replace RailcomDiscovery::is_due -> bool with false
+src/dcc/scheduler/railcom_discovery.rs:53:9: replace RailcomDiscovery::is_due -> bool with true
+src/dcc/scheduler/railcom_discovery.rs:57:29: replace + with * in RailcomDiscovery::take_next_idle_packet
+src/dcc/scheduler/railcom_discovery.rs:57:29: replace + with - in RailcomDiscovery::take_next_idle_packet
+src/dcc/scheduler/railcom_discovery.rs:57:9: replace RailcomDiscovery::take_next_idle_packet -> DccPacket with Default::default()
+src/dcc/scheduler/railcom_discovery.rs:59:40: replace > with < in RailcomDiscovery::take_next_idle_packet
+src/dcc/scheduler/railcom_discovery.rs:59:40: replace > with == in RailcomDiscovery::take_next_idle_packet
+src/dcc/scheduler/railcom_discovery.rs:59:40: replace > with >= in RailcomDiscovery::take_next_idle_packet
+src/dcc/scheduler/railcom_discovery.rs:60:41: replace -= with += in RailcomDiscovery::take_next_idle_packet
+src/dcc/scheduler/railcom_discovery.rs:60:41: replace -= with /= in RailcomDiscovery::take_next_idle_packet
+src/dcc/scheduler/railcom_policy.rs:106:5: replace record_track_search_sent with ()
+src/dcc/scheduler/railcom_policy.rs:113:5: replace record_track_search_throttled with ()
+src/dcc/scheduler/railcom_policy.rs:99:5: replace record_track_logon_sent with ()
+src/dcc/scheduler/runtime.rs:104:33: replace != with == in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:112:69: replace && with || in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:113:32: delete ! in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:113:68: replace || with && in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:136:12: delete ! in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:156:20: delete ! in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:166:12: delete ! in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:44:17: replace && with || in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:44:20: delete ! in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:69:13: replace && with || in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:77:16: delete ! in packet_scheduler_task
+src/dcc/scheduler/runtime.rs:90:23: replace != with == in packet_scheduler_task
+src/dcc/scheduler/slot_manager.rs:121:24: replace != with == in Slot::has_any_functions
+src/dcc/scheduler/slot_manager.rs:121:9: replace Slot::has_any_functions -> bool with true
+src/dcc/scheduler/slot_manager.rs:183:56: replace % with + in Slot::next_dirty_function_packet
+src/dcc/scheduler/slot_manager.rs:210:47: replace + with * in Slot::next_refresh_packet_with_budget
+src/dcc/scheduler/slot_manager.rs:248:56: replace % with + in Slot::next_active_function_packet
+src/dcc/scheduler/slot_manager.rs:259:44: replace | with & in Slot::active_function_group_mask
+src/dcc/scheduler/slot_manager.rs:259:44: replace | with ^ in Slot::active_function_group_mask
+src/dcc/scheduler/slot_manager.rs:259:49: replace << with >> in Slot::active_function_group_mask
+src/dcc/scheduler/slot_manager.rs:269:38: replace * with / in Slot::set_dirty_retries
+src/dcc/scheduler/slot_manager.rs:272:50: replace | with ^ in Slot::set_dirty_retries
+src/dcc/scheduler/slot_manager/locomotives.rs:270:9: replace SlotManager::quiesce_for_power_on with ()
+src/dcc/scheduler/slot_manager/locomotives.rs:55:47: replace == with != in SlotManager::oldest_replaceable_stopped_slot_index
+src/dcc/speed28.rs:54:27: replace - with + in encode_nmra_instruction_speed_bits
+src/dcc/speed28.rs:55:27: replace | with ^ in encode_nmra_instruction_speed_bits
+src/display.rs:176:5: replace led_state_label -> &'static str with ""
+src/display.rs:176:5: replace led_state_label -> &'static str with "xyzzy"
+src/display.rs:187:5: replace fault_label -> &'static str with ""
+src/display.rs:187:5: replace fault_label -> &'static str with "xyzzy"
+src/display.rs:203:5: replace format_ip -> heapless::String<15> with Default::default()
+src/display.rs:226:5: replace draw_fault_row with ()
+src/display.rs:236:22: replace + with * in advance_throbber
+src/display.rs:236:22: replace + with - in advance_throbber
+src/display.rs:236:27: replace % with + in advance_throbber
+src/display.rs:236:27: replace % with / in advance_throbber
+src/display.rs:236:5: replace advance_throbber with ()
+src/display.rs:237:16: replace += with *= in advance_throbber
+src/display.rs:237:16: replace += with -= in advance_throbber
+src/display.rs:256:5: replace render with ()
+src/display.rs:261:24: replace != with == in render
+src/display.rs:310:20: replace == with != in render
+src/display.rs:314:53: replace % with + in render
+src/display.rs:314:53: replace % with / in render
+src/display.rs:360:24: replace == with != in display_task
+src/display.rs:361:57: replace + with * in display_task
+src/display.rs:361:57: replace + with - in display_task
+src/display.rs:364:24: replace >= with < in display_task
+src/display.rs:369:47: replace - with + in display_task
+src/display.rs:369:47: replace - with / in display_task
+src/display.rs:375:32: replace != with == in display_task
+src/display.rs:48:5: replace draw_throbber with ()
+src/display.rs:63:17: replace & with ^ in draw_throbber
+src/display.rs:63:17: replace & with | in draw_throbber
+src/display.rs:63:22: replace << with >> in draw_throbber
+src/display.rs:63:30: replace != with == in draw_throbber
+src/display.rs:64:56: replace + with * in draw_throbber
+src/display.rs:64:56: replace + with - in draw_throbber
+src/display.rs:64:71: replace + with * in draw_throbber
+src/display.rs:64:71: replace + with - in draw_throbber
+src/fault_manager/task.rs:101:23: replace != with == in log_decision
+src/fault_manager/task.rs:101:5: replace log_decision with ()
+src/fault_manager/task.rs:134:8: delete ! in fault_manager_task
+src/fault_manager/task.rs:202:28: replace && with || in fault_manager_task
+src/fault_manager/task.rs:203:12: delete ! in fault_manager_task
+src/fault_manager/task.rs:212:27: replace != with == in fault_manager_task
+src/fault_manager/task.rs:39:5: replace refused_while_inhibited -> bool with false
+src/fault_manager/task.rs:39:5: replace refused_while_inhibited -> bool with true
+src/fault_manager/task.rs:40:9: replace && with || in refused_while_inhibited
+src/fault_manager/task.rs:45:11: replace || with && in refused_while_inhibited
+src/fault_manager/task.rs:45:21: replace == with != in refused_while_inhibited
+src/fault_manager/task.rs:45:52: replace && with || in refused_while_inhibited
+src/fault_manager/task.rs:45:61: replace == with != in refused_while_inhibited
+src/fault_manager/task.rs:51:5: replace apply_track_power -> bool with false
+src/fault_manager/task.rs:51:5: replace apply_track_power -> bool with true
+src/fault_manager/task.rs:55:9: replace == with != in apply_track_power
+src/fault_manager/task.rs:61:5: replace signal_completion -> bool with false
+src/fault_manager/task.rs:61:5: replace signal_completion -> bool with true
+src/fault_manager/task.rs:63:21: replace == with != in signal_completion
+src/fault_manager/task.rs:78:5: replace wait_for_fence -> Result<(), Option<FaultEvent>> with Ok(())
+src/fault_manager/task.rs:96:5: replace publish_effects with ()
+src/flash.rs:24:5: replace init with ()
+src/flash.rs:29:5: replace lock -> Option<FlashGuard> with None
+src/flash.rs:29:5: replace lock -> Option<FlashGuard> with Some(Default::default())
+src/liveness.rs:106:5: replace health -> Health with Default::default()
+src/liveness.rs:114:5: replace healthy -> bool with false
+src/liveness.rs:114:5: replace healthy -> bool with true
+src/liveness.rs:116:9: replace && with || in healthy
+src/liveness.rs:117:9: replace && with || in healthy
+src/liveness.rs:118:9: replace && with || in healthy
+src/liveness.rs:45:9: replace Task::slot -> usize with 0
+src/liveness.rs:45:9: replace Task::slot -> usize with 1
+src/liveness.rs:51:13: replace < with <=
+src/liveness.rs:51:13: replace < with ==
+src/liveness.rs:51:13: replace < with >
+src/liveness.rs:56:11: replace += with *=
+src/liveness.rs:56:11: replace += with -=
+src/liveness.rs:68:5: replace now -> Beat with Default::default()
+src/liveness.rs:73:5: replace beat with ()
+src/liveness.rs:82:47: replace && with || in network_ready
+src/liveness.rs:82:50: delete ! in network_ready
+src/liveness.rs:82:5: replace network_ready with ()
+src/liveness.rs:89:5: replace z21_ready with ()
+src/liveness.rs:94:5: replace boot_complete with ()
+src/liveness.rs:99:5: replace outages -> u32 with 0
+src/liveness.rs:99:5: replace outages -> u32 with 1
+src/net/client_watchdog.rs:97:5: replace apply_decision with ()
+src/net/loco_client.rs:47:60: replace + with - in send_correlated_request
+src/net/loco_client.rs:83:5: replace reset_for_lease -> bool with false
+src/net/loco_client.rs:83:5: replace reset_for_lease -> bool with true
+src/net/loco_client.rs:90:45: replace == with != in reset_for_lease
+src/net/pom_client.rs:119:5: replace handle_cv_pom_read -> usize with 0
+src/net/pom_client.rs:119:5: replace handle_cv_pom_read -> usize with 1
+src/net/pom_client.rs:201:5: replace classify_reply -> PomOutcome with Default::default()
+src/net/pom_client.rs:210:5: replace encode_nack -> usize with 0
+src/net/pom_client.rs:210:5: replace encode_nack -> usize with 1
+src/net/pom_client.rs:221:5: replace reject_admission -> usize with 0
+src/net/pom_client.rs:221:5: replace reject_admission -> usize with 1
+src/net/pom_client.rs:54:5: replace request_pom -> Option<PomResponse> with None
+src/net/pom_client.rs:54:5: replace request_pom -> Option<PomResponse> with Some(Default::default())
+src/net/pom_client.rs:74:5: replace handle_cv_pom_write -> usize with 0
+src/net/pom_client.rs:74:5: replace handle_cv_pom_write -> usize with 1
+src/net/provisioning/ap.rs:109:5: replace run_provisioning_ap -> Result<(), ProvisioningApError> with Ok(())
+src/net/provisioning/ap.rs:43:9: replace <impl fmt::Display for ProvisioningApError>::fmt -> fmt::Result with Ok(Default::default())
+src/net/provisioning/ap.rs:59:9: replace <impl core::error::Error for ProvisioningApError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/net/provisioning/ap.rs:59:9: replace <impl core::error::Error for ProvisioningApError>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/net/provisioning/ap.rs:68:5: replace provisioning_ssid -> Result<String<14>, ProvisioningApError> with Ok(Default::default())
+src/net/provisioning/ap.rs:76:5: replace access_point_mode_config -> ModeConfig with Default::default()
+src/net/provisioning/ap.rs:90:5: replace provisioning_net_config -> Config with Default::default()
+src/net/provisioning/dhcp_codec.rs:20:42: replace / with %
+src/net/provisioning/dhcp_codec.rs:20:42: replace / with *
+src/net/provisioning/dhcp_codec.rs:21:43: replace * with +
+src/net/provisioning/dhcp_codec.rs:21:43: replace * with /
+src/net/provisioning/dhcp_codec.rs:21:47: replace / with %
+src/net/provisioning/dhcp_codec.rs:21:47: replace / with *
+src/net/provisioning/dhcp_codec.rs:82:20: replace < with <= in build_reply
+src/net/provisioning/dhcp_codec.rs:97:49: replace && with || in request_targets_this_server
+src/net/provisioning/http_parser.rs:249:51: replace | with ^ in decode_form_value
+src/net/provisioning/http_server.rs:119:5: replace read_request -> RequestOutcome with Default::default()
+src/net/provisioning/http_server.rs:121:35: replace + with * in read_request
+src/net/provisioning/http_server.rs:121:35: replace + with - in read_request
+src/net/provisioning/http_server.rs:126:42: replace match guard len < request.len() with false in read_request
+src/net/provisioning/http_server.rs:126:42: replace match guard len < request.len() with true in read_request
+src/net/provisioning/http_server.rs:126:46: replace < with <= in read_request
+src/net/provisioning/http_server.rs:126:46: replace < with == in read_request
+src/net/provisioning/http_server.rs:126:46: replace < with > in read_request
+src/net/provisioning/http_server.rs:135:22: replace == with != in read_request
+src/net/provisioning/http_server.rs:143:33: replace += with *= in read_request
+src/net/provisioning/http_server.rs:143:33: replace += with -= in read_request
+src/net/provisioning/http_server.rs:166:9: replace Status::code -> u16 with 0
+src/net/provisioning/http_server.rs:166:9: replace Status::code -> u16 with 1
+src/net/provisioning/http_server.rs:183:9: replace Status::reason -> &'static str with ""
+src/net/provisioning/http_server.rs:183:9: replace Status::reason -> &'static str with "xyzzy"
+src/net/provisioning/http_server.rs:200:9: replace Status::from_parse_error -> Self with Default::default()
+src/net/provisioning/http_server.rs:222:5: replace send_response -> Result<(), embassy_net::tcp::Error> with Ok(())
+src/net/provisioning/http_server.rs:242:11: delete ! in write_all
+src/net/provisioning/http_server.rs:242:5: replace write_all -> Result<(), embassy_net::tcp::Error> with Ok(())
+src/net/provisioning/http_server.rs:52:5: replace handle_connection -> bool with false
+src/net/provisioning/http_server.rs:52:5: replace handle_connection -> bool with true
+src/net/radio.rs:107:5: replace stack_seed -> u64 with 0
+src/net/radio.rs:107:5: replace stack_seed -> u64 with 1
+src/net/radio.rs:108:29: replace << with >> in stack_seed
+src/net/radio.rs:108:35: replace | with & in stack_seed
+src/net/radio.rs:108:35: replace | with ^ in stack_seed
+src/net/radio.rs:112:5: replace init_controller -> Result<&'static mut esp_radio::Controller<'static>, RadioInitError> with Ok(Box::leak(Box::new(Default::default())))
+src/net/radio.rs:124:5: replace start_wifi -> Result<(WifiController<'static>, Interfaces<'static>), WifiBringupError> with Ok((Default::default(), Default::default()))
+src/net/radio.rs:20:9: replace <impl defmt::Format for RadioInitError>::format with ()
+src/net/radio.rs:30:9: replace <impl From<esp_radio::InitializationError> for RadioInitError>::from -> Self with Default::default()
+src/net/radio.rs:36:9: replace <impl fmt::Display for RadioInitError>::fmt -> fmt::Result with Ok(Default::default())
+src/net/radio.rs:42:9: replace <impl core::error::Error for RadioInitError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/net/radio.rs:42:9: replace <impl core::error::Error for RadioInitError>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/net/radio.rs:58:9: replace <impl defmt::Format for WifiBringupError>::format with ()
+src/net/radio.rs:81:9: replace <impl fmt::Display for WifiBringupError>::fmt -> fmt::Result with Ok(Default::default())
+src/net/radio.rs:92:9: replace <impl core::error::Error for WifiBringupError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/net/radio.rs:92:9: replace <impl core::error::Error for WifiBringupError>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/net/railcom_lookup.rs:24:5: replace current_packet_boundary -> PacketSequence with Default::default()
+src/net/railcom_lookup.rs:28:5: replace railcom_sighting_for_address -> Option<RailcomLocoSighting> with None
+src/net/railcom_lookup.rs:28:5: replace railcom_sighting_for_address -> Option<RailcomLocoSighting> with Some(Default::default())
+src/net/railcom_lookup.rs:33:5: replace latest_railcom_sighting -> Option<RailcomLocoSighting> with None
+src/net/railcom_lookup.rs:33:5: replace latest_railcom_sighting -> Option<RailcomLocoSighting> with Some(Default::default())
+src/net/reply.rs:20:12: replace == with != in send_reply
+src/net/reply.rs:20:5: replace send_reply -> Result<(), ()> with Ok(())
+src/net/udp_control.rs:121:5: replace bind_z21_socket -> Result<UdpSocket<'static>, NetInitError> with Ok(Default::default())
+src/net/udp_control.rs:147:5: replace log_datagram with ()
+src/net/udp_control.rs:170:5: replace handle_udp_datagram with ()
+src/net/udp_control.rs:174:24: replace == with != in handle_udp_datagram
+src/net/udp_control.rs:219:13: replace && with || in handle_udp_datagram
+src/net/udp_control.rs:219:38: replace != with == in handle_udp_datagram
+src/net/udp_control.rs:221:16: delete ! in handle_udp_datagram
+src/net/udp_control.rs:265:5: replace send_unknown_command_response with ()
+src/net/udp_control.rs:280:5: replace broadcast_status with ()
+src/net/udp_control.rs:346:82: replace == with != in run_z21_loop
+src/net/udp_control.rs:353:21: replace && with || in run_z21_loop
+src/net/udp_control.rs:377:5: replace net_task -> Result<(), NetInitError> with Ok(())
+src/net/udp_control.rs:437:5: replace authorize_command -> CommandAuthorization with Default::default()
+src/net/udp_control.rs:63:5: replace status_broadcast_send_failure_count -> u32 with 0
+src/net/udp_control.rs:63:5: replace status_broadcast_send_failure_count -> u32 with 1
+src/net/udp_control.rs:69:5: replace udp_receive_failure_count -> u32 with 0
+src/net/udp_control.rs:69:5: replace udp_receive_failure_count -> u32 with 1
+src/net/update_http/body.rs:100:20: replace < with <= in Body::read_exact
+src/net/update_http/body.rs:100:20: replace < with == in Body::read_exact
+src/net/update_http/body.rs:100:20: replace < with > in Body::read_exact
+src/net/update_http/body.rs:102:18: replace == with != in Body::read_exact
+src/net/update_http/body.rs:105:18: replace += with *= in Body::read_exact
+src/net/update_http/body.rs:105:18: replace += with -= in Body::read_exact
+src/net/update_http/body.rs:119:39: replace + with * in Body::reject
+src/net/update_http/body.rs:119:39: replace + with - in Body::reject
+src/net/update_http/body.rs:119:9: replace Body::reject -> Result<(), Error> with Ok(())
+src/net/update_http/body.rs:122:30: replace != with == in Body::reject
+src/net/update_http/body.rs:122:35: replace && with || in Body::reject
+src/net/update_http/body.rs:39:9: replace Body::remaining -> usize with 0
+src/net/update_http/body.rs:39:9: replace Body::remaining -> usize with 1
+src/net/update_http/body.rs:49:9: replace Body::read_head -> Result<Head, Error> with Ok(Default::default())
+src/net/update_http/body.rs:56:18: replace == with != in Body::read_head
+src/net/update_http/body.rs:59:22: replace += with *= in Body::read_head
+src/net/update_http/body.rs:59:22: replace += with -= in Body::read_head
+src/net/update_http/body.rs:70:27: replace >= with < in Body::read
+src/net/update_http/body.rs:70:9: replace Body::read -> Result<usize, Error> with Ok(0)
+src/net/update_http/body.rs:70:9: replace Body::read -> Result<usize, Error> with Ok(1)
+src/net/update_http/body.rs:74:18: replace == with != in Body::read
+src/net/update_http/body.rs:77:29: replace < with <= in Body::read
+src/net/update_http/body.rs:77:29: replace < with == in Body::read
+src/net/update_http/body.rs:77:29: replace < with > in Body::read
+src/net/update_http/body.rs:78:40: replace - with + in Body::read
+src/net/update_http/body.rs:78:40: replace - with / in Body::read
+src/net/update_http/body.rs:79:69: replace + with * in Body::read
+src/net/update_http/body.rs:79:69: replace + with - in Body::read
+src/net/update_http/body.rs:80:22: replace += with *= in Body::read
+src/net/update_http/body.rs:80:22: replace += with -= in Body::read
+src/net/update_http/body.rs:85:14: replace == with != in Body::read
+src/net/update_http/body.rs:88:24: replace -= with += in Body::read
+src/net/update_http/body.rs:88:24: replace -= with /= in Body::read
+src/net/update_http/body.rs:99:9: replace Body::read_exact -> Result<(), Error> with Ok(())
+src/net/update_http/mod.rs:38:5: replace io -> Result<T, Error> with Ok(Default::default())
+src/net/update_http/mod.rs:48:5: replace beat with ()
+src/net/update_http/mod.rs:49:48: replace && with || in beat
+src/net/update_http/mod.rs:54:5: replace live -> F::Output with Default::default()
+src/net/update_http/reply.rs:28:9: replace Content::mime -> &'static str with ""
+src/net/update_http/reply.rs:28:9: replace Content::mime -> &'static str with "xyzzy"
+src/net/update_http/reply.rs:37:5: replace ok -> Result<(), Error> with Ok(())
+src/net/update_http/reply.rs:43:5: replace error -> Result<(), Error> with Ok(())
+src/net/update_http/reply.rs:56:5: replace send -> Result<(), Error> with Ok(())
+src/net/update_http/reply.rs:65:35: replace + with * in send
+src/net/update_http/reply.rs:65:35: replace + with - in send
+src/net/update_http/requests.rs:108:5: replace upload -> Result<(), Error> with Ok(())
+src/net/update_http/requests.rs:108:8: delete ! in upload
+src/net/update_http/requests.rs:112:38: replace + with * in upload
+src/net/update_http/requests.rs:112:38: replace + with - in upload
+src/net/update_http/requests.rs:155:5: replace receive -> Result<(), Error> with Ok(())
+src/net/update_http/requests.rs:158:28: replace != with == in receive
+src/net/update_http/requests.rs:165:40: delete ! in receive
+src/net/update_http/requests.rs:165:40: replace match guard !Pacing::idle_expired(now(), last_data) with false in receive
+src/net/update_http/requests.rs:165:40: replace match guard !Pacing::idle_expired(now(), last_data) with true in receive
+src/net/update_http/requests.rs:176:28: replace != with == in receive
+src/net/update_http/requests.rs:40:5: replace handle -> Result<(), Error> with Ok(())
+src/net/update_http/requests.rs:48:49: replace + with * in handle
+src/net/update_http/requests.rs:48:49: replace + with - in handle
+src/net/update_http/requests.rs:58:56: replace + with * in handle
+src/net/update_http/requests.rs:58:56: replace + with - in handle
+src/net/update_http/requests.rs:67:27: replace == with != in handle
+src/net/update_http/requests.rs:70:40: replace != with == in handle
+src/net/update_http/requests.rs:84:5: replace refuse -> Error with Default::default()
+src/net/update_http/requests.rs:91:5: replace admit -> Result<(UpdateGuard, Admitted), Error> with Ok((Default::default(), Default::default()))
+src/net/wifi.rs:101:5: replace client_mode_config -> ModeConfig with Default::default()
+src/net/wifi.rs:117:5: replace start_network_stack -> Result<Stack<'static>, NetInitError> with Ok(Default::default())
+src/net/wifi.rs:155:5: replace wifi_runner_task with ()
+src/net/wifi.rs:164:5: replace connection_task with ()
+src/net/wifi.rs:38:9: replace <impl From<embassy_net::udp::BindError> for UdpBindError>::from -> Self with Default::default()
+src/net/wifi.rs:44:9: replace <impl fmt::Display for UdpBindError>::fmt -> fmt::Result with Ok(Default::default())
+src/net/wifi.rs:52:9: replace <impl defmt::Format for UdpBindError>::format with ()
+src/net/wifi.rs:67:9: replace <impl defmt::Format for NetInitError>::format with ()
+src/net/wifi.rs:79:9: replace <impl fmt::Display for NetInitError>::fmt -> fmt::Result with Ok(Default::default())
+src/net/wifi.rs:91:9: replace <impl core::error::Error for NetInitError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/net/wifi.rs:91:9: replace <impl core::error::Error for NetInitError>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/net/wifi_config/esp_flash_store.rs:30:9: replace <impl fmt::Display for EspFlashStoreError>::fmt -> fmt::Result with Ok(Default::default())
+src/net/wifi_config/esp_flash_store.rs:44:9: replace <impl core::error::Error for EspFlashStoreError>::source -> Option<&(dyn core::error::Error +'static)> with None
+src/net/wifi_config/esp_flash_store.rs:44:9: replace <impl core::error::Error for EspFlashStoreError>::source -> Option<&(dyn core::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+src/net/wifi_config/esp_flash_store.rs:55:5: replace wifi_config_store_from_partition -> Result<EspWifiConfigStore<'a, 'd>, EspFlashStoreError> with Ok(Default::default())
+src/net/wifi_config/esp_flash_store.rs:59:44: replace == with != in wifi_config_store_from_partition
+src/net/wifi_config/esp_flash_store.rs:62:33: replace != with == in wifi_config_store_from_partition
+src/net/wifi_config/store.rs:27:44: replace + with *
+src/net/wifi_config/store.rs:28:48: replace + with *
+src/net/wifi_config/store.rs:29:44: replace + with *
+src/net/wifi_config/store.rs:329:61: replace < with <= in is_same_or_newer_generation
+src/net/wifi_config/store.rs:370:21: replace < with > in decode_record
+src/net/wifi_config/store.rs:389:48: replace > with >= in decode_record
+src/net/z21_dispatch.rs:101:5: replace route_command -> usize with 0
+src/net/z21_dispatch.rs:101:5: replace route_command -> usize with 1
+src/net/z21_dispatch.rs:118:16: delete ! in route_command
+src/net/z21_dispatch.rs:185:5: replace log_unknown_command with ()
+src/net/z21_dispatch.rs:187:20: replace == with != in log_unknown_command
+src/net/z21_dispatch.rs:38:5: replace classify_lease_activity -> LeaseClassification with Default::default()
+src/net/z21_dispatch.rs:39:9: delete match arm Z21Command::SetTrackPowerOn | Z21Command::SetLocoDrive{..} | Z21Command::SetLocoFunction{..} | Z21Command::CvPomWriteByte{..} | Z21Command::CvPomReadByte{..} in classify_lease_activity
+src/net/z21_dispatch.rs:44:9: delete match arm Z21Command::Logoff in classify_lease_activity
+src/net/z21_dispatch.rs:45:9: delete match arm Z21Command::SetTrackPowerOff | Z21Command::SetStop | Z21Command::SetLocoEstop{..} in classify_lease_activity
+src/net/z21_dispatch.rs:48:9: delete match arm Z21Command::Unknown in classify_lease_activity
+src/net/z21_dispatch.rs:54:5: replace encoded_len -> usize with 0
+src/net/z21_dispatch.rs:54:5: replace encoded_len -> usize with 1
+src/net/z21_dispatch.rs:69:5: replace handle_command -> usize with 0
+src/net/z21_dispatch.rs:69:5: replace handle_command -> usize with 1
+src/net/z21_dispatch.rs:87:5: replace log_command with ()
+src/net/z21_dispatch/device.rs:12:5: replace encode_serial_number -> usize with 0
+src/net/z21_dispatch/device.rs:12:5: replace encode_serial_number -> usize with 1
+src/net/z21_dispatch/device.rs:19:5: replace encode_code -> usize with 0
+src/net/z21_dispatch/device.rs:19:5: replace encode_code -> usize with 1
+src/net/z21_dispatch/device.rs:23:5: replace encode_hardware_info -> usize with 0
+src/net/z21_dispatch/device.rs:23:5: replace encode_hardware_info -> usize with 1
+src/net/z21_dispatch/device.rs:27:5: replace encode_xbus_version -> usize with 0
+src/net/z21_dispatch/device.rs:27:5: replace encode_xbus_version -> usize with 1
+src/net/z21_dispatch/device.rs:31:5: replace encode_firmware_version -> usize with 0
+src/net/z21_dispatch/device.rs:31:5: replace encode_firmware_version -> usize with 1
+src/net/z21_dispatch/device.rs:35:5: replace encode_unknown_turnout -> usize with 0
+src/net/z21_dispatch/device.rs:35:5: replace encode_unknown_turnout -> usize with 1
+src/net/z21_dispatch/locomotive.rs:103:5: replace emergency_stop -> usize with 0
+src/net/z21_dispatch/locomotive.rs:103:5: replace emergency_stop -> usize with 1
+src/net/z21_dispatch/locomotive.rs:119:5: replace set_drive -> usize with 0
+src/net/z21_dispatch/locomotive.rs:119:5: replace set_drive -> usize with 1
+src/net/z21_dispatch/locomotive.rs:162:5: replace set_function -> usize with 0
+src/net/z21_dispatch/locomotive.rs:162:5: replace set_function -> usize with 1
+src/net/z21_dispatch/locomotive.rs:203:5: replace report_request_error with ()
+src/net/z21_dispatch/locomotive.rs:228:5: replace encode_confirmed_feedback -> usize with 0
+src/net/z21_dispatch/locomotive.rs:228:5: replace encode_confirmed_feedback -> usize with 1
+src/net/z21_dispatch/locomotive.rs:234:5: replace loco_info -> z21_proto::LocoInfo with Default::default()
+src/net/z21_dispatch/locomotive.rs:248:5: replace apply_requested_change -> LocoCommandOutcome with Default::default()
+src/net/z21_dispatch/locomotive.rs:39:5: replace loco_command_rejected_count -> u32 with 0
+src/net/z21_dispatch/locomotive.rs:39:5: replace loco_command_rejected_count -> u32 with 1
+src/net/z21_dispatch/locomotive.rs:43:5: replace encode_mode -> usize with 0
+src/net/z21_dispatch/locomotive.rs:43:5: replace encode_mode -> usize with 1
+src/net/z21_dispatch/locomotive.rs:47:13: replace != with == in set_mode
+src/net/z21_dispatch/locomotive.rs:47:5: replace set_mode -> usize with 0
+src/net/z21_dispatch/locomotive.rs:47:5: replace set_mode -> usize with 1
+src/net/z21_dispatch/locomotive.rs:63:5: replace get_info -> usize with 0
+src/net/z21_dispatch/locomotive.rs:63:5: replace get_info -> usize with 1
+src/net/z21_dispatch/railcom.rs:22:5: replace railcom_getdata_no_data_count -> u32 with 0
+src/net/z21_dispatch/railcom.rs:22:5: replace railcom_getdata_no_data_count -> u32 with 1
+src/net/z21_dispatch/railcom.rs:30:5: replace encode_getdata_response -> usize with 0
+src/net/z21_dispatch/railcom.rs:30:5: replace encode_getdata_response -> usize with 1
+src/net/z21_dispatch/track.rs:13:5: replace encode_current_system_state -> usize with 0
+src/net/z21_dispatch/track.rs:13:5: replace encode_current_system_state -> usize with 1
+src/net/z21_dispatch/track.rs:17:5: replace central_state -> z21_proto::CentralState with Default::default()
+src/net/z21_dispatch/track.rs:25:5: replace encode_system_state -> usize with 0
+src/net/z21_dispatch/track.rs:25:5: replace encode_system_state -> usize with 1
+src/net/z21_dispatch/track.rs:29:5: replace encode_current_status -> usize with 0
+src/net/z21_dispatch/track.rs:29:5: replace encode_current_status -> usize with 1
+src/net/z21_dispatch/track.rs:38:56: replace && with || in apply_power_request
+src/net/z21_dispatch/track.rs:38:5: replace apply_power_request -> usize with 0
+src/net/z21_dispatch/track.rs:38:5: replace apply_power_request -> usize with 1
+src/ota/boot.rs:32:5: replace start with ()
+src/ota/boot.rs:33:56: replace << with >> in start
+src/ota/boot.rs:33:63: replace | with & in start
+src/ota/boot.rs:33:63: replace | with ^ in start
+src/ota/boot.rs:48:25: replace != with == in booted_slot
+src/ota/boot.rs:48:5: replace booted_slot -> Result<Slot, Error> with Ok(Default::default())
+src/ota/boot.rs:56:38: replace == with != in booted_slot
+src/ota/boot.rs:57:9: replace && with || in booted_slot
+src/ota/boot.rs:59:34: replace == with != in booted_slot
+src/ota/boot.rs:60:21: replace && with || in booted_slot
+src/ota/boot.rs:60:37: replace == with != in booted_slot
+src/ota/boot.rs:61:21: replace && with || in booted_slot
+src/ota/boot.rs:61:40: replace == with != in booted_slot
+src/ota/boot.rs:62:21: replace && with || in booted_slot
+src/ota/boot.rs:62:35: replace == with != in booted_slot
+src/ota/boot.rs:63:21: replace && with || in booted_slot
+src/ota/boot.rs:63:32: replace == with != in booted_slot
+src/ota/boot.rs:66:8: delete ! in booted_slot
+src/ota/boot.rs:78:5: replace reset_cause -> ResetCause with Default::default()
+src/ota/boot.rs:80:9: delete match arm Some(SocResetReason::ChipPowerOn | SocResetReason::SysBrownOut) in reset_cause
+src/ota/device.rs:102:9: replace <impl Track for Esp>::stop -> Result<(), Error> with Ok(())
+src/ota/device.rs:106:9: replace <impl Track for Esp>::arm -> Result<(), Error> with Ok(())
+src/ota/device.rs:114:9: replace <impl Storage for Esp>::flash -> Option<R> with None
+src/ota/device.rs:114:9: replace <impl Storage for Esp>::flash -> Option<R> with Some(Default::default())
+src/ota/device.rs:121:9: replace <impl Feedback for Esp>::show with ()
+src/ota/device.rs:125:9: replace <impl Feedback for Esp>::report with ()
+src/ota/device.rs:131:9: replace <impl Device for Esp>::version -> Version with Default::default()
+src/ota/device.rs:135:9: replace <impl Device for Esp>::build_kind -> BuildKind with Default::default()
+src/ota/device.rs:139:9: replace <impl Device for Esp>::state -> R with Default::default()
+src/ota/device.rs:143:9: replace <impl Device for Esp>::health -> Health with Default::default()
+src/ota/device.rs:147:9: replace <impl Device for Esp>::trusted_key -> Result<VerifyingKey, Error> with Ok(Default::default())
+src/ota/device.rs:151:9: replace <impl Device for Esp>::guarded -> Result<(), Error> with Ok(())
+src/ota/device.rs:156:9: replace <impl Device for Esp>::recovery_entered with ()
+src/ota/device.rs:167:5: replace report with ()
+src/ota/device.rs:43:5: replace runtime -> Runtime<'static, Esp> with Runtime::from(Default::default())
+src/ota/device.rs:43:5: replace runtime -> Runtime<'static, Esp> with Runtime::from_iter([Default::default()])
+src/ota/device.rs:43:5: replace runtime -> Runtime<'static, Esp> with Runtime::new()
+src/ota/device.rs:43:5: replace runtime -> Runtime<'static, Esp> with Runtime::new(Default::default())
+src/ota/device.rs:48:5: replace lifecycle -> Lifecycle with Default::default()
+src/ota/device.rs:53:17: replace == with != in on_trial
+src/ota/device.rs:53:5: replace on_trial -> bool with false
+src/ota/device.rs:53:5: replace on_trial -> bool with true
+src/ota/device.rs:58:17: replace == with != in in_recovery
+src/ota/device.rs:58:5: replace in_recovery -> bool with false
+src/ota/device.rs:58:5: replace in_recovery -> bool with true
+src/ota/device.rs:66:5: replace status_json -> Result<heapless::String<JSON_CAPACITY>, Error> with Ok(String::from(Default::default()))
+src/ota/device.rs:66:5: replace status_json -> Result<heapless::String<JSON_CAPACITY>, Error> with Ok(String::from_iter([Default::default()]))
+src/ota/device.rs:66:5: replace status_json -> Result<heapless::String<JSON_CAPACITY>, Error> with Ok(String::new())
+src/ota/device.rs:66:5: replace status_json -> Result<heapless::String<JSON_CAPACITY>, Error> with Ok(String::new(Default::default()))
+src/ota/device.rs:71:5: replace obey with ()
+src/ota/device.rs:79:5: replace enter_recovery with ()
+src/ota/device.rs:84:9: replace <impl Clock for Esp>::now -> Uptime with Default::default()
+src/ota/device.rs:88:9: replace <impl Clock for Esp>::pause with ()
+src/ota/device.rs:94:9: replace <impl Track for Esp>::is_on -> bool with false
+src/ota/device.rs:94:9: replace <impl Track for Esp>::is_on -> bool with true
+src/ota/device.rs:98:9: replace <impl Track for Esp>::inhibit with ()
+src/ota/interlock.rs:25:5: replace attach with ()
+src/ota/interlock.rs:37:5: replace send_and_wait -> Result<(), Error> with Ok(())
+src/ota/interlock.rs:52:5: replace stop_and_wait -> Result<(), Error> with Ok(())
+src/ota/interlock.rs:61:5: replace arm -> Result<(), Error> with Ok(())
+src/ota/key.rs:35:5: replace trusted_key -> Result<VerifyingKey, Error> with Ok(Default::default())
+src/ota/mod.rs:29:9: replace <impl From<crate::clock::TimedOut> for Error>::from -> Self with Default::default()
+src/ota/mod.rs:42:5: replace acquire -> Result<UpdateGuard, Error> with Ok(Default::default())
+src/ota/monitor.rs:103:22: replace == with != in monitor_task
+src/ota/monitor.rs:46:13: delete match arm b"none"
+src/ota/monitor.rs:47:13: delete match arm b"panic"
+src/ota/monitor.rs:48:13: delete match arm b"hang"
+src/ota/monitor.rs:49:13: delete match arm b"health-timeout"
+src/ota/monitor.rs:58:5: replace complete_boot with ()
+src/ota/monitor.rs:84:5: replace withdraw_trial -> Result<(), Error> with Ok(())
+src/ota/monitor.rs:95:23: replace == with != in monitor_task
+src/ota/monitor.rs:95:46: replace && with || in monitor_task
+src/ota/monitor.rs:95:68: replace >= with < in monitor_task
+src/ota/monitor.rs:98:79: replace || with && in monitor_task
+src/ota/notify.rs:30:5: replace footer -> R with Default::default()
+src/ota/notify.rs:40:5: replace row -> RowText with Default::default()
+src/ota/notify.rs:45:5: replace attach with ()
+src/ota/notify.rs:54:5: replace notify with ()
+src/ota/notify.rs:65:5: replace clear_once_track_on with ()
+src/ota/notify.rs:68:17: replace && with || in clear_once_track_on
+src/ota/notify.rs:76:51: delete ! in show_recovery_until_delivered
+src/ota/notify.rs:76:5: replace show_recovery_until_delivered with ()
+src/ota/notify.rs:78:9: replace && with || in show_recovery_until_delivered
+src/ota/watchdog.rs:29:5: replace expired with ()
+src/ota/watchdog.rs:41:9: replace Watchdog::start -> Self with Default::default()
+src/ota/watchdog.rs:54:12: delete ! in Watchdog::guard
+src/ota/watchdog.rs:54:9: replace Watchdog::guard with ()
+src/ota/watchdog.rs:69:9: replace Watchdog::release with ()
+src/railcom/isr_capture.rs:109:5: replace uart1_reset_rx_fifo with ()
+src/railcom/isr_capture.rs:109:8: delete ! in uart1_reset_rx_fifo
+src/railcom/isr_capture.rs:128:5: replace uart1_reg_update with ()
+src/railcom/isr_capture.rs:137:5: replace open_window_from_isr with ()
+src/railcom/isr_capture.rs:148:5: replace close_window_from_isr with ()
+src/railcom/isr_capture.rs:149:37: replace % with + in close_window_from_isr
+src/railcom/isr_capture.rs:149:37: replace % with / in close_window_from_isr
+src/railcom/isr_capture.rs:156:9: replace | with & in close_window_from_isr
+src/railcom/isr_capture.rs:156:9: replace | with ^ in close_window_from_isr
+src/railcom/isr_capture.rs:177:5: replace take_captured_window -> Option<CapturedWindow> with None
+src/railcom/isr_capture.rs:177:5: replace take_captured_window -> Option<CapturedWindow> with Some(Default::default())
+src/railcom/isr_capture.rs:179:18: replace > with < in take_captured_window
+src/railcom/isr_capture.rs:179:18: replace > with == in take_captured_window
+src/railcom/isr_capture.rs:179:18: replace > with >= in take_captured_window
+src/railcom/isr_capture.rs:180:33: replace - with + in take_captured_window
+src/railcom/isr_capture.rs:180:33: replace - with / in take_captured_window
+src/railcom/isr_capture.rs:188:21: replace > with < in take_captured_window
+src/railcom/isr_capture.rs:188:21: replace > with == in take_captured_window
+src/railcom/isr_capture.rs:188:21: replace > with >= in take_captured_window
+src/railcom/isr_capture.rs:189:40: replace % with + in take_captured_window
+src/railcom/isr_capture.rs:189:40: replace % with / in take_captured_window
+src/railcom/isr_capture.rs:191:30: replace & with ^ in take_captured_window
+src/railcom/isr_capture.rs:191:30: replace & with | in take_captured_window
+src/railcom/isr_capture.rs:191:34: replace != with == in take_captured_window
+src/railcom/isr_capture.rs:194:23: replace -= with += in take_captured_window
+src/railcom/isr_capture.rs:194:23: replace -= with /= in take_captured_window
+src/railcom/isr_capture.rs:200:23: replace -= with += in take_captured_window
+src/railcom/isr_capture.rs:200:23: replace -= with /= in take_captured_window
+src/railcom/isr_capture.rs:211:30: replace == with != in take_captured_window
+src/railcom/isr_capture.rs:211:50: replace && with || in take_captured_window
+src/railcom/isr_capture.rs:211:70: replace & with ^ in take_captured_window
+src/railcom/isr_capture.rs:211:70: replace & with | in take_captured_window
+src/railcom/isr_capture.rs:211:74: replace == with != in take_captured_window
+src/railcom/isr_capture.rs:222:19: replace -= with += in take_captured_window
+src/railcom/isr_capture.rs:222:19: replace -= with /= in take_captured_window
+src/railcom/isr_capture.rs:244:5: replace log_raw_window with ()
+src/railcom/isr_capture.rs:259:5: replace send_captured_window with ()
+src/railcom/isr_capture.rs:260:19: replace > with < in send_captured_window
+src/railcom/isr_capture.rs:260:19: replace > with == in send_captured_window
+src/railcom/isr_capture.rs:260:19: replace > with >= in send_captured_window
+src/railcom/isr_capture.rs:307:5: replace capture_notify_receiver -> Receiver<'static, CriticalSectionRawMutex, u8, 1> with Default::default()
+src/railcom/isr_capture.rs:363:5: replace uart1_raw_diag -> Uart1RawDiag with Default::default()
+src/railcom/isr_capture.rs:369:49: replace & with ^ in uart1_raw_diag
+src/railcom/isr_capture.rs:369:49: replace & with | in uart1_raw_diag
+src/railcom/isr_capture.rs:369:54: replace << with >> in uart1_raw_diag
+src/railcom/isr_capture.rs:369:60: replace != with == in uart1_raw_diag
+src/railcom/isr_capture.rs:370:32: replace += with *= in uart1_raw_diag
+src/railcom/isr_capture.rs:370:32: replace += with -= in uart1_raw_diag
+src/railcom/isr_capture.rs:373:35: replace += with *= in uart1_raw_diag
+src/railcom/isr_capture.rs:373:35: replace += with -= in uart1_raw_diag
+src/railcom/isr_capture.rs:85:5: replace uart1_rx_fifo_count -> Option<u16> with None
+src/railcom/isr_capture.rs:85:5: replace uart1_rx_fifo_count -> Option<u16> with Some(0)
+src/railcom/isr_capture.rs:85:5: replace uart1_rx_fifo_count -> Option<u16> with Some(1)
+src/railcom/isr_capture.rs:85:8: delete ! in uart1_rx_fifo_count
+src/railcom/isr_capture.rs:99:5: replace uart1_read_byte -> Option<u8> with None
+src/railcom/isr_capture.rs:99:5: replace uart1_read_byte -> Option<u8> with Some(0)
+src/railcom/isr_capture.rs:99:5: replace uart1_read_byte -> Option<u8> with Some(1)
+src/railcom/isr_capture.rs:99:8: delete ! in uart1_read_byte
+src/railcom/loco_tracker.rs:379:30: replace match guard target_address.is_short() with true in address_fragment_matches_target
+src/railcom/loco_tracker.rs:381:20: replace == with != in address_fragment_matches_target
+src/railcom/parser.rs:290:13: delete match arm DecodedSymbol::Invalid(code) in decode_symbols
+src/railcom/parser.rs:291:13: delete match arm DecodedSymbol::Reserved(code) in decode_symbols
+src/railcom/parser.rs:361:42: replace | with ^ in parse_symbol_datagram
+src/railcom/parser.rs:474:51: replace + with * in parse_logon_response_48
+src/railcom/parser.rs:474:51: replace + with - in parse_logon_response_48
+src/railcom/parser.rs:481:51: replace + with * in parse_logon_response_48
+src/railcom/parser.rs:481:51: replace + with - in parse_logon_response_48
+src/railcom/parser.rs:489:50: replace | with ^ in parse_logon_response_48
+src/railcom/parser.rs:511:23: replace >> with << in parse_logon_response_48
+src/railcom/parser.rs:512:23: replace >> with << in parse_logon_response_48
+src/railcom/parser.rs:513:23: replace >> with << in parse_logon_response_48
+src/railcom/parser.rs:516:17: replace & with | in parse_logon_response_48
+src/railcom/parser.rs:533:59: replace | with ^ in parse_logon_response_48
+src/railcom/pipeline.rs:110:28: replace > with >= in RailcomRxWindow::try_new
+src/railcom/pipeline.rs:136:9: replace RailcomRxWindow::raw_len -> usize with 0
+src/railcom/pipeline.rs:136:9: replace RailcomRxWindow::raw_len -> usize with 1
+src/railcom/pipeline.rs:181:32: replace + with - in RailcomRxStats::rx_windows_with_bytes_count
+src/railcom/pom_dispatch.rs:21:5: replace evaluate_pom_window -> Option<PomRailcomResult> with None
+src/railcom/pom_dispatch.rs:21:5: replace evaluate_pom_window -> Option<PomRailcomResult> with Some(Default::default())
+src/railcom/pom_dispatch.rs:21:8: delete ! in evaluate_pom_window
+src/railcom/pom_dispatch.rs:70:28: delete ! in pom_cutout_monitor_task
+src/railcom/runtime_dispatch.rs:100:28: replace == with != in log_first_sighting
+src/railcom/runtime_dispatch.rs:100:5: replace log_first_sighting with ()
+src/railcom/runtime_dispatch.rs:116:5: replace record_loco_sighting with ()
+src/railcom/runtime_dispatch.rs:143:5: replace forward_pom_result with ()
+src/railcom/runtime_dispatch.rs:182:5: replace log_pom_window with ()
+src/railcom/runtime_dispatch.rs:221:5: replace dispatch_processed_window with ()
+src/railcom/runtime_dispatch.rs:32:9: replace LogonDispatchState::observe_window -> Option<RailcomLogonResponse> with None
+src/railcom/runtime_dispatch.rs:32:9: replace LogonDispatchState::observe_window -> Option<RailcomLogonResponse> with Some(Default::default())
+src/railcom/runtime_dispatch.rs:33:41: replace match guard result.window.raw_len() == 2 with false in LogonDispatchState::observe_window
+src/railcom/runtime_dispatch.rs:33:41: replace match guard result.window.raw_len() == 2 with true in LogonDispatchState::observe_window
+src/railcom/runtime_dispatch.rs:33:65: replace == with != in LogonDispatchState::observe_window
+src/railcom/runtime_dispatch.rs:40:36: replace != with == in LogonDispatchState::observe_window
+src/railcom/runtime_dispatch.rs:57:9: replace LogonDispatchState::dispatch_response with ()
+src/railcom/runtime_dispatch.rs:60:41: replace == with != in LogonDispatchState::dispatch_response
+src/railcom/uart_reader.rs:31:9: replace <impl fmt::Display for RailcomUartWindowError>::fmt -> fmt::Result with Ok(Default::default())
+src/railcom/uart_reader.rs:63:5: replace railcom_uart_rx_config -> Config with Default::default()
+src/seqlock.rs:33:56: replace - with + in SeqSlot<N>::publish
+src/short_detector.rs:104:5: replace confirm_short -> bool with false
+src/short_detector.rs:104:5: replace confirm_short -> bool with true
+src/short_detector.rs:115:5: replace report_track_short with ()
+src/short_detector.rs:115:8: delete ! in report_track_short
+src/short_detector.rs:133:5: replace report_and_wait -> FaultManagerState with Default::default()
+src/short_detector.rs:149:20: replace && with || in short_detector_task
+src/short_detector.rs:166:15: delete ! in short_detector_task
+src/short_detector.rs:66:5: replace suppress_short_edges_for with ()
+src/short_detector.rs:78:5: replace short_edges_suppressed -> bool with false
+src/short_detector.rs:78:5: replace short_edges_suppressed -> bool with true
+src/short_detector.rs:94:5: replace new_short_detect_input -> Input<'static> with Default::default()
+src/status_led.rs:135:5: replace blink_period_for -> Option<Duration> with None
+src/status_led.rs:135:5: replace blink_period_for -> Option<Duration> with Some(Default::default())
+src/status_led.rs:151:5: replace apply_status_event with ()
+src/status_led.rs:153:18: replace != with == in apply_status_event
+src/status_led.rs:178:22: replace != with == in status_led_task
+src/status_led.rs:189:28: delete ! in status_led_task
+src/status_led.rs:220:5: replace new_led_output -> Output<'static> with Default::default()
+src/status_led.rs:50:5: replace set_both_off with ()
+src/status_led.rs:66:14: replace != with == in shown
+src/status_led.rs:66:5: replace shown -> Shown with Default::default()
+src/status_led.rs:70:15: delete ! in shown
+src/status_led.rs:83:5: replace apply_led_output with ()
+src/system_status.rs:374:5: replace announce_ready with ()
+src/track_authority.rs:23:5: replace publish with ()
+src/track_authority.rs:28:5: replace invalidate_and_disable with ()
+src/track_authority.rs:37:5: replace accepts -> bool with false
+src/track_authority.rs:37:5: replace accepts -> bool with true
+src/track_authority.rs:48:5: replace accepts_current -> bool with false
+src/track_authority.rs:48:5: replace accepts_current -> bool with true
+src/track_authority.rs:53:5: replace accept_epoch -> bool with false
+src/track_authority.rs:53:5: replace accept_epoch -> bool with true
+src/track_authority.rs:65:5: replace apply_if_current -> Option<T> with None
+src/track_authority.rs:65:5: replace apply_if_current -> Option<T> with Some(Default::default())
+src/track_output.rs:106:72: replace * with +
+src/track_output.rs:106:72: replace * with /
+src/track_output.rs:207:9: replace TrackOutput::disable with ()
+src/track_output.rs:220:9: replace TrackOutput::set_track_enabled -> bool with false
+src/track_output.rs:220:9: replace TrackOutput::set_track_enabled -> bool with true
+src/track_output.rs:221:24: replace && with || in TrackOutput::set_track_enabled
+src/track_output.rs:226:20: delete ! in TrackOutput::set_track_enabled
+src/track_output.rs:251:9: replace TrackOutput::is_track_enabled -> bool with false
+src/track_output.rs:251:9: replace TrackOutput::is_track_enabled -> bool with true
+src/track_output.rs:262:5: replace emergency_disable -> bool with false
+src/track_output.rs:262:5: replace emergency_disable -> bool with true
+src/track_output.rs:276:5: replace with_hw_mut -> Option<R> with None
+src/track_output.rs:276:5: replace with_hw_mut -> Option<R> with Some(Default::default())
+src/track_output.rs:276:8: delete ! in with_hw_mut
+src/track_output.rs:295:5: replace enable_low_fast with ()
+src/track_output.rs:300:5: replace enable_high_fast with ()
+src/track_output.rs:305:5: replace cutout_on_fast with ()
+src/track_output.rs:310:5: replace cutout_off_fast with ()
+src/track_output.rs:315:5: replace schedule_timer_us_fast -> bool with false
+src/track_output.rs:315:5: replace schedule_timer_us_fast -> bool with true
+src/track_output.rs:322:5: replace now_us -> u32 with 0
+src/track_output.rs:322:5: replace now_us -> u32 with 1
+src/track_output.rs:327:5: replace schedule_cutout_deadline_fast -> bool with false
+src/track_output.rs:327:5: replace schedule_cutout_deadline_fast -> bool with true
+src/track_output.rs:333:5: replace schedule_cutout_deadline_guarded_fast -> bool with false
+src/track_output.rs:333:5: replace schedule_cutout_deadline_guarded_fast -> bool with true
+src/track_output.rs:338:5: replace wait_until_cutout_offset with ()
+src/track_output.rs:338:81: replace < with <= in wait_until_cutout_offset
+src/track_output.rs:338:81: replace < with == in wait_until_cutout_offset
+src/track_output.rs:338:81: replace < with > in wait_until_cutout_offset
+src/track_output.rs:346:5: replace record_deadline_lateness with ()
+src/track_output.rs:355:5: replace clear_cutout_timer_interrupt_fast with ()
+src/track_output.rs:360:5: replace stop_cutout_timer_fast with ()
+src/track_output.rs:365:5: replace open_realtime_window_from_isr with ()
+src/track_output.rs:376:5: replace close_realtime_window_from_isr with ()
+src/track_output.rs:376:63: replace == with != in close_realtime_window_from_isr
+src/track_output.rs:377:59: replace == with != in close_realtime_window_from_isr
+src/track_output.rs:377:9: replace && with || in close_realtime_window_from_isr
+src/track_output.rs:386:5: replace close_stale_window_from_isr with ()
+src/track_output.rs:389:9: delete match arm CutoutState::Ch1Open in close_stale_window_from_isr
+src/track_output.rs:392:9: delete match arm CutoutState::Ch2Open in close_stale_window_from_isr
+src/track_output.rs:408:5: replace record_railcom_packet_metadata_from_isr with ()
+src/track_output.rs:409:41: replace % with + in record_railcom_packet_metadata_from_isr
+src/track_output.rs:409:41: replace % with / in record_railcom_packet_metadata_from_isr
+src/track_output.rs:417:5: replace push_cutout_event_from_isr with ()
+src/track_output.rs:418:37: replace % with + in push_cutout_event_from_isr
+src/track_output.rs:418:37: replace % with / in push_cutout_event_from_isr
+src/track_output.rs:466:5: replace request_cutout_from_isr -> bool with false
+src/track_output.rs:466:5: replace request_cutout_from_isr -> bool with true
+src/track_output.rs:480:8: delete ! in request_cutout_from_isr
+src/track_output.rs:529:62: replace + with * in request_cutout_from_isr
+src/track_output.rs:529:62: replace + with - in request_cutout_from_isr
+src/track_output.rs:554:5: replace cutout_timer_interrupt with ()
+src/track_output.rs:566:21: replace + with * in cutout_timer_interrupt
+src/track_output.rs:566:21: replace + with - in cutout_timer_interrupt
+src/track_output.rs:568:56: replace < with <= in cutout_timer_interrupt
+src/track_output.rs:568:56: replace < with == in cutout_timer_interrupt
+src/track_output.rs:568:56: replace < with > in cutout_timer_interrupt
+src/track_output.rs:56:9: replace CutoutState::as_u8 -> u8 with 0
+src/track_output.rs:56:9: replace CutoutState::as_u8 -> u8 with 1
+src/track_output.rs:574:78: replace + with * in cutout_timer_interrupt
+src/track_output.rs:574:78: replace + with - in cutout_timer_interrupt
+src/track_output.rs:589:78: replace + with * in cutout_timer_interrupt
+src/track_output.rs:589:78: replace + with - in cutout_timer_interrupt
+src/track_output.rs:592:78: replace + with * in cutout_timer_interrupt
+src/track_output.rs:592:78: replace + with - in cutout_timer_interrupt
+src/track_output.rs:60:9: replace CutoutState::from_u8 -> Option<Self> with None
+src/track_output.rs:60:9: replace CutoutState::from_u8 -> Option<Self> with Some(Default::default())
+src/track_output.rs:619:78: replace + with * in cutout_timer_interrupt
+src/track_output.rs:619:78: replace + with - in cutout_timer_interrupt
+src/track_output.rs:61:13: delete match arm 0 in CutoutState::from_u8
+src/track_output.rs:623:78: replace + with * in cutout_timer_interrupt
+src/track_output.rs:623:78: replace + with - in cutout_timer_interrupt
+src/track_output.rs:62:13: delete match arm 1 in CutoutState::from_u8
+src/track_output.rs:63:13: delete match arm 2 in CutoutState::from_u8
+src/track_output.rs:641:78: replace + with * in cutout_timer_interrupt
+src/track_output.rs:641:78: replace + with - in cutout_timer_interrupt
+src/track_output.rs:64:13: delete match arm 3 in CutoutState::from_u8
+src/track_output.rs:65:13: delete match arm 4 in CutoutState::from_u8
+src/track_output.rs:73:5: replace store_cutout_state with ()
+src/track_output/event_ring.rs:28:5: replace stats -> TrackOutputStats with Default::default()
+src/track_output/event_ring.rs:37:5: replace railcom_packet_metadata -> Option<RailcomPacketMetadata> with None
+src/track_output/event_ring.rs:37:5: replace railcom_packet_metadata -> Option<RailcomPacketMetadata> with Some(Default::default())
+src/track_output/event_ring.rs:38:41: replace % with + in railcom_packet_metadata
+src/track_output/event_ring.rs:38:41: replace % with / in railcom_packet_metadata
+src/track_output/event_ring.rs:42:24: replace == with != in railcom_packet_metadata
+src/track_output/event_ring.rs:56:5: replace drain_cutout_runtime_events with ()
+src/track_output/event_ring.rs:58:18: replace > with < in drain_cutout_runtime_events
+src/track_output/event_ring.rs:58:18: replace > with == in drain_cutout_runtime_events
+src/track_output/event_ring.rs:58:18: replace > with >= in drain_cutout_runtime_events
+src/track_output/event_ring.rs:59:33: replace - with + in drain_cutout_runtime_events
+src/track_output/event_ring.rs:59:33: replace - with / in drain_cutout_runtime_events
+src/track_output/event_ring.rs:69:21: replace > with < in drain_cutout_runtime_events
+src/track_output/event_ring.rs:69:21: replace > with == in drain_cutout_runtime_events
+src/track_output/event_ring.rs:69:21: replace > with >= in drain_cutout_runtime_events
+src/track_output/event_ring.rs:69:25: replace && with || in drain_cutout_runtime_events
+src/track_output/event_ring.rs:69:38: replace < with <= in drain_cutout_runtime_events
+src/track_output/event_ring.rs:69:38: replace < with == in drain_cutout_runtime_events
+src/track_output/event_ring.rs:69:38: replace < with > in drain_cutout_runtime_events
+src/track_output/event_ring.rs:70:40: replace % with + in drain_cutout_runtime_events
+src/track_output/event_ring.rs:70:40: replace % with / in drain_cutout_runtime_events
+src/track_output/event_ring.rs:77:23: replace -= with += in drain_cutout_runtime_events
+src/track_output/event_ring.rs:77:23: replace -= with /= in drain_cutout_runtime_events
+src/track_output/event_ring.rs:83:19: replace -= with += in drain_cutout_runtime_events
+src/track_output/event_ring.rs:83:19: replace -= with /= in drain_cutout_runtime_events
+src/track_output/event_ring.rs:92:5: replace cutout_event_notify_receiver -> Receiver<'static, CriticalSectionRawMutex, u8, 1> with Default::default()
+src/track_output/interlock.rs:13:5: replace inhibited -> bool with false
+src/track_output/interlock.rs:13:5: replace inhibited -> bool with true
+src/track_output/interlock.rs:19:5: replace inhibit_epoch -> u32 with 0
+src/track_output/interlock.rs:19:5: replace inhibit_epoch -> u32 with 1
+src/track_output/interlock.rs:25:5: replace set_inhibited with ()
+src/track_safety.rs:18:5: replace disable_track_intentionally with ()
+src/track_safety.rs:19:8: delete ! in disable_track_intentionally
+src/z21/encoding.rs:48:22: replace | with ^ in encode_loco_info
+src/z21/encoding.rs:56:24: replace & with | in encode_loco_info
+src/z21/encoding.rs:57:24: replace | with ^ in encode_loco_info
+src/z21/encoding.rs:57:36: replace | with ^ in encode_loco_info
+src/z21/encoding.rs:57:48: replace | with ^ in encode_loco_info
+src/z21/encoding.rs:57:60: replace | with ^ in encode_loco_info
+src/z21/parsing.rs:247:55: replace | with ^ in parse_cv_pom_command
+src/z21/parsing.rs:296:58: replace | with ^ in parse_xbus
+src/z21/parsing.rs:92:29: replace == with != in frame_kind
+src/z21/parsing.rs:92:44: replace && with || in frame_kind
+src/z21/parsing.rs:92:57: replace >= with < in frame_kind
+src/z21/wire.rs:142:25: replace | with ^ in write_loco_address_be
+src/z21/wire.rs:213:23: replace || with && in z21_wire_to_logical
+src/z21/wire.rs:223:20: replace > with == in z21_wire_to_logical
+src/z21/wire.rs:223:20: replace > with >= in z21_wire_to_logical
+src/z21/wire.rs:99:51: replace | with ^ in parse_loco_address

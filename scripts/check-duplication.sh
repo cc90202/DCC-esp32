@@ -12,7 +12,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-max_percentage="0.86"
+max_percentage="0.85"
 jscpd_version="4.3.0"
 
 part="${1:-all}"
