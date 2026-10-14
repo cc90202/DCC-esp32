@@ -168,6 +168,36 @@ mod tests {
     }
 
     #[test]
+    fn two_sectors_of_one_generation_must_hold_the_same_record() {
+        let record = Record {
+            generation: 3,
+            ..Record::installed(image(Slot::A, 0))
+        };
+        let mut flash = journal();
+        flash.bytes[..RECORD_SIZE].copy_from_slice(&encode(&record).unwrap());
+        flash.bytes[SECTOR_SIZE..SECTOR_SIZE + RECORD_SIZE]
+            .copy_from_slice(&encode(&record).unwrap());
+        assert_eq!(load(&mut flash), Ok(Some(record)));
+
+        let other = Record {
+            generation: 3,
+            ..Record::installed(image(Slot::A, 1))
+        };
+        flash.bytes[SECTOR_SIZE..SECTOR_SIZE + RECORD_SIZE]
+            .copy_from_slice(&encode(&other).unwrap());
+        assert_eq!(load(&mut flash), Err(StateError::Corrupt));
+    }
+
+    #[test]
+    fn a_flash_ending_inside_the_second_sector_is_unsuitable() {
+        let mut flash = SimFlash::new(JOURNAL_OFFSET, SECTORS * SECTOR_SIZE - 4);
+        assert_eq!(
+            load(&mut flash),
+            Err(StateError::Flash(FlashError::Unsuitable))
+        );
+    }
+
+    #[test]
     fn generation_overflow_is_refused() {
         let mut flash = journal();
         let last = Record {

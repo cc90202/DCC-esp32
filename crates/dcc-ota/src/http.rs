@@ -392,8 +392,13 @@ mod tests {
         assert!(parse(r.as_bytes(), IP).is_ok());
         r.insert(100, 'a');
         assert_eq!(parse(r.as_bytes(), IP), Err(RequestError::TooLarge));
-        for n in ["4351", "3145985", "99999999999999999999999999999"] {
-            assert!(
+        for (n, error) in [
+            ("4351", RequestError::TooShort),
+            ("3145985", RequestError::TooLarge),
+            ("99999999999999999999999999999", RequestError::TooLarge),
+            ("04352", RequestError::Malformed),
+        ] {
+            assert_eq!(
                 parse(
                     request(
                         "POST",
@@ -402,8 +407,28 @@ mod tests {
                     )
                     .as_bytes(),
                     IP
-                )
-                .is_err()
+                ),
+                Err(error),
+                "Content-Length: {n}"
+            );
+        }
+        assert!(
+            parse(
+                request("GET", "/update", "Content-Length: 0\r\n").as_bytes(),
+                IP
+            )
+            .is_ok()
+        );
+        assert!(parse(request("GET", "/update", "Accept: a\tb\r\n").as_bytes(), IP).is_ok());
+        for r in [
+            request("GET", "/update", "Accept: a\x01b\r\n"),
+            request("GET", "/update", "").replace("HTTP/1.1", "HTTP/2.0"),
+            request("GET", "/update", "").replace("HTTP/1.1", "HTTP/1.1 x"),
+        ] {
+            assert_eq!(
+                parse(r.as_bytes(), IP),
+                Err(RequestError::Malformed),
+                "{r:?}"
             );
         }
         let mut r = request(

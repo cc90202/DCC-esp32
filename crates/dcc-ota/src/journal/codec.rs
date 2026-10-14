@@ -295,8 +295,35 @@ mod tests {
         assert_eq!(&b[24..36], &[0, 0, 1, 0, 2, 0, 3, 0, 0, 16, 0, 0]);
         assert_eq!(&b[36..68], &[0x55; 32]);
         assert_eq!(&b[68..164], &[0; 96]);
+        // CRC-32 (IEEE) of the first 164 bytes.
+        assert_eq!(&b[164..168], &0x3544_8561_u32.to_le_bytes());
         assert_eq!(&b[168..], &[0; 4]);
         assert_eq!(decode(&b), Ok(r));
+    }
+
+    #[test]
+    fn a_record_without_an_update_is_settled_and_stores_nothing_else() {
+        let r = Record {
+            generation: 1,
+            ..Record::installed(image(Slot::A, 1))
+        };
+        let b = encode(&r).unwrap();
+        assert_eq!(decode(&b), Ok(r));
+        for (offset, value) in [
+            (PHASE_AT, TRYING),
+            (OUTCOME_AT, OK),
+            (CANDIDATE_AT, 1),
+            (PREVIOUS_AT, 1),
+            (REJECTED_AT, 1),
+        ] {
+            let mut bad = b;
+            bad[offset] = value;
+            assert_eq!(
+                decode(&reseal(bad)),
+                Err(StateError::Corrupt),
+                "offset {offset}"
+            );
+        }
     }
 
     #[test]

@@ -210,5 +210,17 @@ mod tests {
         assert!(!is_outage(Some(near_wrap), after_wrap));
         assert!(is_outage(Some(near_wrap), later));
         assert_eq!(Beat::at(1 << 32).get(), 1, "zero never means a beat");
+        assert_eq!(Beat::stored(after_wrap.get()), Some(after_wrap));
+    }
+
+    #[test]
+    fn the_silence_limit_ends_liveness_where_it_starts_an_outage() {
+        let beat = Beat::at(1_000);
+        let just_inside = Beat::at(3_499);
+        let at_limit = Beat::at(3_500);
+        assert!(all_alive([Some(beat)], just_inside));
+        assert!(!is_outage(Some(beat), just_inside));
+        assert!(!all_alive([Some(beat)], at_limit));
+        assert!(is_outage(Some(beat), at_limit));
     }
 }

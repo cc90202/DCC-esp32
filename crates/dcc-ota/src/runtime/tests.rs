@@ -406,3 +406,93 @@ fn a_transfer_start_that_fails_before_touching_flash_only_fails_the_transfer() {
     device.advance(30 * SECOND);
     assert_eq!(upload(&device, "1.1.0"), Ok(Restart));
 }
+
+#[test]
+fn a_candidate_is_not_tried_when_the_image_to_fall_back_to_is_damaged() {
+    let device = armed();
+    assert_eq!(upload(&device, "1.1.0"), Ok(Restart));
+    let next = device.restarted("1.1.0");
+    next.flash.borrow_mut().bytes[Slot::A.offset() as usize + 5000] ^= 1;
+    assert_eq!(next.start(ResetCause::Other), None);
+    assert_eq!(next.lifecycle(), Lifecycle::Recovery);
+    assert!(next.recovery.get().is_some());
+}
+
+#[test]
+fn the_trial_countdown_is_shown_when_its_whole_seconds_change() {
+    let device = on_trial();
+    let mut trial = Trial::default();
+    for _ in 0..6 {
+        device.advance(SECOND / 2);
+        assert_eq!(block_on(device.runtime().tick(&mut trial)), None);
+    }
+    let shown: std::vec::Vec<_> = device
+        .shown
+        .borrow()
+        .iter()
+        .filter_map(|notice| match notice {
+            Notice::Trial {
+                left: Some(left), ..
+            } => Some(left.as_secs()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, [60, 59, 58, 57]);
+}
+
+#[test]
+fn a_flash_failure_in_the_boot_check_does_not_reject_the_candidate() {
+    let device = armed();
+    assert_eq!(upload(&device, "1.1.0"), Ok(Restart));
+    let mut failed_checks = 0;
+    // The first two calls belong to the simulated bootloader.
+    for call in 2..40 {
+        let next = device.restarted("1.1.0");
+        next.flash.borrow_mut().start_log();
+        next.flash.borrow_mut().cut = Some((call, 0));
+        next.start(ResetCause::Other);
+        next.flash.borrow_mut().cut = None;
+        if !matches!(
+            next.events.borrow().first(),
+            Some(Event::CandidateFailedBootCheck(Error::Flash(_)))
+        ) {
+            continue;
+        }
+        failed_checks += 1;
+        assert_eq!(
+            stored(&next).update().ending(),
+            Some(Ending::Aborted),
+            "call {call}"
+        );
+        assert_eq!(stored(&next).rejected(), None, "call {call}");
+        assert_eq!(
+            next.flash.borrow().bytes[Slot::B.offset() as usize],
+            0xE9,
+            "call {call}: the running candidate must not be erased under it"
+        );
+    }
+    assert!(failed_checks > 0);
+}
+
+#[test]
+fn update_attempts_are_spaced_and_provisioning_does_not_count_as_one() {
+    let device = armed();
+    let acquire = |operation| block_on(device.runtime().acquire(operation)).map(drop);
+    assert_eq!(acquire(Operation::Provisioning), Ok(()));
+    assert_eq!(acquire(Operation::Update), Ok(()));
+    assert_eq!(
+        acquire(Operation::Update),
+        Err(Error::Refused(Refusal::Busy))
+    );
+    device.advance(SECOND);
+    assert_eq!(acquire(Operation::Update), Ok(()));
+}
+
+#[test]
+fn a_tick_arms_the_boot_only_while_an_arming_is_pending() {
+    let device = armed();
+    device.failing_arms.set(1);
+    assert_eq!(block_on(device.runtime().tick(&mut Trial::default())), None);
+    assert!(device.events.borrow().is_empty());
+    assert_eq!(device.failing_arms.get(), 1, "no arming was attempted");
+}

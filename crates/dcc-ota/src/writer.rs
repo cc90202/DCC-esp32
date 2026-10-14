@@ -442,6 +442,57 @@ mod tests {
     }
 
     #[test]
+    fn a_one_sector_image_is_verified_from_the_held_first_sector() {
+        let image = release_image(SECTOR_SIZE, BuildKind::Release);
+        let mut flash = SimFlash::new(0, FLASH_SIZE);
+        let mut buffers = Buffers::new();
+        let mut writer = Writer::new(
+            manifest(&image),
+            Slot::A,
+            BuildKind::Release,
+            &mut buffers,
+            &mut flash,
+        )
+        .unwrap();
+        writer.push(&mut flash, &image).unwrap();
+        writer.seal(&mut flash).unwrap();
+        assert_eq!(writer.verify_step(&mut flash), Ok(true));
+        writer.commit_first(&mut flash).unwrap();
+        let target = Slot::B.offset() as usize;
+        assert_eq!(&flash.bytes[target..target + SECTOR_SIZE], &image[..]);
+    }
+
+    #[test]
+    fn progress_counts_received_bytes_and_durable_bytes_apart() {
+        let image = release_image(9120, BuildKind::Release);
+        let mut flash = SimFlash::new(0, FLASH_SIZE);
+        let mut buffers = Buffers::new();
+        let mut writer = Writer::new(
+            manifest(&image),
+            Slot::A,
+            BuildKind::Release,
+            &mut buffers,
+            &mut flash,
+        )
+        .unwrap();
+        let mut progress = std::vec::Vec::new();
+        for chunk in image.chunks(5000) {
+            writer.push(&mut flash, chunk).unwrap();
+            progress.push((writer.received(), writer.written()));
+        }
+        writer.seal(&mut flash).unwrap();
+        progress.push((writer.received(), writer.written()));
+        while !writer.verify_step(&mut flash).unwrap() {}
+        writer.commit_first(&mut flash).unwrap();
+        progress.push((writer.received(), writer.written()));
+        // The first sector counts as durable only once it is committed last.
+        assert_eq!(
+            progress,
+            [(5000, 0), (9120, 4096), (9120, 5024), (9120, 9120)]
+        );
+    }
+
+    #[test]
     fn a_read_back_mismatch_never_publishes_the_image() {
         let image = release_image(9120, BuildKind::Release);
         let mut flash = SimFlash::new(0, FLASH_SIZE);
