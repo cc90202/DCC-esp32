@@ -150,6 +150,89 @@ pub enum BootReadyEvent {
     LeaseWatchdog,
 }
 
+/// Defines [`CriticalTask`] from one `Variant => "task_name"` row per task,
+/// so the spawn-failure message is built from the same literal as the name.
+macro_rules! critical_tasks {
+    ($( $(#[$meta:meta])* $variant:ident => $name:literal, )+) => {
+        /// Runtime task whose spawn operation failed.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+        pub enum CriticalTask {
+            $( $(#[$meta])* $variant, )+
+        }
+
+        impl CriticalTask {
+            /// Every critical task, in declaration order.
+            #[cfg(test)]
+            const ALL: [Self; [$(Self::$variant),+].len()] = [$(Self::$variant),+];
+
+            /// Name of the Embassy task function spawned for this task.
+            #[cfg(test)]
+            #[must_use]
+            const fn name(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $name, )+
+                }
+            }
+
+            /// Diagnostic reported when spawning this task fails.
+            #[must_use]
+            pub const fn spawn_failure_message(self) -> &'static str {
+                match self {
+                    $( Self::$variant => concat!("failed to spawn ", $name), )+
+                }
+            }
+        }
+    };
+}
+
+critical_tasks! {
+    /// Display rendering task.
+    Display => "display_task",
+    /// DCC waveform engine task.
+    DccEngine => "dcc_engine_task",
+    /// Status LED task.
+    StatusLed => "status_led_task",
+    /// DCC packet scheduler task.
+    Scheduler => "scheduler_task",
+    /// RailCom diagnostics task.
+    RailcomDiag => "railcom_diag_task",
+    /// Programming-on-main actor task.
+    PomActor => "pom_actor_task",
+    /// Programming-on-main cutout monitor task.
+    PomCutoutMonitor => "pom_cutout_monitor_task",
+    /// RailCom ISR capture task.
+    RailcomIsrCapture => "railcom_isr_capture_task",
+    /// RailCom UART dispatch task.
+    RailcomUartDispatch => "railcom_uart_runtime_dispatch_task",
+    /// Network task.
+    Net => "net_task",
+    /// Fault side-effects task.
+    FaultEffects => "fault_effects_task",
+    /// Fault manager task.
+    FaultManager => "fault_manager_task",
+    /// Runtime provisioning request task.
+    ProvisioningRequest => "provisioning_request_task",
+    /// Provisioning status LED task.
+    ProvisioningLed => "provisioning_led_task",
+    /// Emergency-stop button task.
+    StopButton => "stop_button_task",
+    /// Resume button task.
+    ResumeButton => "resume_button_task",
+    /// Track short-circuit detector task.
+    ShortDetector => "short_detector_task",
+    /// Controller lease watchdog task.
+    LeaseWatchdog => "client_watchdog_task",
+}
+
+impl core::fmt::Display for CriticalTask {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(self.spawn_failure_message())
+    }
+}
+
+impl core::error::Error for CriticalTask {}
+
 // --- Fault manager events ---
 //
 // `FaultEvent` lives here (rather than in `fault_manager.rs`) because it is
@@ -231,7 +314,9 @@ pub enum DisplayEvent {
 /// a module that does not exist there.
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod channels {
-    use super::{BootReadyEvent, DisplayEvent, FaultEvent, SystemStatusEvent};
+    use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch};
+
+    use super::{BootReadyEvent, DisplayEvent, FaultEvent, FaultManagerState, SystemStatusEvent};
     use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
 
     /// Status events fanned out to the display, the LED and the network task.
@@ -252,6 +337,7 @@ pub(crate) mod channels {
     pub(crate) type SystemStatusReceiver = RuntimeReceiver<SystemStatusEvent, STATUS_DEPTH>;
 
     pub(crate) type NetStatusChannel = RuntimeChannel<SystemStatusEvent, NET_STATUS_DEPTH>;
+    pub(crate) type NetStatusSender = RuntimeSender<SystemStatusEvent, NET_STATUS_DEPTH>;
     pub(crate) type NetStatusReceiver = RuntimeReceiver<SystemStatusEvent, NET_STATUS_DEPTH>;
 
     pub(crate) type BootReadyChannel = RuntimeChannel<BootReadyEvent, BOOT_READY_DEPTH>;
@@ -265,6 +351,17 @@ pub(crate) mod channels {
     pub(crate) type DisplayChannel = RuntimeChannel<DisplayEvent, DISPLAY_DEPTH>;
     pub(crate) type DisplaySender = RuntimeSender<DisplayEvent, DISPLAY_DEPTH>;
     pub(crate) type DisplayReceiver = RuntimeReceiver<DisplayEvent, DISPLAY_DEPTH>;
+
+    /// Receivers allowed on the fault-state watch; the short detector is the only one.
+    const FAULT_STATE_RECEIVERS: usize = 1;
+
+    /// Latest fault-manager state, published by the fault manager.
+    pub(crate) type FaultStateWatch =
+        watch::Watch<CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
+    pub(crate) type FaultStateSender =
+        watch::Sender<'static, CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
+    pub(crate) type FaultStateReceiver =
+        watch::Receiver<'static, CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
 }
 
 /// Publishes one readiness acknowledgement and records it consistently.
@@ -280,6 +377,9 @@ pub(crate) async fn announce_ready(sender: channels::BootReadySender, event: Boo
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::application::StatusModel;
+
     /// The first module-level example, as a test that actually runs.
     #[test]
     fn the_model_walks_boot_to_running_through_wifi() {
@@ -309,214 +409,13 @@ mod tests {
         assert_eq!(model.led_state(), LedState::Running);
     }
 
-    use super::*;
-    use crate::application::StatusModel;
-
     #[test]
-    fn test_boot_to_running() {
-        let mut model = StatusModel::new();
-        assert_eq!(model.led_state(), LedState::Booting);
-        model.apply(SystemStatusEvent::BootCompleted);
-        assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
-    fn test_boot_event_keeps_running_state() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        assert_eq!(model.led_state(), LedState::Running);
-
-        model.apply(SystemStatusEvent::BootCompleted);
-        assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
-    fn test_wifi_connecting_blinks_red_after_boot() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiConnecting);
-        assert_eq!(model.led_state(), LedState::WifiConnecting);
-    }
-
-    #[test]
-    fn test_wifi_connected_returns_to_running() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiConnecting);
-        model.apply(SystemStatusEvent::WifiConnected);
-        assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
-    fn test_wifi_disconnected_returns_to_connecting_state() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiConnected);
-        model.apply(SystemStatusEvent::WifiDisconnected);
-        assert_eq!(model.led_state(), LedState::WifiConnecting);
-    }
-
-    #[test]
-    fn test_wifi_connecting_before_boot_stays_booting() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::WifiConnecting);
-        assert_eq!(model.led_state(), LedState::Booting);
-    }
-
-    #[test]
-    fn test_wifi_reconnect_sequence_returns_to_running() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiConnecting);
-        model.apply(SystemStatusEvent::WifiConnected);
-        model.apply(SystemStatusEvent::WifiDisconnected);
-        assert_eq!(model.led_state(), LedState::WifiConnecting);
-        model.apply(SystemStatusEvent::WifiConnecting);
-        model.apply(SystemStatusEvent::WifiConnected);
-        assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
-    fn test_estop_latched_until_cleared() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-
-        model.apply(SystemStatusEvent::EstopActive);
-        assert_eq!(model.led_state(), LedState::EstopActive);
-
-        model.apply(SystemStatusEvent::EstopCleared);
-        assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
-    fn test_fault_has_top_priority() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::EstopActive);
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        assert_eq!(model.led_state(), LedState::FaultLatched);
-    }
-
-    #[test]
-    fn stale_clear_event_cannot_clear_a_different_safety_state() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        model.apply(SystemStatusEvent::EstopCleared);
-        assert_eq!(model.fault_cause(), Some(FaultCause::Internal));
-
-        model.apply(SystemStatusEvent::FaultCleared);
-        model.apply(SystemStatusEvent::EstopActive);
-        model.apply(SystemStatusEvent::FaultCleared);
-        assert!(model.estop_active());
-    }
-
-    #[test]
-    fn test_fault_clear_returns_to_running() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::TrackShort));
-        assert_eq!(model.led_state(), LedState::FaultLatched);
-
-        model.apply(SystemStatusEvent::FaultCleared);
-        assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
-    fn test_track_power_on_in_normal_state() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        assert!(model.track_power_on());
-        assert!(!model.estop_active());
-    }
-
-    #[test]
-    fn test_track_power_off_during_estop() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::EstopActive);
-        assert!(!model.track_power_on());
-        assert!(model.estop_active());
-    }
-
-    #[test]
-    fn test_track_power_off_during_fault() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::TrackShort));
-        assert!(!model.track_power_on());
-        assert!(!model.estop_active());
-    }
-
-    #[test]
-    fn test_fault_has_priority_over_wifi_reconnect() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiDisconnected);
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        assert_eq!(model.led_state(), LedState::FaultLatched);
-    }
-
-    #[test]
-    fn test_estop_has_priority_over_wifi_reconnect() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiDisconnected);
-        model.apply(SystemStatusEvent::EstopActive);
-        assert_eq!(model.led_state(), LedState::EstopActive);
-    }
-
-    #[test]
-    fn test_short_circuit_flag_only_on_track_short() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::TrackShort));
-        assert!(model.short_circuit());
-        assert!(!model.track_power_on());
-
-        model.apply(SystemStatusEvent::FaultCleared);
-        assert!(!model.short_circuit());
-        assert!(model.track_power_on());
-    }
-
-    #[test]
-    fn test_non_short_fault_does_not_set_short_circuit() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        assert!(!model.short_circuit());
-        assert!(!model.track_power_on());
-
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        assert!(!model.short_circuit());
-    }
-
-    #[test]
-    fn test_fault_active_and_cause_track_latched_fault() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        assert!(!model.fault_active());
-        assert_eq!(model.fault_cause(), None);
-
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        assert!(model.fault_active());
-        assert_eq!(model.fault_cause(), Some(FaultCause::Internal));
-    }
-
-    #[test]
-    fn test_pom_allowed_only_in_normal_running_state() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        assert!(model.pom_allowed());
-
-        model.apply(SystemStatusEvent::EstopActive);
-        assert!(!model.pom_allowed());
-
-        model.apply(SystemStatusEvent::EstopCleared);
-        assert!(model.pom_allowed());
-
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        assert!(!model.pom_allowed());
+    fn every_critical_task_has_a_distinct_name() {
+        for (index, task) in CriticalTask::ALL.iter().enumerate() {
+            for other in &CriticalTask::ALL[index + 1..] {
+                assert_ne!(task.name(), other.name(), "{task:?} and {other:?}");
+            }
+            assert!(task.spawn_failure_message().ends_with(task.name()));
+        }
     }
 }

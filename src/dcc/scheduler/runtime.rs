@@ -41,7 +41,7 @@ pub async fn packet_scheduler_task(
         // Commands are processed with at most one packet interval (~8 ms) of latency.
         while let Ok(command) = command_receiver.try_receive() {
             if let SchedulerCommand::ProgramOnMain { permit, .. } = command
-                && !crate::track_authority::accepts_current(permit, Instant::now().as_millis())
+                && !crate::track_authority::accepts_current(permit)
             {
                 defmt::warn!("scheduler rejected expired POM lease");
                 continue;
@@ -71,10 +71,8 @@ pub async fn packet_scheduler_task(
             core.handle_loco_request(
                 message,
                 Instant::now().as_ticks(),
-                |permit| {
-                    crate::track_authority::accepts_current(permit, Instant::now().as_millis())
-                },
-                |permit| crate::track_authority::accept_epoch(permit, Instant::now().as_millis()),
+                crate::track_authority::accepts_current,
+                crate::track_authority::accept_epoch,
             );
             if !core.flush_loco_response_with(|response| {
                 loco_response_sender
@@ -135,9 +133,7 @@ pub async fn packet_scheduler_task(
             (true, _, _) => CutoutMode::Telemetry,
             (false, _, _) => CutoutMode::None,
         };
-        if !core.authorize_for_emission(scheduled, |permit| {
-            crate::track_authority::accepts(permit, Instant::now().as_millis())
-        }) {
+        if !core.authorize_for_emission(scheduled, crate::track_authority::accepts) {
             defmt::warn!("scheduler: discarded stale POM before emission");
             continue;
         }
@@ -157,7 +153,7 @@ pub async fn packet_scheduler_task(
                 true
             }
             PacketAuthority::Pom { request_id, permit } => loop {
-                if !crate::track_authority::accepts(permit, Instant::now().as_millis()) {
+                if !crate::track_authority::accepts(permit) {
                     core.discard_pom(request_id, permit);
                     break false;
                 }

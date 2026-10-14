@@ -8,7 +8,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use dcc_ota::trial::{Beat, Health, all_alive, is_outage};
-use embassy_time::Instant;
 
 /// The tasks that report heartbeats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +65,7 @@ static Z21: AtomicBool = AtomicBool::new(false);
 static BOOT_COMPLETE: AtomicBool = AtomicBool::new(false);
 
 fn now() -> Beat {
-    Beat::at(Instant::now().as_millis())
+    Beat::at(crate::clock::now_ms())
 }
 
 /// Records that `task` is alive.

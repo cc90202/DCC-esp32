@@ -3,20 +3,14 @@
 //! This module owns the safety state machine and describes its required effects
 //! without depending on Embassy channels, the scheduler actor, or GPIO drivers.
 
-#[cfg(any(test, target_arch = "riscv32"))]
 use crate::system_status::FaultCause;
-#[cfg(any(test, target_arch = "riscv32"))]
 use crate::system_status::FaultEvent;
-#[cfg(any(test, target_arch = "riscv32"))]
 use crate::system_status::FaultManagerState;
 
-#[cfg(any(test, target_arch = "riscv32"))]
 const MAX_SCHEDULER_EFFECTS: usize = 2;
-#[cfg(any(test, target_arch = "riscv32"))]
 const MAX_STATUS_EFFECTS: usize = 2;
 
 /// Scheduler-facing effect requested by the fault policy.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SchedulerEffect {
     EmergencyStopAll,
@@ -26,7 +20,6 @@ pub(super) enum SchedulerEffect {
 }
 
 /// Status-facing effect requested by the fault policy.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StatusEffect {
     EstopActive,
@@ -36,7 +29,6 @@ pub(super) enum StatusEffect {
 }
 
 /// Complete, framework-independent result of handling one fault event.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FaultDecision {
     pub(super) previous_state: FaultManagerState,
@@ -52,14 +44,12 @@ pub(super) struct FaultDecision {
 /// Track output remains disabled until
 /// [`FaultEvent::TrackPowerArmed`](crate::system_status::FaultEvent::TrackPowerArmed)
 /// is received, even though the logical initial state is [`FaultManagerState::Normal`].
-#[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FaultPolicy {
     state: FaultManagerState,
     armed: bool,
 }
 
-#[cfg(any(test, target_arch = "riscv32"))]
 impl FaultPolicy {
     #[must_use]
     pub(super) const fn new() -> Self {

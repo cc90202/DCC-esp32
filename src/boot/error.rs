@@ -6,7 +6,7 @@ use crate::net::NetInitError;
 use crate::net::provisioning::ProvisioningApError;
 use crate::net::wifi_config::{EspFlashStoreError, EspWifiConfigStoreError};
 use crate::rmt_dcc::InitError as RmtInitError;
-use crate::system_status::OptionalPeripheralInit;
+use crate::system_status::{CriticalTask, OptionalPeripheralInit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
@@ -66,48 +66,6 @@ pub enum CriticalHardwareInit {
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-/// Runtime task whose spawn operation failed.
-pub enum CriticalTask {
-    /// Display rendering task.
-    Display,
-    /// DCC waveform engine task.
-    DccEngine,
-    /// Status LED task.
-    StatusLed,
-    /// DCC packet scheduler task.
-    Scheduler,
-    /// RailCom diagnostics task.
-    RailcomDiag,
-    /// Programming-on-main actor task.
-    PomActor,
-    /// Programming-on-main cutout monitor task.
-    PomCutoutMonitor,
-    /// RailCom ISR capture task.
-    RailcomIsrCapture,
-    /// RailCom UART dispatch task.
-    RailcomUartDispatch,
-    /// Network task.
-    Net,
-    /// Fault side-effects task.
-    FaultEffects,
-    /// Fault manager task.
-    FaultManager,
-    /// Runtime provisioning request task.
-    ProvisioningRequest,
-    /// Provisioning status LED task.
-    ProvisioningLed,
-    /// Emergency-stop button task.
-    StopButton,
-    /// Resume button task.
-    ResumeButton,
-    /// Track short-circuit detector task.
-    ShortDetector,
-    /// Controller lease watchdog task.
-    LeaseWatchdog,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 /// Initialization failure reported by a running critical task.
 pub enum CriticalTaskInit {
     /// Network initialization failed.
@@ -160,94 +118,95 @@ impl BootError {
     /// Return the stable, user-facing diagnostic for this failure.
     pub const fn message(self) -> &'static str {
         match self {
-            Self::OptionalPeripheralInit(OptionalPeripheralInit::DisplayI2c) => {
-                "display I2C init failed"
-            }
-            Self::OptionalPeripheralInit(OptionalPeripheralInit::DisplayInit) => {
-                "display SSD1306 init failed"
-            }
-            Self::OptionalPeripheralInit(OptionalPeripheralInit::DisplayUnavailable) => {
-                "display disabled"
-            }
-            Self::DccSelfCheck(DccSelfCheckError::IdleWaveformBuild) => {
-                "idle waveform build failed"
-            }
-            Self::DccSelfCheck(DccSelfCheckError::ShortAddress3Invalid) => {
-                "short address 3 must be valid"
-            }
-            Self::DccSelfCheck(DccSelfCheckError::Speed28PacketEncoding) => {
-                "speed28 packet encoding failed"
-            }
-            Self::DccSelfCheck(DccSelfCheckError::LongAddress1000Invalid) => {
-                "long address 1000 must be valid"
-            }
-            Self::DccSelfCheck(DccSelfCheckError::Speed128PacketEncoding) => {
-                "speed128 packet encoding failed"
-            }
-            Self::CriticalHardwareInit(CriticalHardwareInit::Rmt) => "RMT init failed",
-            Self::CriticalHardwareInit(CriticalHardwareInit::RmtChannel0) => {
-                "RMT channel0 configure failed"
-            }
-            Self::CriticalHardwareInit(CriticalHardwareInit::RmtDriver(_)) => {
-                "RMT ISR driver init failed"
-            }
-            Self::CriticalHardwareInit(CriticalHardwareInit::RailcomUart) => {
-                "RailCom UART RX init failed"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::Display) => "failed to spawn display_task",
-            Self::CriticalTaskSpawn(CriticalTask::DccEngine) => "failed to spawn dcc_engine_task",
-            Self::CriticalTaskSpawn(CriticalTask::StatusLed) => "failed to spawn status_led_task",
-            Self::CriticalTaskSpawn(CriticalTask::Scheduler) => "failed to spawn scheduler_task",
-            Self::CriticalTaskSpawn(CriticalTask::RailcomDiag) => {
-                "failed to spawn railcom_diag_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::PomActor) => "failed to spawn pom_actor_task",
-            Self::CriticalTaskSpawn(CriticalTask::PomCutoutMonitor) => {
-                "failed to spawn pom_cutout_monitor_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::RailcomIsrCapture) => {
-                "failed to spawn railcom_isr_capture_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::RailcomUartDispatch) => {
-                "failed to spawn railcom_uart_runtime_dispatch_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::Net) => "failed to spawn net_task",
-            Self::CriticalTaskSpawn(CriticalTask::FaultEffects) => {
-                "failed to spawn fault_effects_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::FaultManager) => {
-                "failed to spawn fault_manager_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::ProvisioningRequest) => {
-                "failed to spawn provisioning_request_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::ProvisioningLed) => {
-                "failed to spawn provisioning_led_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::StopButton) => "failed to spawn stop_button_task",
-            Self::CriticalTaskSpawn(CriticalTask::ResumeButton) => {
-                "failed to spawn resume_button_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::ShortDetector) => {
-                "failed to spawn short_detector_task"
-            }
-            Self::CriticalTaskSpawn(CriticalTask::LeaseWatchdog) => {
-                "failed to spawn client_watchdog_task"
-            }
-            Self::CriticalTaskInit(CriticalTaskInit::FaultStateReceiverUnavailable) => {
-                "fault-state watch receiver already taken"
-            }
-            Self::CriticalTaskInit(CriticalTaskInit::Net(_)) => "network initialization failed",
-            Self::CriticalTaskInit(CriticalTaskInit::ProvisioningAp(_)) => {
-                "provisioning access point initialization failed"
-            }
-            Self::CriticalTaskInit(CriticalTaskInit::WifiConfig(_)) => {
-                "WiFi configuration initialization failed"
-            }
-            Self::CriticalTaskInit(CriticalTaskInit::ReadinessTimeout) => {
-                "critical task readiness timeout"
-            }
+            Self::OptionalPeripheralInit(peripheral) => degraded_peripheral_message(peripheral),
+            Self::DccSelfCheck(error) => error.message(),
+            Self::CriticalHardwareInit(error) => error.message(),
+            Self::CriticalTaskSpawn(task) => task.spawn_failure_message(),
+            Self::CriticalTaskInit(error) => error.message(),
         }
+    }
+}
+
+/// Boot diagnostic for an optional peripheral that left the system degraded.
+const fn degraded_peripheral_message(peripheral: OptionalPeripheralInit) -> &'static str {
+    match peripheral {
+        OptionalPeripheralInit::DisplayI2c => "display I2C init failed",
+        OptionalPeripheralInit::DisplayInit => "display SSD1306 init failed",
+        OptionalPeripheralInit::DisplayUnavailable => "display disabled",
+    }
+}
+
+impl DccSelfCheckError {
+    /// Return the stable diagnostic for this self-check failure.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::IdleWaveformBuild => "idle waveform build failed",
+            Self::ShortAddress3Invalid => "short address 3 must be valid",
+            Self::Speed28PacketEncoding => "speed28 packet encoding failed",
+            Self::LongAddress1000Invalid => "long address 1000 must be valid",
+            Self::Speed128PacketEncoding => "speed128 packet encoding failed",
+        }
+    }
+}
+
+impl CriticalHardwareInit {
+    /// Return the stable diagnostic for this hardware failure, without its source.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Rmt => "RMT init failed",
+            Self::RmtChannel0 => "RMT channel0 configure failed",
+            Self::RmtDriver(_) => "RMT ISR driver init failed",
+            Self::RailcomUart => "RailCom UART RX init failed",
+        }
+    }
+}
+
+impl CriticalTaskInit {
+    /// Return the stable diagnostic for this task failure, without its source.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Net(_) => "network initialization failed",
+            Self::ProvisioningAp(_) => "provisioning access point initialization failed",
+            Self::WifiConfig(_) => "WiFi configuration initialization failed",
+            Self::FaultStateReceiverUnavailable => "fault-state watch receiver already taken",
+            Self::ReadinessTimeout => "critical task readiness timeout",
+        }
+    }
+}
+
+impl From<OptionalPeripheralInit> for BootError {
+    fn from(peripheral: OptionalPeripheralInit) -> Self {
+        Self::OptionalPeripheralInit(peripheral)
+    }
+}
+
+impl From<DccSelfCheckError> for BootError {
+    fn from(error: DccSelfCheckError) -> Self {
+        Self::DccSelfCheck(error)
+    }
+}
+
+impl From<CriticalHardwareInit> for BootError {
+    fn from(error: CriticalHardwareInit) -> Self {
+        Self::CriticalHardwareInit(error)
+    }
+}
+
+impl From<CriticalTaskInit> for BootError {
+    fn from(error: CriticalTaskInit) -> Self {
+        Self::CriticalTaskInit(error)
+    }
+}
+
+impl From<WifiConfigInitError> for CriticalTaskInit {
+    fn from(error: WifiConfigInitError) -> Self {
+        Self::WifiConfig(error)
+    }
+}
+
+impl From<WifiConfigInitError> for BootError {
+    fn from(error: WifiConfigInitError) -> Self {
+        Self::CriticalTaskInit(error.into())
     }
 }
 
@@ -271,7 +230,7 @@ impl core::error::Error for BootError {
 
 impl fmt::Display for DccSelfCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(BootError::DccSelfCheck(*self).message())
+        formatter.write_str(self.message())
     }
 }
 
@@ -280,8 +239,10 @@ impl core::error::Error for DccSelfCheckError {}
 impl fmt::Display for CriticalHardwareInit {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RmtDriver(error) => write!(formatter, "RMT ISR driver init failed: {error}"),
-            _ => formatter.write_str(BootError::CriticalHardwareInit(*self).message()),
+            Self::RmtDriver(error) => write!(formatter, "{}: {error}", self.message()),
+            Self::Rmt | Self::RmtChannel0 | Self::RailcomUart => {
+                formatter.write_str(self.message())
+            }
         }
     }
 }
@@ -295,32 +256,14 @@ impl core::error::Error for CriticalHardwareInit {
     }
 }
 
-impl fmt::Display for CriticalTask {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(BootError::CriticalTaskSpawn(*self).message())
-    }
-}
-
-impl core::error::Error for CriticalTask {}
-
 impl fmt::Display for CriticalTaskInit {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Net(error) => write!(formatter, "network initialization failed: {error}"),
-            Self::ProvisioningAp(error) => {
-                write!(
-                    formatter,
-                    "provisioning access point initialization failed: {error}"
-                )
-            }
-            Self::WifiConfig(error) => {
-                write!(
-                    formatter,
-                    "WiFi configuration initialization failed: {error}"
-                )
-            }
+            Self::Net(error) => write!(formatter, "{}: {error}", self.message()),
+            Self::ProvisioningAp(error) => write!(formatter, "{}: {error}", self.message()),
+            Self::WifiConfig(error) => write!(formatter, "{}: {error}", self.message()),
             Self::FaultStateReceiverUnavailable | Self::ReadinessTimeout => {
-                formatter.write_str(BootError::CriticalTaskInit(*self).message())
+                formatter.write_str(self.message())
             }
         }
     }
@@ -337,12 +280,23 @@ impl core::error::Error for CriticalTaskInit {
     }
 }
 
+impl WifiConfigInitError {
+    /// Return the stable diagnostic for this configuration failure, without its source.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Partition(_) => "WiFi flash partition failed",
+            Self::Store(_) => "WiFi configuration store failed",
+            Self::FlashUnavailable => "flash not open before WiFi setup",
+        }
+    }
+}
+
 impl fmt::Display for WifiConfigInitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Partition(error) => write!(formatter, "WiFi flash partition failed: {error}"),
-            Self::Store(error) => write!(formatter, "WiFi configuration store failed: {error}"),
-            Self::FlashUnavailable => formatter.write_str("flash not open before WiFi setup"),
+            Self::Partition(error) => write!(formatter, "{}: {error}", self.message()),
+            Self::Store(error) => write!(formatter, "{}: {error}", self.message()),
+            Self::FlashUnavailable => formatter.write_str(self.message()),
         }
     }
 }

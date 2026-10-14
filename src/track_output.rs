@@ -8,10 +8,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use critical_section::with as critical_section_with;
-#[cfg(target_arch = "riscv32")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::Receiver;
 use esp_hal::Blocking;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::handler;
@@ -20,7 +17,6 @@ use esp_hal::ram;
 use esp_hal::time::Instant;
 use esp_hal::timer::OneShotTimer;
 use esp_hal::timer::timg;
-use heapless::Vec;
 use static_cell::StaticCell;
 
 use crate::cutout::timing::{
@@ -28,9 +24,22 @@ use crate::cutout::timing::{
     RX_CHANNEL_SPLIT_US, RX_ISR_GUARD_US,
 };
 use crate::cutout::{CutoutMode, PacketSequence, RailcomChannel};
-use crate::dcc::{DccAddress, PackedAddressFlags, PomRequestId};
+use crate::cutout_metadata::PackedRailcomPacketMetadata;
+use crate::dcc::{DccAddress, PomRequestId};
 use crate::diagnostics::diagnostic_counters;
 use crate::seqlock::SeqSlot;
+
+mod event_ring;
+mod interlock;
+
+#[cfg(any(test, feature = "bench-diag"))]
+pub use event_ring::stats;
+pub use event_ring::{
+    cutout_event_notify_receiver, drain_cutout_runtime_events, railcom_packet_metadata,
+};
+pub(crate) use interlock::{inhibit_epoch, inhibited, set_inhibited};
+
+pub use crate::cutout_metadata::{CutoutRuntimeEvent, RailcomPacketMetadata};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,44 +118,7 @@ type CutoutEventNotifyChannel = embassy_sync::channel::Channel<CriticalSectionRa
 #[cfg(target_arch = "riscv32")]
 static CUTOUT_EVENT_NOTIFY: CutoutEventNotifyChannel = CutoutEventNotifyChannel::new();
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum CutoutRuntimeEvent {
-    Opened {
-        packet_sequence: PacketSequence,
-        cutout: CutoutMode,
-        target_address: Option<DccAddress>,
-        pom_request_id: Option<PomRequestId>,
-    },
-}
-
 static TRACK_ENABLED: AtomicBool = AtomicBool::new(false);
-static TRACK_INHIBITED: AtomicBool = AtomicBool::new(true);
-static INHIBIT_EPOCH: AtomicU32 = AtomicU32::new(0);
-
-/// Whether the update interlock refuses to power the track; set from power-on
-/// until boot policy agrees.
-pub(crate) fn inhibited() -> bool {
-    TRACK_INHIBITED.load(Ordering::Acquire)
-}
-
-/// Counts how many times the interlock was engaged, so an operator action
-/// that started before an engagement can be recognised as stale.
-pub(crate) fn inhibit_epoch() -> u32 {
-    INHIBIT_EPOCH.load(Ordering::Acquire)
-}
-
-/// Engages or lifts the interlock, serialized with the enable check in
-/// [`TrackOutput::set_track_enabled`].
-pub(crate) fn set_inhibited(inhibit: bool) {
-    critical_section_with(|_| {
-        if inhibit {
-            INHIBIT_EPOCH.fetch_add(1, Ordering::AcqRel);
-        }
-        TRACK_INHIBITED.store(inhibit, Ordering::Release);
-    });
-}
-
 static CUTOUT_STATE: AtomicU8 = AtomicU8::new(CutoutState::Idle as u8);
 static PENDING_CUTOUT_PACKET_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static PENDING_CUTOUT_METADATA: AtomicU32 = AtomicU32::new(0);
@@ -178,109 +150,6 @@ struct TrackOutputHw {
     enable: Output<'static>,
     cutout: Output<'static>,
     cutout_timer: OneShotTimer<'static, Blocking>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RailcomPacketMetadata {
-    pub target_address: Option<DccAddress>,
-    pub cutout: CutoutMode,
-    pub pom_request_id: Option<PomRequestId>,
-}
-
-/// Bit-packed cutout metadata: `PackedAddressFlags` carries the target,
-/// POM mode, and presence of the separately stored request identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PackedRailcomPacketMetadata(PackedAddressFlags);
-
-// The DCC interrupt handlers run from RAM, so the helpers they use are forced
-// inline: an out-of-line copy would live in flash. The RMT handler packs
-// metadata with `new` and `raw` (through `request_cutout_from_isr`); the
-// cutout timer handler unpacks it with `from_raw`, `cutout`,
-// `target_address` and `pom_request_id`, and repacks it in
-// `push_cutout_event_from_isr`.
-impl PackedRailcomPacketMetadata {
-    const CUTOUT_MODE_FIELD: u32 = 0;
-    const CUTOUT_MODE_WIDTH: u32 = 2;
-    const HAS_POM_REQUEST_ID_BIT: u32 = 2;
-
-    #[inline(always)]
-    const fn from_raw(raw: u32) -> Self {
-        Self(PackedAddressFlags::from_raw(raw))
-    }
-
-    #[inline(always)]
-    const fn raw(self) -> u32 {
-        self.0.raw()
-    }
-
-    #[inline(always)]
-    fn new(
-        target_address: Option<DccAddress>,
-        cutout: CutoutMode,
-        pom_request_id: Option<PomRequestId>,
-    ) -> Self {
-        Self(
-            PackedAddressFlags::new(target_address)
-                .with_field(
-                    Self::CUTOUT_MODE_FIELD,
-                    Self::CUTOUT_MODE_WIDTH,
-                    match cutout {
-                        CutoutMode::None => 0,
-                        CutoutMode::Telemetry => 1,
-                        CutoutMode::PomWrite => 2,
-                        CutoutMode::PomRead => 3,
-                    },
-                )
-                .with_flag(Self::HAS_POM_REQUEST_ID_BIT, pom_request_id.is_some()),
-        )
-    }
-
-    #[inline(always)]
-    fn target_address(self) -> Option<DccAddress> {
-        self.0.address()
-    }
-
-    #[inline(always)]
-    const fn cutout(self) -> CutoutMode {
-        match self
-            .0
-            .field(Self::CUTOUT_MODE_FIELD, Self::CUTOUT_MODE_WIDTH)
-        {
-            0 => CutoutMode::None,
-            1 => CutoutMode::Telemetry,
-            2 => CutoutMode::PomWrite,
-            3 => CutoutMode::PomRead,
-            _ => unreachable!(),
-        }
-    }
-
-    #[inline(always)]
-    fn pom_request_id(self, raw_request_id: u32) -> Option<PomRequestId> {
-        self.0
-            .flag(Self::HAS_POM_REQUEST_ID_BIT)
-            .then(|| PomRequestId::new(raw_request_id))
-    }
-
-    fn runtime_event(
-        self,
-        packet_sequence: PacketSequence,
-        raw_request_id: u32,
-    ) -> CutoutRuntimeEvent {
-        CutoutRuntimeEvent::Opened {
-            packet_sequence,
-            cutout: self.cutout(),
-            target_address: self.target_address(),
-            pom_request_id: self.pom_request_id(raw_request_id),
-        }
-    }
-
-    fn public_metadata(self, raw_request_id: u32) -> RailcomPacketMetadata {
-        RailcomPacketMetadata {
-            target_address: self.target_address(),
-            cutout: self.cutout(),
-            pom_request_id: self.pom_request_id(raw_request_id),
-        }
-    }
 }
 
 /// Handle used by normal runtime code.
@@ -669,71 +538,6 @@ pub fn request_cutout_from_isr(request: CutoutRequest) -> bool {
         return false;
     };
     scheduled
-}
-
-/// Returns a copy of the current cutout statistics.
-#[must_use]
-#[cfg(any(test, feature = "bench-diag"))]
-pub fn stats() -> TrackOutputStats {
-    CUTOUT.snapshot()
-}
-
-#[must_use]
-pub fn railcom_packet_metadata(packet_sequence: PacketSequence) -> Option<RailcomPacketMetadata> {
-    let packet_sequence = packet_sequence.value();
-    let slot = packet_sequence as usize % RAILCOM_PACKET_META_CAPACITY;
-    let [recorded_sequence, metadata_raw, pom_request_id] =
-        RAILCOM_PACKET_META_SLOTS[slot].snapshot()?;
-    let metadata = PackedRailcomPacketMetadata::from_raw(metadata_raw);
-    (recorded_sequence == packet_sequence).then(|| metadata.public_metadata(pom_request_id))
-}
-
-/// Drain cutout runtime events observed since `next_read`.
-///
-/// If the producer outruns the consumer beyond ring capacity, the oldest
-/// events are dropped and counted in diagnostics.
-///
-/// The counters use wrapping arithmetic because overflowing `u32` is expected
-/// during long-running operation. Per-slot generations reject torn snapshots.
-pub fn drain_cutout_runtime_events(
-    next_read: &mut u32,
-    out: &mut Vec<CutoutRuntimeEvent, CUTOUT_EVENT_RING_CAPACITY>,
-) {
-    let write = CUTOUT_EVENT_WRITE_COUNT.load(Ordering::Acquire);
-    let available = write.wrapping_sub(*next_read);
-    if available > CUTOUT_EVENT_RING_CAPACITY as u32 {
-        let dropped = available - CUTOUT_EVENT_RING_CAPACITY as u32;
-        *next_read = write.wrapping_sub(CUTOUT_EVENT_RING_CAPACITY as u32);
-        CUTOUT
-            .cutout_event_dropped_count
-            .fetch_add(dropped, Ordering::Relaxed);
-    }
-
-    let mut remaining = write
-        .wrapping_sub(*next_read)
-        .min(CUTOUT_EVENT_RING_CAPACITY as u32);
-    while remaining > 0 && out.len() < CUTOUT_EVENT_RING_CAPACITY {
-        let slot = *next_read as usize % CUTOUT_EVENT_RING_CAPACITY;
-        let Some([sequence, metadata_raw, pom_request_id]) = CUTOUT_EVENT_SLOTS[slot].snapshot()
-        else {
-            CUTOUT
-                .cutout_event_dropped_count
-                .fetch_add(1, Ordering::Relaxed);
-            *next_read = next_read.wrapping_add(1);
-            remaining -= 1;
-            continue;
-        };
-        let metadata = PackedRailcomPacketMetadata::from_raw(metadata_raw);
-        let _ = out.push(metadata.runtime_event(PacketSequence::new(sequence), pom_request_id));
-        *next_read = next_read.wrapping_add(1);
-        remaining -= 1;
-    }
-}
-
-#[cfg(target_arch = "riscv32")]
-#[must_use]
-pub fn cutout_event_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1> {
-    CUTOUT_EVENT_NOTIFY.receiver()
 }
 
 #[handler(priority = Priority::Priority3)]

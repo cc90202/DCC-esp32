@@ -1,13 +1,12 @@
 //! Backpressure-isolated delivery of fault-policy side effects.
 
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::channel::Sender;
-#[cfg(target_arch = "riscv32")]
 use embassy_sync::signal::Signal;
 
 #[cfg(target_arch = "riscv32")]
 use crate::{
-    dcc::SchedulerCommand,
+    dcc::{SchedulerCommand, channels::SchedulerCommandSender},
+    system_status::channels::{DisplaySender, NetStatusSender, SystemStatusSender},
     system_status::{DisplayEvent, FaultCause, SystemStatusEvent},
 };
 
@@ -136,30 +135,10 @@ fn plan_fault_relay(
 #[cfg(target_arch = "riscv32")]
 pub(crate) struct FaultEffectsTaskContext {
     pub(crate) effects_signal: &'static FaultEffectsSignal,
-    pub(crate) scheduler_sender: Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SchedulerCommand,
-        32,
-    >,
-    pub(crate) status_sender: Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SystemStatusEvent,
-        16,
-    >,
-    pub(crate) net_status_sender: Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        SystemStatusEvent,
-        8,
-    >,
-    pub(crate) display_sender: embassy_sync::channel::Sender<
-        'static,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        DisplayEvent,
-        8,
-    >,
+    pub(crate) scheduler_sender: SchedulerCommandSender,
+    pub(crate) status_sender: SystemStatusSender,
+    pub(crate) net_status_sender: NetStatusSender,
+    pub(crate) display_sender: DisplaySender,
 }
 
 /// Relays coalescible fault effects without applying backpressure to the

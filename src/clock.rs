@@ -12,6 +12,11 @@ pub(crate) fn now() -> Uptime {
     since_boot(Instant::now())
 }
 
+/// Milliseconds since boot on the embassy clock.
+pub(crate) fn now_ms() -> u64 {
+    Instant::now().as_millis()
+}
+
 /// An embassy instant as an [`Uptime`].
 pub(crate) fn since_boot(instant: Instant) -> Uptime {
     Uptime::new(Duration::from_micros(instant.as_micros()))

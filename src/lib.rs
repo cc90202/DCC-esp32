@@ -33,6 +33,8 @@ pub(crate) mod control_buttons;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod control_logic;
 pub(crate) mod cutout;
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) mod cutout_metadata;
 pub mod dcc;
 // ESP runtime adapters live beside their DCC/RailCom feature code on disk, but
 // are mounted at the crate root to keep hardware and tasking out of the pure

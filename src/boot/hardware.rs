@@ -34,7 +34,7 @@ pub(super) fn initialize_display_bus(
     .map(|i2c| i2c.with_sda(sda).with_scl(scl).into_async())
     .map_err(|error| {
         defmt::error!("boot: display I2C init failed: {:?}", error);
-        BootError::OptionalPeripheralInit(crate::system_status::OptionalPeripheralInit::DisplayI2c)
+        crate::system_status::OptionalPeripheralInit::DisplayI2c.into()
     })
 }
 
@@ -44,7 +44,7 @@ pub(super) fn initialize_dcc_rmt(
 ) -> Result<(), BootError> {
     let rmt = Rmt::new(rmt, Rate::from_mhz(80)).map_err(|error| {
         defmt::error!("boot: RMT initialization failed: {:?}", error);
-        BootError::CriticalHardwareInit(CriticalHardwareInit::Rmt)
+        CriticalHardwareInit::Rmt
     })?;
 
     // One 1 us RMT channel owns the DCC waveform. GPIO4 remains under the
@@ -61,15 +61,15 @@ pub(super) fn initialize_dcc_rmt(
         )
         .map_err(|error| {
             defmt::error!("boot: RMT channel configuration failed: {:?}", error);
-            BootError::CriticalHardwareInit(CriticalHardwareInit::RmtChannel0)
+            CriticalHardwareInit::RmtChannel0
         })?;
     let idle_rmt = build_idle_rmt_buffer().map_err(|error| {
         defmt::error!("boot: idle RMT waveform build failed: {:?}", error);
-        BootError::DccSelfCheck(DccSelfCheckError::IdleWaveformBuild)
+        DccSelfCheckError::IdleWaveformBuild
     })?;
 
     rmt_driver::init(dcc_channel, idle_rmt.as_slice())
-        .map_err(|error| BootError::CriticalHardwareInit(CriticalHardwareInit::RmtDriver(error)))
+        .map_err(|error| CriticalHardwareInit::RmtDriver(error).into())
 }
 
 pub(super) fn initialize_railcom_receiver(
@@ -89,7 +89,7 @@ pub(super) fn initialize_railcom_receiver(
     UartRx::new(uart1, railcom_uart_rx_config())
         .map_err(|error| {
             defmt::error!("boot: RailCom UART configuration failed: {:?}", error);
-            BootError::CriticalHardwareInit(CriticalHardwareInit::RailcomUart)
+            CriticalHardwareInit::RailcomUart.into()
         })
         .map(|uart| uart.with_rx(rx_pin).into_async())
 }
