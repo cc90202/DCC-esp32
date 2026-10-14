@@ -1,0 +1,39 @@
+# Flash functions that code reachable from the DCC interrupt handlers may call.
+#
+# Only panic paths belong here: a hot callee goes to RAM via ld/isr_ram.x.
+# Each line is "callee @ caller", both substrings of demangled names, then
+# "  # reason". scripts/check-isr-ram.sh accepts a listed call only when the
+# callee is itself a panic function or every path from the call site reaches
+# a call to one; a listed logger call on a path that can return still fails.
+
+# esp-hal interrupt dispatcher (handle_interrupts).
+core::panicking::panic_bounds_check @ handle_interrupts  # CPU interrupt number above 19 or peripheral source above 76: neither exists on the ESP32-C6
+core::result::unwrap_failed @ handle_interrupts  # mstatus.MPP decoding after a nested handler; the reserved value 2 is never set by hardware
+_defmt_panic @ esp_hal::interrupt::riscv::plic::current_runlevel  # unwrap! on the threshold, which only esp-hal writes, always with a valid priority
+defmt::export::acquire_and_header @ esp_hal::interrupt::riscv::plic::current_runlevel  # same panic path: message header
+defmt::export::fmt::<esp_hal::interrupt::riscv::Error> @ esp_hal::interrupt::riscv::plic::current_runlevel  # same panic path: message argument
+_defmt_release @ esp_hal::interrupt::riscv::plic::current_runlevel  # same panic path: logger release
+
+# Cutout timer rescheduling.
+core::panicking::panic_const::panic_const_div_by_zero @ <esp_hal::timer::OneShotTimer<esp_hal::Blocking>>::schedule  # tick conversion divides by a fixed, non-zero timer clock
+_defmt_panic @ <esp_hal::clock::Clocks>::get  # unwrap! on the clock configuration, set at boot before either handler is bound
+defmt::export::acquire_and_header @ <esp_hal::clock::Clocks>::get  # same panic path: message header
+defmt::export::fmt::<defmt::export::traits::NoneError> @ <esp_hal::clock::Clocks>::get  # same panic path: message argument
+_defmt_release @ <esp_hal::clock::Clocks>::get  # same panic path: logger release
+
+# Cutout event notification: Channel<_, u8, 1>::try_send.
+_defmt_panic @ Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u8, 1>>::try_send  # RefCell borrow inside a critical section, so it cannot overlap
+defmt::export::acquire_and_header @ Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u8, 1>>::try_send  # same panic path: message header
+defmt::export::fmt::<core::cell::BorrowMutError> @ Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u8, 1>>::try_send  # same panic path: message argument
+_defmt_release @ Channel<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u8, 1>>::try_send  # same panic path: logger release
+
+# Task wake-up (embassy waker, esp-rtos scheduler).
+esp_sync::panic_lock_not_reentrant @ <esp_sync::LockGuard<esp_sync::raw::SingleCoreInterruptLock>>::new_non_reentrant  # fires only on a re-entrant lock, a bug that is fatal anyway
+_defmt_panic @ <core::ptr::non_null::NonNull<esp_rtos::task::Task> as esp_rtos::task::TaskExt>::resume  # scheduler RefCell borrow inside the scheduler lock, so it cannot overlap
+defmt::export::acquire_and_header @ <core::ptr::non_null::NonNull<esp_rtos::task::Task> as esp_rtos::task::TaskExt>::resume  # same panic path: message header
+defmt::export::fmt::<core::cell::BorrowMutError> @ <core::ptr::non_null::NonNull<esp_rtos::task::Task> as esp_rtos::task::TaskExt>::resume  # same panic path: message argument
+_defmt_release @ <core::ptr::non_null::NonNull<esp_rtos::task::Task> as esp_rtos::task::TaskExt>::resume  # same panic path: logger release
+_defmt_panic @ <esp_rtos::scheduler::SchedulerState>::resume_task  # unwrap! on the time driver, installed by esp_rtos::start before any task runs
+defmt::export::acquire_and_header @ <esp_rtos::scheduler::SchedulerState>::resume_task  # same panic path: message header
+defmt::export::fmt::<defmt::export::traits::NoneError> @ <esp_rtos::scheduler::SchedulerState>::resume_task  # same panic path: message argument
+_defmt_release @ <esp_rtos::scheduler::SchedulerState>::resume_task  # same panic path: logger release

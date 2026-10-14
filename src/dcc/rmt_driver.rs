@@ -359,7 +359,7 @@ fn rmt_interrupt() {
         // holds the reference, and future submissions write the other slot.
         let pkt = unsafe { &*PACKET_SLOTS[published_slot as usize].0.get() };
         debug_assert!(pkt.len as usize <= MAX_DATA_PULSES);
-        let data = &pkt.data[..pkt.len as usize];
+        let data = &pkt.data[..packet_len(pkt)];
         let cutout_requested = !matches!(pkt.meta.cutout, CutoutMode::None);
         let cutout_allowed = if cutout_requested {
             RMT_CUTOUT_REQUEST_MAX_LATENCY_US
@@ -389,7 +389,7 @@ fn rmt_interrupt() {
             // and never modified again. The pointee is read-only after init,
             // has static lifetime, and remains valid for the whole program.
             let idle = unsafe { &*idle_ptr };
-            write_data_to_rmt_ram(&idle.data[..idle.len as usize], false);
+            write_data_to_rmt_ram(&idle.data[..packet_len(idle)], false);
         }
     }
 
@@ -399,6 +399,16 @@ fn rmt_interrupt() {
     }
 
     RMT_ISR_MAX_DURATION_US.fetch_max(now_us().wrapping_sub(packet_boundary_us), Ordering::Relaxed);
+}
+
+/// Pulse count of `packet`, clamped to its buffer.
+///
+/// Every writer keeps `len <= MAX_DATA_PULSES`, so the clamp never changes the
+/// value; it lets the compiler drop the bounds-check panic, which lives in
+/// flash, from the RAM-resident handler.
+#[inline(always)]
+fn packet_len(packet: &SharedPacket) -> usize {
+    usize::from(packet.len).min(MAX_DATA_PULSES)
 }
 
 #[inline(always)]

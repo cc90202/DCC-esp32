@@ -21,7 +21,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: riscv32imac-unknown-none-elf, x86_64-unknown-linux-gnu
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -82,7 +82,9 @@ jobs:
           cmp "$tmp/app.bin" "$tmp/extracted.bin"
 
       - name: Verify ISR placement in internal RAM
-        run: bash scripts/check-isr-ram.sh
+        run: |
+          bash scripts/check-isr-ram.sh --self-test
+          bash scripts/check-isr-ram.sh
 
       # Intra-doc links break silently when a module's visibility changes: none
       # of the jobs above build documentation, so a link to a module that has

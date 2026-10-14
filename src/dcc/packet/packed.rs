@@ -33,6 +33,9 @@ impl PackedDccAddress {
         }
     }
 
+    // Forced inline: the cutout timer handler, which runs from RAM, decodes
+    // addresses through this.
+    #[inline(always)]
     pub(crate) fn address(self) -> Option<DccAddress> {
         if self.0 == 0 {
             return None;
@@ -81,6 +84,8 @@ impl PackedAddressFlags {
         self.0
     }
 
+    // Forced inline for the same reason as `PackedDccAddress::address`.
+    #[inline(always)]
     pub(crate) fn address(self) -> Option<DccAddress> {
         PackedDccAddress::from_raw((self.0 & Self::ADDRESS_MASK) as u16).address()
     }

@@ -192,19 +192,28 @@ pub struct RailcomPacketMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PackedRailcomPacketMetadata(PackedAddressFlags);
 
+// The DCC interrupt handlers run from RAM, so the helpers they use are forced
+// inline: an out-of-line copy would live in flash. The RMT handler packs
+// metadata with `new` and `raw` (through `request_cutout_from_isr`); the
+// cutout timer handler unpacks it with `from_raw`, `cutout`,
+// `target_address` and `pom_request_id`, and repacks it in
+// `push_cutout_event_from_isr`.
 impl PackedRailcomPacketMetadata {
     const CUTOUT_MODE_FIELD: u32 = 0;
     const CUTOUT_MODE_WIDTH: u32 = 2;
     const HAS_POM_REQUEST_ID_BIT: u32 = 2;
 
+    #[inline(always)]
     const fn from_raw(raw: u32) -> Self {
         Self(PackedAddressFlags::from_raw(raw))
     }
 
+    #[inline(always)]
     const fn raw(self) -> u32 {
         self.0.raw()
     }
 
+    #[inline(always)]
     fn new(
         target_address: Option<DccAddress>,
         cutout: CutoutMode,
@@ -226,10 +235,12 @@ impl PackedRailcomPacketMetadata {
         )
     }
 
+    #[inline(always)]
     fn target_address(self) -> Option<DccAddress> {
         self.0.address()
     }
 
+    #[inline(always)]
     const fn cutout(self) -> CutoutMode {
         match self
             .0
@@ -243,6 +254,7 @@ impl PackedRailcomPacketMetadata {
         }
     }
 
+    #[inline(always)]
     fn pom_request_id(self, raw_request_id: u32) -> Option<PomRequestId> {
         self.0
             .flag(Self::HAS_POM_REQUEST_ID_BIT)

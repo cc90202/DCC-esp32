@@ -9,6 +9,10 @@ target = "riscv32imac-unknown-none-elf"
 # after layout migration. Never use this runner for an OTA update.
 runner = "espflash flash --monitor --chip esp32c6 --flash-size 8mb --bootloader bootloader/esp32c6-bootloader.bin --partition-table partitions.csv --target-app-partition ota_0 --erase-parts otadata,ota_journal,ota_1"
 rustflags = [
+  # Must precede linkall.x: a section pattern is claimed by the first script
+  # that names it, and this one moves the DCC handlers' callees into RAM.
+  "-C",
+  "link-arg=-Tisr_ram.x",
   "-C",
   "link-arg=-Tlinkall.x",
   "-C",
