@@ -3,7 +3,7 @@
 use dcc_ota::{
     Error, RequestError,
     admission::Operation,
-    http::{Head, Route},
+    http::{Head, Route, Status},
     notice::Notice,
     pacing::{self, Pacing},
     runtime::{Admitted, Restart},
@@ -16,7 +16,7 @@ use embassy_time::{Duration, Instant, Timer};
 
 use super::{
     body::Body,
-    reply::{self, Content, Status},
+    reply::{self, Content},
 };
 use crate::{
     clock::{deadline, now, since_boot},
@@ -105,7 +105,7 @@ async fn upload(
     admitted: Admitted,
     start: Instant,
 ) -> Result<(), Error> {
-    if head.content_length != HEADER_LEN + admitted.image_len().as_usize() {
+    if !admitted.expects_body(head.content_length) {
         let error = refuse(guard, PackageError::Malformed.into());
         return body.reject(socket, error).await;
     }

@@ -5,12 +5,17 @@
 //! address, so a page on another origin cannot drive an update: a foreign
 //! `Origin` or `Host` is refused, and the two writing requests also need the
 //! `X-DCC-OTA: 1` header, which a cross-site form cannot set.
+//!
+//! [`status_of`] maps each error to the status its response carries.
 
 use core::net::Ipv4Addr;
 
-use dcc_ota_format::{ImageLen, package::HEADER_LEN};
+use dcc_ota_format::{
+    ImageLen,
+    package::{HEADER_LEN, PackageError},
+};
 
-use crate::RequestError;
+use crate::{Error, Refusal, RequestError};
 
 /// Longest request head accepted, terminator included.
 pub const MAX_HEAD_BYTES: usize = 1024;
@@ -192,6 +197,79 @@ fn decimal(value: &str) -> Result<usize, RequestError> {
     })
 }
 
+/// The status of a response: its code and reason phrase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// `200 OK`.
+    Ok,
+    /// `400 Bad Request`.
+    BadRequest,
+    /// `403 Forbidden`.
+    Forbidden,
+    /// `408 Request Timeout`.
+    RequestTimeout,
+    /// `409 Conflict`.
+    Conflict,
+    /// `413 Content Too Large`.
+    ContentTooLarge,
+    /// `503 Service Unavailable`.
+    ServiceUnavailable,
+}
+
+impl Status {
+    /// The numeric status code.
+    #[must_use]
+    pub const fn code(self) -> u16 {
+        match self {
+            Self::Ok => 200,
+            Self::BadRequest => 400,
+            Self::Forbidden => 403,
+            Self::RequestTimeout => 408,
+            Self::Conflict => 409,
+            Self::ContentTooLarge => 413,
+            Self::ServiceUnavailable => 503,
+        }
+    }
+
+    /// The reason phrase that follows the code on the status line.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::BadRequest => "Bad Request",
+            Self::Forbidden => "Forbidden",
+            Self::RequestTimeout => "Request Timeout",
+            Self::Conflict => "Conflict",
+            Self::ContentTooLarge => "Content Too Large",
+            Self::ServiceUnavailable => "Service Unavailable",
+        }
+    }
+}
+
+/// The status of the response that reports `error`: a refused request or
+/// package is the client's fault, a busy device a conflict, and a device
+/// that cannot take an update at all is unavailable.
+#[must_use]
+pub const fn status_of(error: Error) -> Status {
+    match error {
+        Error::Forbidden | Error::Request(RequestError::Foreign) => Status::Forbidden,
+        Error::Request(RequestError::TooLarge) | Error::Package(PackageError::TooLarge) => {
+            Status::ContentTooLarge
+        }
+        Error::Timeout => Status::RequestTimeout,
+        Error::Refused(Refusal::Recovery)
+        | Error::Flash(_)
+        | Error::Corrupt
+        | Error::Unavailable
+        | Error::Internal
+        | Error::Network => Status::ServiceUnavailable,
+        Error::Refused(_) => Status::Conflict,
+        Error::Request(_) | Error::Package(_) | Error::Image(_) | Error::Ineligible(_) => {
+            Status::BadRequest
+        }
+    }
+}
+
 /// Whether `value` names this device: its address, optionally with the
 /// default port. The standard parser refuses leading zeroes and short forms.
 fn authority(value: &str, ip: Ipv4Addr) -> bool {
@@ -346,5 +424,52 @@ mod tests {
                 Err(RequestError::Foreign)
             );
         }
+    }
+
+    #[test]
+    fn status_code_table() {
+        use crate::{Error, FlashError, Refusal};
+        use dcc_ota_format::{
+            image::ImageError,
+            package::{Ineligible, PackageError},
+        };
+
+        for (error, line) in [
+            (Error::Forbidden, "403 Forbidden"),
+            (Error::Request(RequestError::Foreign), "403 Forbidden"),
+            (
+                Error::Request(RequestError::TooLarge),
+                "413 Content Too Large",
+            ),
+            (
+                Error::Package(PackageError::TooLarge),
+                "413 Content Too Large",
+            ),
+            (Error::Timeout, "408 Request Timeout"),
+            (Error::Refused(Refusal::Recovery), "503 Service Unavailable"),
+            (
+                Error::Flash(FlashError::ReadBack),
+                "503 Service Unavailable",
+            ),
+            (Error::Corrupt, "503 Service Unavailable"),
+            (Error::Unavailable, "503 Service Unavailable"),
+            (Error::Internal, "503 Service Unavailable"),
+            (Error::Network, "503 Service Unavailable"),
+            (Error::Refused(Refusal::Busy), "409 Conflict"),
+            (Error::Refused(Refusal::TrackOn), "409 Conflict"),
+            (Error::Request(RequestError::Malformed), "400 Bad Request"),
+            (Error::Request(RequestError::TooShort), "400 Bad Request"),
+            (
+                Error::Package(PackageError::BadSignature),
+                "400 Bad Request",
+            ),
+            (Error::Image(ImageError::DigestMismatch), "400 Bad Request"),
+            (Error::Ineligible(Ineligible::Downgrade), "400 Bad Request"),
+        ] {
+            let status = status_of(error);
+            let sent = std::format!("{} {}", status.code(), status.reason());
+            assert_eq!(sent, line, "{error:?}");
+        }
+        assert_eq!((Status::Ok.code(), Status::Ok.reason()), (200, "OK"));
     }
 }
