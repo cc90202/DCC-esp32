@@ -1,14 +1,22 @@
 [package]
-edition      = "2024"
-name         = "dcc-esp32"
-publish      = false
-rust-version = "1.88"
-version      = "0.1.0"
+edition.workspace      = true
+name                   = "dcc-esp32"
+publish.workspace      = true
+rust-version.workspace = true
+version                = "0.1.0"
 
 [workspace]
 members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "tools/ota-pack"]
 default-members = ["."]
 resolver        = "3"
+
+# Shared by every member. `version` stays per crate on purpose: the firmware
+# reports its own package version as the running release, and bumping it must
+# not re-version the update crates or the packaging tool.
+[workspace.package]
+edition      = "2024"
+publish      = false
+rust-version = "1.88"
 
 # Versions shared by the firmware and the update crates.
 [workspace.dependencies]
@@ -19,13 +27,16 @@ embedded-storage = "0.3.1"
 heapless         = "0.9"
 sha2             = { version = "0.10", default-features = false }
 
-# Warnings are errors for this package's own code, in every build and on every
+# Warnings are errors for every member's own code, in every build and on every
 # target. Declared here rather than through RUSTFLAGS because the environment
 # variable replaces the target rustflags in .cargo/config.toml, which carry the
 # linker scripts: setting it there silently breaks the firmware link instead of
 # tightening a lint.
-[lints.rust]
+[workspace.lints.rust]
 warnings = "deny"
+
+[lints]
+workspace = true
 
 [features]
 default = []

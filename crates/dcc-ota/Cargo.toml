@@ -1,10 +1,13 @@
 [package]
-edition      = "2024"
-name         = "dcc-ota"
-publish      = false
-rust-version = "1.88"
-version      = "0.1.0"
-description  = "Signed over-the-air update logic for the DCC command station, free of any HAL."
+edition.workspace      = true
+name                   = "dcc-ota"
+publish.workspace      = true
+rust-version.workspace = true
+version                = "0.1.0"
+description            = "Signed over-the-air update logic for the DCC command station, free of any HAL."
+
+[lints]
+workspace = true
 
 [dependencies]
 dcc-ota-format   = { workspace = true }
