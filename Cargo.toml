@@ -35,6 +35,35 @@ sha2             = { version = "0.10", default-features = false }
 [workspace.lints.rust]
 warnings = "deny"
 
+# Lints beyond the default set; `warnings = "deny"` above makes each an error.
+# Unwrap, expect and panic stay allowed in test code (see clippy.toml).
+[workspace.lints.clippy]
+# Panics and unchecked arithmetic outside tests.
+expect_used                 = "warn"
+panic                       = "warn"
+unchecked_time_subtraction  = "warn"
+unwrap_used                 = "warn"
+# Parameter passing.
+needless_pass_by_ref_mut    = "warn"
+needless_pass_by_value      = "warn"
+redundant_clone             = "warn"
+trivially_copy_pass_by_ref  = "warn"
+unused_async                = "warn"
+# Idioms.
+default_trait_access        = "warn"
+explicit_iter_loop          = "warn"
+ignored_unit_patterns       = "warn"
+manual_let_else             = "warn"
+manual_midpoint             = "warn"
+map_unwrap_or               = "warn"
+or_fun_call                 = "warn"
+range_plus_one              = "warn"
+single_match_else           = "warn"
+uninlined_format_args       = "warn"
+unnested_or_patterns        = "warn"
+unreadable_literal          = "warn"
+use_self                    = "warn"
+
 [lints]
 workspace = true
 
