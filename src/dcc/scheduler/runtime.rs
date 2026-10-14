@@ -4,11 +4,11 @@ use embassy_futures::yield_now;
 use embassy_time::Instant;
 
 use crate::cutout::CutoutMode;
+use crate::dcc::DccFrame;
 use crate::dcc::channels::{
     DccFrameSender, LocoRequestReceiver, LocoResponseSender, PowerQuiesceReceiver,
     SchedulerCommandReceiver,
 };
-use crate::dcc::{DccFrame, DccPacket};
 use crate::system_status::DisplayEvent;
 use crate::system_status::channels::DisplaySender;
 
@@ -16,7 +16,7 @@ use super::SchedulerCommand;
 use super::core::{CommandOutcome, SchedulerCore};
 use super::railcom_discovery::RailcomDiscovery;
 use super::railcom_policy::{PacketClass, RailcomCutoutBudget, record_track_search_throttled};
-use super::slot_manager::{PacketAuthority, scheduler_invariant_recovery_count};
+use super::slot_manager::{PacketAuthority, pom_cutout, scheduler_invariant_recovery_count};
 
 pub async fn packet_scheduler_task(
     power_quiesce_receiver: PowerQuiesceReceiver,
@@ -129,8 +129,9 @@ pub async fn packet_scheduler_task(
         }
 
         let cutout = match (cutout_allowed, class, packet) {
-            (true, PacketClass::Programming, DccPacket::PomReadByte { .. }) => CutoutMode::PomRead,
-            (true, PacketClass::Programming, _) => CutoutMode::PomWrite,
+            (true, PacketClass::Programming, packet) => {
+                pom_cutout(&packet).unwrap_or(CutoutMode::PomWrite)
+            }
             (true, _, _) => CutoutMode::Telemetry,
             (false, _, _) => CutoutMode::None,
         };
@@ -143,7 +144,7 @@ pub async fn packet_scheduler_task(
         let pom_context = cutout_allowed
             .then(|| core.pom_context_for_packet(packet))
             .flatten();
-        let cutout = pom_context.map_or(cutout, |(_, pom_cutout)| pom_cutout);
+        let cutout = pom_context.map_or(cutout, |(_, active_cutout)| active_cutout);
         let mut frame = DccFrame::new(packet, cutout);
         if let Some((request_id, _)) = pom_context {
             frame = frame.with_pom_request_id(request_id);

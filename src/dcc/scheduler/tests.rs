@@ -4,7 +4,7 @@ use super::railcom_policy::{
 };
 use super::slot_manager::{
     DIRTY_FUNCTION_RETRY_COUNT, DIRTY_STOP_RETRY_COUNT, MAX_FUNCTION_REFRESH_MS,
-    allowed_slot_visits_without_function, scheduler_tick_ms_for_slot_count,
+    allowed_slot_visits_without_function, pom_cutout, scheduler_tick_ms_for_slot_count,
 };
 use super::*;
 use crate::dcc::CutoutMode;
@@ -1598,4 +1598,23 @@ fn test_scheduler_classifies_following_packet_as_refresh_after_dirty_command() {
     assert_eq!(first_class, PacketClass::Command);
     assert!(matches!(packet, DccPacket::Speed28 { .. }));
     assert_eq!(second_class, PacketClass::Refresh);
+}
+
+#[test]
+fn pom_cutout_maps_read_and_write() {
+    let read = DccPacket::PomReadByte {
+        address: addr(3),
+        cv: pom_cv(1),
+    };
+    let write = DccPacket::PomWriteByte {
+        address: addr(3),
+        cv: pom_cv(29),
+        value: 0x22,
+    };
+    let speed = DccPacket::speed_128step(addr(3), 10, Direction::Forward)
+        .expect("test speed must be valid");
+
+    assert_eq!(pom_cutout(&read), Some(CutoutMode::PomRead));
+    assert_eq!(pom_cutout(&write), Some(CutoutMode::PomWrite));
+    assert_eq!(pom_cutout(&speed), None);
 }

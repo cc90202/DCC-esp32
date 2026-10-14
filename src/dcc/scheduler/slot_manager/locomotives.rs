@@ -12,10 +12,8 @@ impl SlotManager {
     /// Return a copy of the scheduler-owned state for one locomotive.
     #[must_use]
     pub fn loco_snapshot(&self, address: DccAddress) -> Option<LocoSnapshot> {
-        self.slots
-            .iter()
-            .find(|slot| slot.address == address)
-            .map(Slot::snapshot)
+        self.slot_index(address)
+            .map(|index| self.slots[index].snapshot())
     }
 
     pub(super) fn advance_mutation_sequence(&mut self) -> u64 {
@@ -69,18 +67,15 @@ impl SlotManager {
         mut slot: Slot,
         replace_stopped: bool,
     ) -> SlotAdmission {
-        debug_assert!(
-            self.slots
-                .iter()
-                .all(|existing| existing.address != slot.address)
-        );
+        debug_assert!(self.slot_index(slot.address).is_none());
 
         if !self.slots.is_full() {
             self.prepare_admitted_slot(&mut slot);
+            let index = self.slots.len();
             if self.slots.push(slot).is_err() {
                 return SlotAdmission::Full;
             }
-            return SlotAdmission::Inserted;
+            return SlotAdmission::Inserted { index };
         }
 
         if !replace_stopped {
@@ -93,7 +88,7 @@ impl SlotManager {
         let removed = self.slots[index].address;
         self.prepare_admitted_slot(&mut slot);
         self.slots[index] = slot;
-        SlotAdmission::Replaced { removed }
+        SlotAdmission::Replaced { index, removed }
     }
 
     fn prepare_admitted_slot(&mut self, slot: &mut Slot) {
@@ -101,20 +96,15 @@ impl SlotManager {
         slot.stopped_since = slot.speed.is_zero().then_some(sequence);
     }
 
-    fn result_from_admission(
-        &self,
-        address: DccAddress,
-        admission: SlotAdmission,
-    ) -> LocoRequestResult {
-        let snapshot = || self.loco_snapshot(address);
+    fn result_from_admission(&self, admission: SlotAdmission) -> LocoRequestResult {
         match admission {
-            SlotAdmission::Inserted => {
-                snapshot().map_or(LocoRequestResult::Rejected, LocoRequestResult::Inserted)
+            SlotAdmission::Inserted { index } => {
+                LocoRequestResult::Inserted(self.slots[index].snapshot())
             }
-            SlotAdmission::Replaced { removed } => snapshot()
-                .map_or(LocoRequestResult::Rejected, |inserted| {
-                    LocoRequestResult::Replaced { removed, inserted }
-                }),
+            SlotAdmission::Replaced { index, removed } => LocoRequestResult::Replaced {
+                removed,
+                inserted: self.slots[index].snapshot(),
+            },
             SlotAdmission::Full => LocoRequestResult::Full,
         }
     }
@@ -129,10 +119,8 @@ impl SlotManager {
         &self,
         address: DccAddress,
     ) -> Option<u64> {
-        self.slots
-            .iter()
-            .find(|slot| slot.address == address)
-            .and_then(|slot| slot.stopped_since)
+        self.slot_index(address)
+            .and_then(|index| self.slots[index].stopped_since)
     }
 
     /// Apply a request from an external adapter and report the resulting state.
@@ -165,22 +153,21 @@ impl SlotManager {
                 speed,
                 direction,
             } => {
-                if let Some(index) = self.slots.iter().position(|slot| slot.address == address) {
+                if let Some(index) = self.slot_index(address) {
                     self.update_speed_at(index, speed, direction);
-                    return self
-                        .loco_snapshot(address)
-                        .map_or(LocoRequestResult::Rejected, LocoRequestResult::Updated);
+                    return LocoRequestResult::Updated(self.slots[index].snapshot());
                 }
                 let slot = Slot::new(address, speed, direction);
                 let admission = self.admit_new_slot(slot, true);
-                self.result_from_admission(address, admission)
+                self.result_from_admission(admission)
             }
             LocoRequest::SetFunction {
                 address,
                 function,
                 change,
             } => {
-                if let Some(slot) = self.slots.iter_mut().find(|slot| slot.address == address) {
+                if let Some(index) = self.slot_index(address) {
+                    let slot = &mut self.slots[index];
                     let enabled = match change {
                         FunctionChange::Enable => true,
                         FunctionChange::Disable => false,
@@ -200,7 +187,7 @@ impl SlotManager {
                 let enabled = !matches!(change, FunctionChange::Disable);
                 slot.set_function(function, enabled);
                 let admission = self.admit_new_slot(slot, true);
-                self.result_from_admission(address, admission)
+                self.result_from_admission(admission)
             }
             LocoRequest::EmergencyStop { address } => {
                 if !self.request_emergency_stop(address) {
@@ -225,14 +212,14 @@ impl SlotManager {
         speed: LogicalSpeed,
         direction: Direction,
     ) -> bool {
-        if let Some(index) = self.slots.iter().position(|slot| slot.address == address) {
+        if let Some(index) = self.slot_index(address) {
             self.update_speed_at(index, speed, direction);
             return true;
         }
 
         matches!(
             self.admit_new_slot(Slot::new(address, speed, direction), false),
-            SlotAdmission::Inserted
+            SlotAdmission::Inserted { .. }
         )
     }
 
@@ -269,9 +256,7 @@ impl SlotManager {
     /// Establish a fresh mutation epoch after stopping previous controller work.
     pub(crate) fn reset_for_lease(&mut self, permit: LeasePermit) {
         self.request_emergency_stop_all();
-        self.pending_pom.clear();
-        self.active_pom = None;
-        self.pending_railcom_telemetry = None;
+        self.clear_authority_queues();
         self.accepted_lease_epoch = Some(permit.epoch());
     }
 
@@ -280,10 +265,16 @@ impl SlotManager {
     #[cfg(target_arch = "riscv32")]
     pub(crate) fn quiesce_for_power_on(&mut self) {
         self.request_emergency_stop_all();
+        self.clear_authority_queues();
+        self.paused = true;
+    }
+
+    /// Drop queued POM and RailCom telemetry work, whose authority belongs to
+    /// the controller or power epoch being left behind.
+    fn clear_authority_queues(&mut self) {
         self.pending_pom.clear();
         self.active_pom = None;
         self.pending_railcom_telemetry = None;
-        self.paused = true;
     }
 
     #[must_use]
@@ -294,7 +285,7 @@ impl SlotManager {
     /// Request emergency stop for a single locomotive.
     #[must_use]
     pub fn request_emergency_stop(&mut self, address: DccAddress) -> bool {
-        let Some(index) = self.slots.iter().position(|slot| slot.address == address) else {
+        let Some(index) = self.slot_index(address) else {
             return false;
         };
 

@@ -19,6 +19,8 @@ mod emission;
 mod locomotives;
 mod pom;
 
+pub(super) use pom::pom_cutout;
+
 /// Scheduler target period to revisit one slot in normal conditions.
 const TARGET_SLOT_PERIOD_MS: u64 = 120;
 /// Minimum scheduler tick to avoid tight loops under high slot count.
@@ -337,8 +339,8 @@ pub struct SlotManager {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotAdmission {
-    Inserted,
-    Replaced { removed: DccAddress },
+    Inserted { index: usize },
+    Replaced { index: usize, removed: DccAddress },
     Full,
 }
 
@@ -437,13 +439,16 @@ impl SlotManager {
         address: DccAddress,
         format: SpeedFormat,
     ) -> bool {
-        if self.slots.iter().any(|slot| slot.address == address) {
+        if self.slot_index(address).is_some() {
             return true;
         }
         let mut slot = Slot::new(address, LogicalSpeed::zero(format), Direction::Forward);
         slot.dirty_speed = false;
         slot.dirty_speed_retries = 0;
-        matches!(self.admit_new_slot(slot, false), SlotAdmission::Inserted)
+        matches!(
+            self.admit_new_slot(slot, false),
+            SlotAdmission::Inserted { .. }
+        )
     }
 
     #[must_use]
@@ -453,6 +458,11 @@ impl SlotManager {
         }
         self.pending_railcom_telemetry = Some(packet);
         true
+    }
+
+    /// Position of the slot holding `address`, if the locomotive is active.
+    fn slot_index(&self, address: DccAddress) -> Option<usize> {
+        self.slots.iter().position(|slot| slot.address == address)
     }
 
     /// Number of active slots.

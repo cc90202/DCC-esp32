@@ -37,11 +37,8 @@ impl SlotManager {
 
         let address = self.pending_estop_targets.remove(0);
         let direction = self
-            .slots
-            .iter()
-            .find(|slot| slot.address == address)
-            .map(|slot| slot.direction)
-            .unwrap_or(Direction::Reverse);
+            .slot_index(address)
+            .map_or(Direction::Reverse, |index| self.slots[index].direction);
         Some(DccPacket::EmergencyStop { address, direction })
     }
 

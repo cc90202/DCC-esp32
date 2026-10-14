@@ -11,7 +11,7 @@ use crate::dcc::channels::{
 use crate::dcc::packet::DccPacket;
 use crate::dcc::scheduler::SchedulerCommand;
 
-use super::{POM, PomRequest, PomResponse, drain_channel, match_pom_result};
+use super::{POM, PomMismatch, PomOp, PomRequest, PomResponse, drain_channel, match_pom_result};
 
 // The scheduler-to-engine path is naturally backpressured by a small frame
 // queue. Under app traffic the POM command can be accepted immediately but its
@@ -33,15 +33,6 @@ const _: () = assert!(
     "POM_READ_PACKET_REPETITIONS must fit in scheduler::pending_pom"
 );
 
-fn pom_packet_from_request(request: PomRequest) -> DccPacket {
-    match request {
-        PomRequest::Read { address, cv, .. } => DccPacket::PomReadByte { address, cv },
-        PomRequest::Write {
-            address, cv, value, ..
-        } => DccPacket::PomWriteByte { address, cv, value },
-    }
-}
-
 async fn await_matching_pom_result(
     request: PomRequest,
     earliest_sequence: crate::cutout::PacketSequence,
@@ -49,19 +40,16 @@ async fn await_matching_pom_result(
 ) -> PomResponse {
     loop {
         let result = railcom_results.receive().await;
-        if result.request_id() != request.request_id()
-            || !result.packet_sequence().is_at_or_after(earliest_sequence)
-        {
-            POM.stale_result_count.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        if result.target_address() != Some(request.address()) {
-            POM.wrong_target_result_count
-                .fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        if let Some(response) = match_pom_result(request, earliest_sequence, result) {
-            return response;
+        match match_pom_result(request, earliest_sequence, result) {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(PomMismatch::Stale) => {
+                POM.stale_result_count.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(PomMismatch::WrongTarget) => {
+                POM.wrong_target_result_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -82,12 +70,12 @@ async fn run_pom_attempt(
     drain_channel(tx_started_receiver);
     drain_channel(railcom_result_receiver);
 
-    let packet = pom_packet_from_request(request);
+    let packet = DccPacket::from(&request);
     // Enqueue the complete burst before waiting so the scheduler cannot
     // interleave cyclic refresh packets between NMRA CV-access repetitions.
-    let repetitions = match request {
-        PomRequest::Read { .. } => POM_READ_PACKET_REPETITIONS,
-        PomRequest::Write { .. } => 2,
+    let repetitions = match request.op {
+        PomOp::Read => POM_READ_PACKET_REPETITIONS,
+        PomOp::Write(_) => 2,
     };
     enqueue_pom_burst(scheduler_sender, request, packet, repetitions).await;
 
@@ -97,7 +85,7 @@ async fn run_pom_attempt(
         let mut matching_starts = 0u8;
         loop {
             let started = tx_started_receiver.receive().await;
-            if started.request_id == request.request_id() {
+            if started.request_id == request.request_id {
                 matching_starts += 1;
                 if matching_starts == POM_MINIMUM_TX_STARTS {
                     return started.packet_sequence;
@@ -111,7 +99,7 @@ async fn run_pom_attempt(
         Err(_) => return PomAttemptOutcome::TxTimeout,
     };
 
-    let is_read = matches!(request, PomRequest::Read { .. });
+    let is_read = request.op == PomOp::Read;
     let deadline = Instant::now() + POM_RESPONSE_TIMEOUT;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -148,8 +136,8 @@ async fn enqueue_pom_burst(
     for _ in 0..repetitions {
         scheduler_sender
             .send(SchedulerCommand::ProgramOnMain {
-                request_id: request.request_id(),
-                permit: request.permit(),
+                request_id: request.request_id,
+                permit: request.permit,
                 packet,
             })
             .await;
@@ -167,8 +155,8 @@ pub async fn pom_actor_task(
 ) -> ! {
     loop {
         let request = request_receiver.receive().await;
-        let request_id = request.request_id();
-        if !crate::track_authority::accepts(request.permit(), Instant::now().as_millis()) {
+        let request_id = request.request_id;
+        if !crate::track_authority::accepts(request.permit, Instant::now().as_millis()) {
             response_sender.send(PomResponse::Nack { request_id }).await;
             continue;
         }

@@ -5,6 +5,16 @@ use crate::authority::LeasePermit;
 use crate::cutout::CutoutMode;
 use crate::dcc::{DccPacket, PomRequestId};
 
+/// Cutout that answers a POM packet: read or write. `None` for any packet
+/// that is not a programming-on-main CV access.
+pub(in crate::dcc::scheduler) fn pom_cutout(packet: &DccPacket) -> Option<CutoutMode> {
+    match packet {
+        DccPacket::PomReadByte { .. } => Some(CutoutMode::PomRead),
+        DccPacket::PomWriteByte { .. } => Some(CutoutMode::PomWrite),
+        _ => None,
+    }
+}
+
 impl SlotManager {
     /// Queue one explicit POM packet for single transmission.
     #[must_use]
@@ -14,10 +24,10 @@ impl SlotManager {
         permit: Option<LeasePermit>,
         packet: DccPacket,
     ) -> bool {
-        let (target_address, cutout) = match packet {
-            DccPacket::PomReadByte { address, .. } => (address, CutoutMode::PomRead),
-            DccPacket::PomWriteByte { address, .. } => (address, CutoutMode::PomWrite),
-            _ => return false,
+        let (Some(target_address), Some(cutout)) =
+            (packet.railcom_target_address(), pom_cutout(&packet))
+        else {
+            return false;
         };
         if let Some(active) = self.active_pom {
             if active.request_id == request_id {

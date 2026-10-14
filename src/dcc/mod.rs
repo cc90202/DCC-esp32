@@ -72,6 +72,29 @@ impl PowerGeneration {
     }
 }
 
+/// Identifies one POM request/response round-trip on the single-slot request
+/// and response channels between the Z21 network task and the POM actor.
+///
+/// A newtype (rather than a bare `u32`) keeps request/response matching from
+/// being confused with unrelated `u32` values (CV numbers, packet sequence
+/// counters) flowing through the same call sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[repr(transparent)]
+pub struct PomRequestId(u32);
+
+impl PomRequestId {
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
 impl DccFrame {
     #[must_use]
     pub const fn new(packet: DccPacket, cutout: CutoutMode) -> Self {
@@ -139,13 +162,11 @@ impl DccFrame {
 
 // Re-exports
 
-#[doc(inline)]
-pub use cv::PomRequestId;
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
 pub use cv::{
-    PomRailcomResult, PomRequest, PomResponse, PomRuntimeStats, PomTxStarted, pom_actor_task,
-    pom_result_from_railcom_items, pom_runtime_stats,
+    PomOp, PomRailcomResult, PomRequest, PomResponse, PomRuntimeStats, PomTxStarted,
+    pom_actor_task, pom_result_from_railcom_items, pom_runtime_stats,
 };
 #[doc(inline)]
 pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_dcc_packet};

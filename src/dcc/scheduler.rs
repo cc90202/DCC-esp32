@@ -3,9 +3,11 @@
 //! Manages active locomotive slots and retransmits commands cyclically to keep
 //! decoders updated.
 //!
-//! The scheduler runs as an async Embassy actor task. It accepts `SchedulerCommand` messages
-//! (SetSpeed, SetFunction, EmergencyStop, etc.) via a channel and generates a continuous
-//! stream of DCC packets to refresh decoder state.
+//! The scheduler runs as an async Embassy actor task. It takes locomotive
+//! requests (`LocoRequest`: speed, functions, emergency stop) and control
+//! messages (`SchedulerCommand`: stop-all, POM, pause, resume, RailCom discovery
+//! and telemetry) over channels and generates a continuous stream of DCC packets
+//! to refresh decoder state.
 //!
 //! Speed packets that have just changed go out first, then changed function
 //! packets, and whatever bandwidth is left goes to the cyclic refresh that keeps
@@ -13,9 +15,9 @@
 //! speed change is what makes a throttle feel laggy, so the ordering matters
 //! more than it looks.
 //!
-//! The scheduler holds up to 12 active locomotive slots, manages consists for
-//! multi-unit trains, and coordinates pause and resume with CV programming,
-//! since the main track has to stop while programming runs.
+//! The scheduler holds up to 12 active locomotive slots. The fault manager
+//! pauses packet emission on an emergency stop or a latched fault and resumes
+//! it once the track may run again; slot state survives the pause.
 //!
 //! # Function index
 //!
@@ -382,17 +384,17 @@ pub enum SchedulerCommand {
     SuspendRailcomDiscovery,
     /// Start a fresh discovery window after track power is physically enabled.
     RestartRailcomDiscovery,
-    /// Ensure periodic packets exist for a decoder address so RailCom feedback
-    /// that is emitted after a POM command can be attributed to that decoder.
     /// Send one RailCom-related packet with a telemetry cutout.
     RailcomTelemetry {
         packet: DccPacket,
     },
-    /// Pause packet emission (stop total, preserve state)
-    /// Used by programming track service to halt main track output
+    /// Pause packet emission while keeping every slot's state.
+    ///
+    /// Sent by the fault relay when an emergency stop or a fault latches.
     Pause,
-    /// Resume packet emission (dirty packets first, then refresh)
-    /// Used by programming track service to restart main track after CV operations
+    /// Resume packet emission: pending changes go out first, then refresh.
+    ///
+    /// Sent by the fault relay when track power is armed or a latch clears.
     Resume,
 }
 
