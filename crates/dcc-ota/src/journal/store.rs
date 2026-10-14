@@ -135,12 +135,11 @@ mod tests {
             let result = save(&mut flash, first);
             flash.cut = None;
             let found = load(&mut flash);
-            match result {
-                Ok(saved) => assert_eq!(found, Ok(Some(saved))),
-                Err(_) => {
-                    assert_eq!(found, Ok(None), "call {call}, prefix {prefix}");
-                    assert!(save(&mut flash, first).is_ok(), "the save can be repeated");
-                }
+            if let Ok(saved) = result {
+                assert_eq!(found, Ok(Some(saved)));
+            } else {
+                assert_eq!(found, Ok(None), "call {call}, prefix {prefix}");
+                assert!(save(&mut flash, first).is_ok(), "the save can be repeated");
             }
         }
     }

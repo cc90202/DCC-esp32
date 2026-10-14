@@ -5,6 +5,10 @@ use dcc_ota_format::{
 use ed25519_dalek::SigningKey;
 use std::{fs, path::Path, process::Command};
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "a tool that cannot be spawned fails the calling test"
+)]
 fn cli(dir: &Path, args: &[&str]) -> bool {
     Command::new(env!("CARGO_BIN_EXE_ota-pack"))
         .current_dir(dir)

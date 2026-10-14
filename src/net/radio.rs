@@ -105,7 +105,7 @@ impl core::error::Error for WifiBringupError {
 /// after [`start_wifi`].
 pub(crate) fn stack_seed() -> u64 {
     let rng = Rng::new();
-    (rng.random() as u64) << 32 | rng.random() as u64
+    u64::from(rng.random()) << 32 | u64::from(rng.random())
 }
 
 fn init_controller() -> Result<&'static mut esp_radio::Controller<'static>, RadioInitError> {

@@ -580,8 +580,10 @@ fn every_single_function_encodes_to_its_golden_bytes() {
         let expected = corpus
             .iter()
             .find(|(entry, _, _)| *entry == label)
-            .map(|(_, _, bytes)| *bytes)
-            .unwrap_or_else(|| panic!("no golden entry {label:?}"));
+            .map_or_else(
+                || panic!("no golden entry {label:?}"),
+                |(_, _, bytes)| *bytes,
+            );
         let kind = group_of(function);
         let packet = DccPacket::function_group(address, kind, group_bits(1 << function, kind));
         assert_eq!(packet.to_bytes().as_slice(), expected, "F{function}");

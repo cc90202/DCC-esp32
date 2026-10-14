@@ -503,7 +503,7 @@ mod tests {
             &mut flash,
         )
         .unwrap();
-        let mut other_version = image.clone();
+        let mut other_version = image;
         other_version[48..53].copy_from_slice(b"0.3.0");
         assert_eq!(
             writer.push(&mut flash, &other_version[..SECTOR_SIZE]),

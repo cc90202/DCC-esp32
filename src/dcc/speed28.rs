@@ -50,7 +50,7 @@ pub const fn encode_nmra_instruction_speed_bits(speed: NmraSpeed28) -> u8 {
         1 => 0b0_0001,
         raw => {
             let step = raw - 1;
-            let ssss = (step + 3) / 2;
+            let ssss = u8::midpoint(step, 3);
             let c = (step - 1) & 1;
             (ssss & 0x0F) | (c << 4)
         }

@@ -120,16 +120,18 @@ impl SchedulerCore {
             .build_next_packet_classified_with_function_budget(
                 allowed_slot_visits_without_function(slot_count.max(1)),
             )
-            .map(|(packet, class)| ScheduledPacket {
-                packet,
-                class,
-                authority: self.slots.take_dequeued_authority(),
-            })
-            .unwrap_or(ScheduledPacket {
-                packet: DccPacket::Idle,
-                class: PacketClass::Idle,
-                authority: PacketAuthority::None,
-            })
+            .map_or(
+                ScheduledPacket {
+                    packet: DccPacket::Idle,
+                    class: PacketClass::Idle,
+                    authority: PacketAuthority::None,
+                },
+                |(packet, class)| ScheduledPacket {
+                    packet,
+                    class,
+                    authority: self.slots.take_dequeued_authority(),
+                },
+            )
     }
 
     pub(super) fn discard_pom(

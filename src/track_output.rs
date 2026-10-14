@@ -212,6 +212,10 @@ impl TrackOutput {
     ///
     /// Returns false if an enable is refused by the update interlock.
     #[must_use]
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "only the owner of the single track output may switch it"
+    )]
     pub fn set_track_enabled(&mut self, enabled: bool) -> bool {
         critical_section_with(|_| {
             if enabled && inhibited() {
@@ -454,6 +458,10 @@ pub struct CutoutRequest {
 /// hardware transition required to start the cutout.
 #[inline(always)]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".rwtext"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the packet-boundary handler hands its request over and keeps nothing"
+)]
 pub fn request_cutout_from_isr(request: CutoutRequest) -> bool {
     let CutoutRequest {
         packet_boundary_us,

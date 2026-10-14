@@ -81,8 +81,8 @@ pub(super) const CS_SHORT_CIRCUIT: u8 = 0x04;
 // Device identity (reported to Z21 apps)
 pub(super) const XBUS_VERSION: u8 = 0x30; // V3.0
 pub(super) const CMDST_ID: u8 = 0x12; // Z21 device family
-pub(super) const HW_TYPE: u32 = 0x00000200; // Z21 black (full-featured)
-pub(super) const FW_VERSION: u32 = 0x00000140; // firmware 1.40
+pub(super) const HW_TYPE: u32 = 0x0000_0200; // Z21 black (full-featured)
+pub(super) const FW_VERSION: u32 = 0x0000_0140; // firmware 1.40
 pub(super) const LOCO_MODE_DCC: u8 = 0x00;
 
 /// XOR checksum over bytes from x_header onwards (excluding the checksum byte).

@@ -238,10 +238,8 @@ impl Record {
 
     /// Raises the failed-boot floor to `image`, never lowering it.
     fn reject(&mut self, image: ImageId) {
-        self.rejected = Some(
-            self.rejected
-                .map_or(image.version(), |floor| floor.max(image.version())),
-        );
+        let version = image.version();
+        self.rejected = Some(self.rejected.map_or(version, |floor| floor.max(version)));
     }
 }
 

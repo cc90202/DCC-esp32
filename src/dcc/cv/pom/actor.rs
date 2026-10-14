@@ -67,8 +67,8 @@ async fn run_pom_attempt(
     railcom_result_receiver: &PomRailcomResultReceiver,
     scheduler_sender: &SchedulerCommandSender,
 ) -> PomAttemptOutcome {
-    drain_channel(tx_started_receiver);
-    drain_channel(railcom_result_receiver);
+    drain_channel(*tx_started_receiver);
+    drain_channel(*railcom_result_receiver);
 
     let packet = DccPacket::from(&request);
     // Enqueue the complete burst before waiting so the scheduler cannot
@@ -81,7 +81,7 @@ async fn run_pom_attempt(
 
     // Ignore the first matching cutout: it can still contain a delayed answer
     // to the previous request for the same decoder.
-    let earliest_response_sequence = match with_timeout(POM_TX_START_TIMEOUT, async {
+    let Ok(earliest_response_sequence) = with_timeout(POM_TX_START_TIMEOUT, async {
         let mut matching_starts = 0u8;
         loop {
             let started = tx_started_receiver.receive().await;
@@ -94,9 +94,8 @@ async fn run_pom_attempt(
         }
     })
     .await
-    {
-        Ok(sequence) => sequence,
-        Err(_) => return PomAttemptOutcome::TxTimeout,
+    else {
+        return PomAttemptOutcome::TxTimeout;
     };
 
     let is_read = request.op == PomOp::Read;
@@ -122,7 +121,7 @@ async fn run_pom_attempt(
         if !is_read {
             return PomAttemptOutcome::ResponseTimeout;
         }
-        drain_channel(tx_started_receiver);
+        drain_channel(*tx_started_receiver);
         enqueue_pom_burst(scheduler_sender, request, packet, repetitions).await;
     }
 }

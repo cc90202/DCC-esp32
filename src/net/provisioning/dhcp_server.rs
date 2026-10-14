@@ -37,12 +37,9 @@ pub(crate) async fn run_dhcp_server(stack: Stack<'static>) -> ! {
     );
 
     loop {
-        let size = match socket.recv_from(&mut request).await {
-            Ok((size, _remote)) => size,
-            Err(_) => {
-                warn!("DHCP receive failed");
-                continue;
-            }
+        let Ok((size, _remote)) = socket.recv_from(&mut request).await else {
+            warn!("DHCP receive failed");
+            continue;
         };
 
         let built_reply = match build_reply(&request[..size], &mut reply) {

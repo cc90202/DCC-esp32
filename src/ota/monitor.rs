@@ -56,6 +56,10 @@ mod fault {
 /// or recovery keeps it off.
 pub(crate) async fn complete_boot() {
     #[cfg(feature = "ota-fault-inject")]
+    #[allow(
+        clippy::panic,
+        reason = "the injected fault is a deliberate panic during a trial boot"
+    )]
     if super::on_trial() {
         match fault::SELECTED {
             fault::Fault::Panic => panic!("OTA bench injected panic"),

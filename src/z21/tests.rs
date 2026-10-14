@@ -94,12 +94,12 @@ fn test_encode_hwinfo() {
     // HW_TYPE = Z21 black = 0x00000200
     assert_eq!(
         u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
-        0x00000200
+        0x0000_0200
     );
     // FW_VERSION = 1.40 = 0x00000140
     assert_eq!(
         u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
-        0x00000140
+        0x0000_0140
     );
 }
 
@@ -589,7 +589,7 @@ fn test_encode_unknown_command() {
 #[test]
 fn test_encode_serial_number() {
     let mut buf = [0u8; 32];
-    let n = encode_serial_number(0xDEADBEEF, &mut buf);
+    let n = encode_serial_number(0xDEAD_BEEF, &mut buf);
     assert_eq!(n, Some(8));
     assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 8);
     // little-endian

@@ -135,7 +135,10 @@ mod tests {
             }
         }
         admission.busy = false;
-        let just_before = |at: Uptime| Uptime::new(at.since_boot() - Duration::from_millis(1));
+        let just_before = |at: Uptime| {
+            let earlier = at.since_boot().checked_sub(Duration::from_millis(1));
+            Uptime::new(earlier.expect("every probed instant is after boot"))
+        };
         for operation in [Operation::Update, Operation::Provisioning] {
             assert_eq!(
                 admission.check(just_before(secs(1)), operation),

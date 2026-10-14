@@ -127,7 +127,7 @@ pub struct PomTxStarted {
 /// types that flow through these channels.
 #[cfg(target_arch = "riscv32")]
 fn drain_channel<T: Copy, const N: usize>(
-    receiver: &crate::runtime_channels::RuntimeReceiver<T, N>,
+    receiver: crate::runtime_channels::RuntimeReceiver<T, N>,
 ) {
     while receiver.try_receive().is_ok() {}
 }

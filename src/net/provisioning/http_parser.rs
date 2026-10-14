@@ -72,7 +72,7 @@ pub(crate) fn parse_request(bytes: &[u8]) -> Result<ParsedRequest, ParseError> {
     match (metadata.request_line.method, metadata.request_line.path) {
         (Method::Get, "/") => Ok(ParsedRequest::GetRoot),
         (Method::Get, _) => Err(ParseError::NotFound),
-        (Method::Post, "/save") => parse_save_request(bytes, metadata),
+        (Method::Post, "/save") => parse_save_request(bytes, &metadata),
         (Method::Post, _) => Err(ParseError::NotFound),
     }
 }
@@ -105,7 +105,7 @@ fn parse_request_metadata(bytes: &[u8]) -> Result<RequestMetadata<'_>, ParseErro
 
 fn parse_save_request(
     bytes: &[u8],
-    metadata: RequestMetadata<'_>,
+    metadata: &RequestMetadata<'_>,
 ) -> Result<ParsedRequest, ParseError> {
     if !metadata.header_state.form_content_type {
         return Err(ParseError::UnsupportedContentType);

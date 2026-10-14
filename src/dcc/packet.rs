@@ -152,6 +152,10 @@ impl PacketBytes {
         }
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "every packet variant encodes to at most DCC_MAX_PACKET_BYTES; an overflow is an encoder bug"
+    )]
     fn push(&mut self, byte: u8) {
         self.bytes
             .push(byte)
@@ -175,6 +179,10 @@ impl PacketBytes {
         self.push(crc);
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "every packet variant encodes to at most DCC_MAX_PACKET_BYTES; an overflow is an encoder bug"
+    )]
     fn finalize(mut self) -> Vec<u8, DCC_MAX_PACKET_BYTES> {
         self.bytes
             .push(self.checksum)
@@ -188,20 +196,20 @@ impl DccPacket {
     #[must_use]
     pub const fn railcom_target_address(&self) -> Option<DccAddress> {
         match *self {
-            DccPacket::Speed28 { address, .. }
-            | DccPacket::Speed128 { address, .. }
-            | DccPacket::FunctionGroup { address, .. }
-            | DccPacket::EmergencyStop { address, .. }
-            | DccPacket::PomWriteByte { address, .. }
-            | DccPacket::PomReadByte { address, .. } => Some(address),
-            DccPacket::Idle
-            | DccPacket::Reset
-            | DccPacket::BroadcastStop
-            | DccPacket::BroadcastBinaryStateShort { .. }
-            | DccPacket::LogonEnable { .. }
-            | DccPacket::LogonSelect { .. }
-            | DccPacket::ServiceModeVerifyByte { .. }
-            | DccPacket::ServiceModeWriteByte { .. } => None,
+            Self::Speed28 { address, .. }
+            | Self::Speed128 { address, .. }
+            | Self::FunctionGroup { address, .. }
+            | Self::EmergencyStop { address, .. }
+            | Self::PomWriteByte { address, .. }
+            | Self::PomReadByte { address, .. } => Some(address),
+            Self::Idle
+            | Self::Reset
+            | Self::BroadcastStop
+            | Self::BroadcastBinaryStateShort { .. }
+            | Self::LogonEnable { .. }
+            | Self::LogonSelect { .. }
+            | Self::ServiceModeVerifyByte { .. }
+            | Self::ServiceModeWriteByte { .. } => None,
         }
     }
 
@@ -245,7 +253,7 @@ impl DccPacket {
     /// Helper function for tests - create an idle packet.
     #[cfg(test)]
     pub fn idle() -> Self {
-        DccPacket::Idle
+        Self::Idle
     }
 
     /// Create a function group packet for `address`.
@@ -254,7 +262,7 @@ impl DccPacket {
     /// `kind`'s data mask are dropped so equal packets compare equal.
     #[must_use]
     pub const fn function_group(address: DccAddress, kind: FunctionGroupKind, bits: u8) -> Self {
-        DccPacket::FunctionGroup {
+        Self::FunctionGroup {
             address,
             kind,
             bits: bits & kind.data_mask(),
@@ -265,7 +273,7 @@ impl DccPacket {
     ///
     /// Returns `None` if speed > 29 (NMRA S-9.2 §2.3.2.3).
     pub fn speed_28step(address: DccAddress, speed: u8, direction: Direction) -> Option<Self> {
-        Some(DccPacket::Speed28 {
+        Some(Self::Speed28 {
             address,
             direction,
             speed: NmraSpeed28::new(speed)?,
@@ -276,7 +284,7 @@ impl DccPacket {
     ///
     /// Returns `None` if speed > 126 (NMRA S-9.2.1).
     pub fn speed_128step(address: DccAddress, speed: u8, direction: Direction) -> Option<Self> {
-        Some(DccPacket::Speed128 {
+        Some(Self::Speed128 {
             address,
             direction,
             speed: NmraSpeed128::new(speed)?,
@@ -293,17 +301,17 @@ impl DccPacket {
         let mut packet = PacketBytes::new();
 
         match *self {
-            DccPacket::Idle => {
+            Self::Idle => {
                 // Idle packet: {preamble} 0 11111111 0 00000000 0 EEEEEEEE 1
                 packet.push(0xFF);
                 packet.push(0x00);
             }
-            DccPacket::Reset => {
+            Self::Reset => {
                 // Reset packet: {preamble} 0 00000000 0 00000000 0 EEEEEEEE 1
                 packet.push(0x00);
                 packet.push(0x00);
             }
-            DccPacket::Speed28 {
+            Self::Speed28 {
                 address,
                 direction,
                 speed,
@@ -311,7 +319,7 @@ impl DccPacket {
                 packet.push_address(address);
                 packet.push(Self::encode_speed28_instruction(direction, speed));
             }
-            DccPacket::Speed128 {
+            Self::Speed128 {
                 address,
                 direction,
                 speed,
@@ -321,7 +329,7 @@ impl DccPacket {
                 packet.push(0x3F);
                 packet.push(Self::encode_speed128_data(direction, speed));
             }
-            DccPacket::FunctionGroup {
+            Self::FunctionGroup {
                 address,
                 kind,
                 bits,
@@ -342,21 +350,21 @@ impl DccPacket {
                     }
                 }
             }
-            DccPacket::EmergencyStop { address, direction } => {
+            Self::EmergencyStop { address, direction } => {
                 packet.push_address(address);
                 packet.push(Self::encode_emergency_stop_instruction(direction));
             }
-            DccPacket::BroadcastStop => {
+            Self::BroadcastStop => {
                 // Broadcast address 0x00 + forward e-stop
                 packet.push(0x00);
                 packet.push(Self::encode_emergency_stop_instruction(Direction::Forward));
             }
-            DccPacket::BroadcastBinaryStateShort { bin_addr, state } => {
+            Self::BroadcastBinaryStateShort { bin_addr, state } => {
                 packet.push(0x00);
                 packet.push(0xDD);
                 packet.push(Self::bool_mask(state, 0x80) | bin_addr.value());
             }
-            DccPacket::LogonEnable {
+            Self::LogonEnable {
                 group,
                 command_station_id,
                 session_id,
@@ -367,7 +375,7 @@ impl DccPacket {
                 packet.push((command_station_id & 0xFF) as u8);
                 packet.push(session_id.value());
             }
-            DccPacket::LogonSelect {
+            Self::LogonSelect {
                 manufacturer_id,
                 decoder_id,
                 subcommand,
@@ -383,7 +391,7 @@ impl DccPacket {
                 packet.push(subcommand);
                 packet.push_crc8();
             }
-            DccPacket::ServiceModeVerifyByte { cv, value } => {
+            Self::ServiceModeVerifyByte { cv, value } => {
                 // Service Mode Verify Byte per NMRA S-9.2.2
                 // Packet format: [preamble] 0 0111CCAA 0 AAAAAAAA 0 DDDDDDDD 0 [checksum] 1
                 // Where:
@@ -397,7 +405,7 @@ impl DccPacket {
                 packet.push(cv_low);
                 packet.push(value);
             }
-            DccPacket::ServiceModeWriteByte { cv, value } => {
+            Self::ServiceModeWriteByte { cv, value } => {
                 // Service Mode Write Byte per NMRA S-9.2.2
                 // Packet format: same as Verify, but instruction byte bits 3-2 = 11 (Write)
                 // Instruction byte: 0b0111_11AA (bits 3-2 = 11 for Write)
@@ -406,14 +414,14 @@ impl DccPacket {
                 packet.push(cv_low);
                 packet.push(value);
             }
-            DccPacket::PomWriteByte { address, cv, value } => {
+            Self::PomWriteByte { address, cv, value } => {
                 let (cv_high, cv_low) = Self::encode_cv_addr(cv.value(), 0b1110_1100);
                 packet.push_address(address);
                 packet.push(cv_high);
                 packet.push(cv_low);
                 packet.push(value);
             }
-            DccPacket::PomReadByte { address, cv } => {
+            Self::PomReadByte { address, cv } => {
                 let (cv_high, cv_low) = Self::encode_cv_addr(cv.value(), 0b1110_0100);
                 packet.push_address(address);
                 packet.push(cv_high);

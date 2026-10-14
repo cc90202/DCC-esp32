@@ -9,8 +9,8 @@ use crate::z21 as z21_proto;
 
 use super::encoded_len;
 
-pub(super) fn encode_current_system_state(status_model: &StatusModel, out: &mut [u8]) -> usize {
-    encode_system_state(TrackStatus::from_model(*status_model), out)
+pub(super) fn encode_current_system_state(status_model: StatusModel, out: &mut [u8]) -> usize {
+    encode_system_state(TrackStatus::from_model(status_model), out)
 }
 
 fn central_state(status: TrackStatus) -> z21_proto::CentralState {
@@ -25,8 +25,8 @@ pub(in crate::net) fn encode_system_state(status: TrackStatus, out: &mut [u8]) -
     encoded_len(z21_proto::encode_system_state(central_state(status), out))
 }
 
-pub(super) fn encode_current_status(status_model: &StatusModel, out: &mut [u8]) -> usize {
-    let status = TrackStatus::from_model(*status_model);
+pub(super) fn encode_current_status(status_model: StatusModel, out: &mut [u8]) -> usize {
+    let status = TrackStatus::from_model(status_model);
     encoded_len(z21_proto::encode_status(central_state(status), out))
 }
 

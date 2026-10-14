@@ -1,6 +1,11 @@
 //! Fixtures for tests: well-formed images and packages signed with a fixed
 //! key. Never part of a firmware build.
 
+#![allow(
+    clippy::expect_used,
+    reason = "fixtures for tests: a fixture that cannot be built is a failed test"
+)]
+
 use ed25519_dalek::{Signer, SigningKey};
 
 use crate::{

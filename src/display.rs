@@ -265,7 +265,7 @@ async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
         let _ = Text::new("DCC WiFi Setup", Point::new(0, 10), style).draw(display);
 
         let mut line = RowText::new();
-        let _ = write!(line, "AP: {}", ssid);
+        let _ = write!(line, "AP: {ssid}");
         let _ = Text::new(&line, Point::new(0, 26), style).draw(display);
 
         let _ = Text::new(setup_url, Point::new(0, 36), style).draw(display);
@@ -292,7 +292,7 @@ async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
     line.clear();
     if let Some(addr) = model.ip {
         let ip_str = format_ip(addr);
-        let _ = write!(line, "IP: {}", ip_str);
+        let _ = write!(line, "IP: {ip_str}");
     } else {
         let _ = write!(line, "IP: ---.---.---.---");
     }
@@ -367,18 +367,14 @@ pub async fn display_task(
                 }
 
                 let wait = next_throbber_tick - now;
-                match with_timeout(wait, receiver.receive()).await {
-                    Ok(event) => {
-                        model.apply(event);
-                        if model.state != LedState::Running {
-                            throbber_frame = 0;
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                        advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
-                        break;
-                    }
+                let Ok(event) = with_timeout(wait, receiver.receive()).await else {
+                    advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
+                    break;
+                };
+                model.apply(event);
+                if model.state != LedState::Running {
+                    throbber_frame = 0;
+                    break;
                 }
             }
         } else {

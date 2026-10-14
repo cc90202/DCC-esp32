@@ -316,8 +316,7 @@ fn select_latest(a: SlotState, b: SlotState) -> LatestRecord {
                 }
             }
         }
-        (SlotState::Corrupt, SlotState::Corrupt)
-        | (SlotState::Corrupt, SlotState::Missing)
+        (SlotState::Corrupt, SlotState::Corrupt | SlotState::Missing)
         | (SlotState::Missing, SlotState::Corrupt) => LatestRecord::Corrupt,
     }
 }

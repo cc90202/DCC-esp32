@@ -842,7 +842,7 @@ fn test_function_refresh_fairness_speed_then_function() {
     let _ = set_function(&mut mgr, addr(1), 1, true);
 
     // Drain dirty speed + dirty function groups.
-    for _ in 0..(1 + usize::from(DIRTY_FUNCTION_RETRY_COUNT)) {
+    for _ in 0..=usize::from(DIRTY_FUNCTION_RETRY_COUNT) {
         let _ = mgr.build_next_packet();
     }
 
@@ -1540,7 +1540,7 @@ fn test_railcom_budget_enforces_gap_between_refresh_cutouts() {
         railcom_scheduler_stats(),
         RailcomSchedulerStats {
             cutout_granted_count: 2,
-            cutout_skipped_budget_count: RAILCOM_MIN_PACKET_GAP as u32,
+            cutout_skipped_budget_count: u32::from(RAILCOM_MIN_PACKET_GAP),
             cutout_skipped_priority_count: 0,
             ..Default::default()
         }
@@ -1605,7 +1605,7 @@ fn test_railcom_budget_preserves_priority_during_command_burst_then_recovers() {
         railcom_scheduler_stats(),
         RailcomSchedulerStats {
             cutout_granted_count: 2,
-            cutout_skipped_budget_count: (RAILCOM_MIN_PACKET_GAP - 3) as u32,
+            cutout_skipped_budget_count: u32::from(RAILCOM_MIN_PACKET_GAP - 3),
             cutout_skipped_priority_count: 3,
             ..Default::default()
         }
@@ -1656,7 +1656,7 @@ fn pom_cutout_maps_read_and_write() {
     let speed = DccPacket::speed_128step(addr(3), 10, Direction::Forward)
         .expect("test speed must be valid");
 
-    assert_eq!(pom_cutout(&read), Some(CutoutMode::PomRead));
-    assert_eq!(pom_cutout(&write), Some(CutoutMode::PomWrite));
-    assert_eq!(pom_cutout(&speed), None);
+    assert_eq!(pom_cutout(read), Some(CutoutMode::PomRead));
+    assert_eq!(pom_cutout(write), Some(CutoutMode::PomWrite));
+    assert_eq!(pom_cutout(speed), None);
 }
