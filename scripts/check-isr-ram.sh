@@ -16,8 +16,9 @@
 #
 # Usage: scripts/check-isr-ram.sh [ELF]
 #        scripts/check-isr-ram.sh --self-test [ELF]
-# --self-test runs the analyser on built-in snippets and checks that a failing
-# disassembler (LLVM_OBJDUMP=/bin/false) makes the gate fail on ELF.
+# --self-test runs the analyser and the allowlist rules on built-in fixtures and
+# checks that a failing disassembler (LLVM_OBJDUMP=/bin/false) makes the gate
+# fail on ELF.
 # LLVM_OBJDUMP, LLVM_NM and LLVM_READOBJ override the tool discovery below;
 # ISR_RAM_VERBOSE=1 lists the allowlisted calls that were found.
 set -euo pipefail
@@ -73,6 +74,29 @@ fail() {
     exit 1
 }
 
+# Number parser shared by every awk program in this script: "0x" hex, with an
+# optional leading "-"; anything without the prefix is read as decimal. Plain
+# hex fields (nm, readobj) are passed as hex("0x" field).
+read -r -d '' awk_hex <<'AWK' || true
+function hex(s,    neg, i, c, v) {
+    neg = 0
+    if (substr(s, 1, 1) == "-") { neg = 1; s = substr(s, 2) }
+    s = tolower(s)
+    if (substr(s, 1, 2) == "0x") {
+        s = substr(s, 3)
+        v = 0
+        for (i = 1; i <= length(s); i++) {
+            c = index("0123456789abcdef", substr(s, i, 1)) - 1
+            if (c < 0) break
+            v = v * 16 + c
+        }
+    } else {
+        v = s + 0
+    }
+    return neg ? -v : v
+}
+AWK
+
 # The analyser reads one function's disassembly and prints its references:
 #   call <hex> <cold>               direct call or jump leaving the function,
 #                                   conditional branches included
@@ -96,23 +120,6 @@ fail() {
 # flash pointer cannot be lost at a merge. Blocks reached only through a jump
 # table start from the merged state of the table jumps.
 read -r -d '' analyser <<'AWK' || true
-function hex(s,    neg, i, c, v) {
-    neg = 0
-    if (substr(s, 1, 1) == "-") { neg = 1; s = substr(s, 2) }
-    s = tolower(s)
-    if (substr(s, 1, 2) == "0x") {
-        s = substr(s, 3)
-        v = 0
-        for (i = 1; i <= length(s); i++) {
-            c = index("0123456789abcdef", substr(s, i, 1)) - 1
-            if (c < 0) break
-            v = v * 16 + c
-        }
-    } else {
-        v = s + 0
-    }
-    return neg ? -v : v
-}
 function wrap(v) {
     v = v % 4294967296
     return v < 0 ? v + 4294967296 : v
@@ -329,8 +336,10 @@ function propagate(from, state,    merged) {
     merged = merge(IN[from], state)
     if (merged != IN[from]) { IN[from] = merged; changed = 1 }
 }
+# Fails the analysis when the register states have not settled after
+# max_passes passes: the gate must not go on with an incomplete abstraction.
 function solve(    i, out, t, pass) {
-    for (pass = 0; pass < 64; pass++) {
+    for (pass = 0; pass < max_passes; pass++) {
         changed = 0
         for (i = 1; i <= count; i++) {
             if (!(i in IN)) continue
@@ -343,8 +352,10 @@ function solve(    i, out, t, pass) {
             t = local_target(i)
             if (t > 0) propagate(t, out)
         }
-        if (!changed) break
+        if (!changed) return
     }
+    printf "analyser: register states still changing after %d passes\n", max_passes > "/dev/stderr"
+    exit 3
 }
 BEGIN {
     BRANCH = "^b(eq|ne|lt|ge|ltu|geu|eqz|nez|gez|lez|gtz|ltz|gt|le|gtu|leu)$"
@@ -387,11 +398,85 @@ END {
 }
 AWK
 # Analyses one function, [START, STOP) in hex, whose disassembly is on stdin.
-# PANICS is a comma-separated list of non-returning function addresses (hex).
+# PANICS is a comma-separated list of non-returning function addresses (hex);
+# MAX_PASSES bounds the register-state fixpoint (64 when omitted).
 analyse() {
     awk -v start="$1" -v stop="$2" -v panics="${3:-}" \
         -v flash_start="$flash_start" -v flash_end="$flash_end" \
-        -v ram_start="$ram_start" -v ram_end="$ram_end" "$analyser"
+        -v ram_start="$ram_start" -v ram_end="$ram_end" \
+        -v max_passes="${4:-64}" "$awk_hex"$'\n'"$analyser"
+}
+
+# --- allowlist rules ---------------------------------------------------------
+
+in_ram() {
+    local address=$((16#$1))
+    ((address >= ram_start && address < ram_end))
+}
+
+in_rom() {
+    local address=$((16#$1))
+    ((address >= rom_start && address < rom_end))
+}
+
+# Reads allowlist lines from stdin into allowed[]: an entry followed by
+# "  # reason"; lines starting with "#" are comments. The reason needs
+# whitespace before "#" because demangled closure names contain "{closure#0}".
+allowed=()
+load_allowlist() {
+    local line entry
+    allowed=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        entry="${line%%[[:space:]]#*}"
+        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry%"${entry##*[![:space:]]}"}"
+        [[ -n "$entry" ]] && allowed+=("$entry")
+    done
+    return 0
+}
+
+# An allowlist entry is "callee" or "callee @ caller": each part must be a
+# substring of the demangled name, and the caller part limits the entry to
+# calls made from that function.
+is_allowed() {
+    local callee="$1" caller="$2" entry wanted_callee wanted_caller
+    for entry in "${allowed[@]}"; do
+        wanted_callee="$entry"
+        wanted_caller=""
+        if [[ "$entry" == *" @ "* ]]; then
+            wanted_callee="${entry%% @ *}"
+            wanted_caller="${entry#* @ }"
+        fi
+        [[ "$callee" == *"$wanted_callee"* && "$caller" == *"$wanted_caller"* ]] && return 0
+    done
+    return 1
+}
+
+is_panic() {
+    [[ "$1" =~ $panic_pattern ]]
+}
+
+# Verdict on a direct call from CALLER into the flash function CALLEE, COLD
+# being the analyser's cold flag for the call site: "allowed", "unlisted", or
+# "hot" for a listed callee that is not a panic on a path that can return.
+flash_call_verdict() {
+    local callee="$1" caller="$2" cold="$3"
+    if ! is_allowed "$callee" "$caller"; then
+        printf 'unlisted\n'
+    elif ! is_panic "$callee" && ((cold == 0)); then
+        printf 'hot\n'
+    else
+        printf 'allowed\n'
+    fi
+}
+
+# Succeeds when CALLER may pass a flash address to the callee at TARGET (hex)
+# named CALLEE: only to a listed flash function on a panic path, never to RAM.
+flash_arg_allowed() {
+    local callee="$1" caller="$2" cold="$3" target="$4"
+    ! in_ram "$target" && is_allowed "$callee" "$caller" &&
+        { is_panic "$callee" || ((cold == 1)); }
 }
 
 # --- self-test ---------------------------------------------------------------
@@ -409,6 +494,16 @@ self_test_case() {
         fi
     elif ! grep -Eq -- "$expect" <<<"$output"; then
         printf 'self-test FAILED: %s: expected "%s" in:\n%s\n' "$name" "$expect" "$output" >&2
+        return 1
+    fi
+    printf 'self-test ok: %s\n' "$name"
+}
+
+# Compares a gate rule's result with the expected one.
+self_test_rule() {
+    local name="$1" expect="$2" actual="$3"
+    if [[ "$actual" != "$expect" ]]; then
+        printf 'self-test FAILED: %s: expected "%s", got "%s"\n' "$name" "$expect" "$actual" >&2
         return 1
     fi
     printf 'self-test ok: %s\n' "$name"
@@ -490,6 +585,53 @@ self_test() {
     self_test_case "logger in a loop is not cold" '^call 42010000 0$' \
         "$(i 0x40800000 'jal	0x42010000 <log>')" "$(i 0x40800004 'j	0x40800000 <f>')" \
         || failures=$((failures + 1))
+
+    # A backward branch needs a second pass: one pass is not enough to settle.
+    local loop
+    loop="$(i 0x40800000 'lui	a1, 0x42001')"$'\n'"$(i 0x40800004 'bnez	a0, 0x40800000 <f>')"$'\n'"$(i 0x40800006 'ret')"
+    if analyse 40800000 40800100 "" 1 <<<"$loop" >/dev/null 2>&1; then
+        printf 'self-test FAILED: an unsettled fixpoint did not fail the analysis\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'self-test ok: an unsettled fixpoint fails the analysis\n'
+    fi
+    if ! analyse 40800000 40800100 "" <<<"$loop" >/dev/null; then
+        printf 'self-test FAILED: the loop did not settle within the default passes\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'self-test ok: the loop settles within the default passes\n'
+    fi
+
+    # Gate rules on a fixture allowlist: comments, "{closure#0}" kept in an
+    # entry, "callee @ caller" scoping, and the panic-path requirement.
+    local saved_allowed=("${allowed[@]}")
+    load_allowlist <<'LIST'
+# comment
+  defmt::export::fmt @ app::isr::{closure#0}  # reason with a # inside
+core::panicking::panic_fmt  # panic from anywhere
+LIST
+    self_test_rule "allowlist parsing" "2|defmt::export::fmt @ app::isr::{closure#0}" \
+        "${#allowed[@]}|${allowed[0]}" || failures=$((failures + 1))
+    self_test_rule "listed callee from its caller on a panic path" allowed \
+        "$(flash_call_verdict 'defmt::export::fmt::<u8>' 'app::isr::{closure#0}' 1)" || failures=$((failures + 1))
+    self_test_rule "listed non-panic callee on a path that returns" hot \
+        "$(flash_call_verdict 'defmt::export::fmt::<u8>' 'app::isr::{closure#0}' 0)" || failures=$((failures + 1))
+    self_test_rule "listed callee from another caller" unlisted \
+        "$(flash_call_verdict 'defmt::export::fmt::<u8>' app::other 1)" || failures=$((failures + 1))
+    self_test_rule "listed panic callee on any path" allowed \
+        "$(flash_call_verdict core::panicking::panic_fmt app::other 0)" || failures=$((failures + 1))
+    self_test_rule "unlisted callee on a panic path" unlisted \
+        "$(flash_call_verdict core::fmt::write 'app::isr::{closure#0}' 1)" || failures=$((failures + 1))
+    self_test_rule "flash argument to a listed callee on a panic path" yes \
+        "$(flash_arg_allowed 'defmt::export::fmt::<u8>' 'app::isr::{closure#0}' 1 42010000 && echo yes || echo no)" ||
+        failures=$((failures + 1))
+    self_test_rule "flash argument to a listed callee on a path that returns" no \
+        "$(flash_arg_allowed 'defmt::export::fmt::<u8>' 'app::isr::{closure#0}' 0 42010000 && echo yes || echo no)" ||
+        failures=$((failures + 1))
+    self_test_rule "flash argument to a RAM function" no \
+        "$(flash_arg_allowed core::panicking::panic_fmt app::other 1 40800010 && echo yes || echo no)" ||
+        failures=$((failures + 1))
+    allowed=("${saved_allowed[@]}")
 
     if [[ -f "$elf" ]]; then
         if LLVM_OBJDUMP=/bin/false bash "$script_path" "$elf" >/dev/null 2>&1; then
@@ -581,44 +723,15 @@ done <<<"$symbols")"
 # Every defined symbol address, sorted; bounds jump tables.
 all_addresses="$(awk '{ print $1 }' <<<"$nm_demangled")"
 
-# Allowlist lines: an entry followed by "  # reason"; lines starting with "#"
-# are comments. The reason needs whitespace before "#" because demangled
-# closure names contain "{closure#0}".
-allowed=()
-while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    entry="${line%%[[:space:]]#*}"
-    entry="${entry#"${entry%%[![:space:]]*}"}"
-    entry="${entry%"${entry##*[![:space:]]}"}"
-    [[ -n "$entry" ]] && allowed+=("$entry")
-done <"$allowlist"
-
-in_ram() {
-    local address=$((16#$1))
-    ((address >= ram_start && address < ram_end))
-}
-
-in_rom() {
-    local address=$((16#$1))
-    ((address >= rom_start && address < rom_end))
-}
+load_allowlist <"$allowlist"
 
 # Prints "start size name" of the function symbol containing ADDRESS (hex).
 symbol_at() {
-    awk -v want="$1" '
-        function hex(s,    i, c, v) {
-            v = 0
-            s = tolower(s)
-            for (i = 1; i <= length(s); i++) {
-                c = index("0123456789abcdef", substr(s, i, 1)) - 1
-                v = v * 16 + c
-            }
-            return v
-        }
-        BEGIN { target = hex(want) }
+    awk -v want="$1" "$awk_hex"'
+        BEGIN { target = hex("0x" want) }
         {
-            start = hex($1)
-            if (start <= target && target < start + hex($2)) { print; exit }
+            start = hex("0x" $1)
+            if (start <= target && target < start + hex("0x" $2)) { print; exit }
         }' <<<"$symbols"
 }
 
@@ -631,46 +744,17 @@ symbol_address() {
 # per line in hex, read from the ELF section that holds them.
 read_words() {
     local address=$((16#$1)) count="$2" offset
-    offset="$(awk -v a="$address" '
-        function hex(s,    i, c, v) {
-            v = 0
-            for (i = 1; i <= length(s); i++) {
-                c = index("0123456789abcdef", substr(tolower(s), i, 1)) - 1
-                v = v * 16 + c
-            }
-            return v
-        }
+    offset="$(awk -v a="$address" "$awk_hex"'
         $1 ~ /^\[/ {
             line = $0
             sub(/^ *\[ *[0-9]+\] */, "", line)
             split(line, f, " +")
             if (f[2] != "PROGBITS") next
-            base = hex(f[3]); off = hex(f[4]); size = hex(f[5])
+            base = hex("0x" f[3]); off = hex("0x" f[4]); size = hex("0x" f[5])
             if (a >= base && a < base + size) { print off + (a - base); exit }
         }' <<<"$sections")"
     [[ -n "$offset" ]] || fail "no file data at 0x$1"
     od -An -v -tx4 --endian=little -j "$offset" -N "$((count * 4))" "$elf" | tr -s ' ' '\n' | sed '/^$/d'
-}
-
-# An allowlist entry is "callee" or "callee @ caller": each part must be a
-# substring of the demangled name, and the caller part limits the entry to
-# calls made from that function.
-is_allowed() {
-    local callee="$1" caller="$2" entry wanted_callee wanted_caller
-    for entry in "${allowed[@]}"; do
-        wanted_callee="$entry"
-        wanted_caller=""
-        if [[ "$entry" == *" @ "* ]]; then
-            wanted_callee="${entry%% @ *}"
-            wanted_caller="${entry#* @ }"
-        fi
-        [[ "$callee" == *"$wanted_callee"* && "$caller" == *"$wanted_caller"* ]] && return 0
-    done
-    return 1
-}
-
-is_panic() {
-    [[ "$1" =~ $panic_pattern ]]
 }
 
 declare -A visited=()
@@ -734,20 +818,19 @@ while ((${#queue[@]} > 0)); do
                 if in_ram "$target"; then
                     [[ -n "$callee" ]] || fail "no function symbol contains RAM address 0x$target (called from $name)"
                     queue+=("${callee%% *}")
-                elif ! is_allowed "$callee_name" "$name"; then
-                    violations+=("0x$target $callee_name (called from $name)")
-                elif ! is_panic "$callee_name" && ((cold == 0)); then
-                    violations+=("0x$target $callee_name (called from $name on a path that does not end in a panic)")
                 else
-                    allowed_hits+=("$callee_name (called from $name)")
+                    case "$(flash_call_verdict "$callee_name" "$name" "$cold")" in
+                        allowed) allowed_hits+=("$callee_name (called from $name)") ;;
+                        hot) violations+=("0x$target $callee_name (called from $name on a path that does not end in a panic)") ;;
+                        *) violations+=("0x$target $callee_name (called from $name)") ;;
+                    esac
                 fi
                 ;;
             arg)
                 data_address="$first" target="$second" cold="$third"
                 callee="$(symbol_at "$target")"
                 callee_name="${callee#* * }"
-                if ! in_ram "$target" && is_allowed "$callee_name" "$name" &&
-                    { is_panic "$callee_name" || ((cold == 1)); }; then
+                if flash_arg_allowed "$callee_name" "$name" "$cold" "$target"; then
                     continue
                 fi
                 violations+=("flash data at 0x$data_address (passed by $name to ${callee_name:-0x$target})")
@@ -761,16 +844,8 @@ while ((${#queue[@]} > 0)); do
                     violations+=("jump table at 0x$table outside RAM (used by $name at 0x$pc)")
                     continue
                 fi
-                end="$(awk -v t="$((16#$table))" '
-                    function hex(s,    i, c, v) {
-                        v = 0
-                        for (i = 1; i <= length(s); i++) {
-                            c = index("0123456789abcdef", substr(tolower(s), i, 1)) - 1
-                            v = v * 16 + c
-                        }
-                        return v
-                    }
-                    hex($1) > t { print hex($1); exit }' <<<"$all_addresses")"
+                end="$(awk -v t="$((16#$table))" "$awk_hex"'
+                    hex("0x" $1) > t { print hex("0x" $1); exit }' <<<"$all_addresses")"
                 [[ -n "$end" ]] || fail "cannot bound the jump table at 0x$table"
                 entries=$(((end - 16#$table) / 4))
                 ((entries > 0 && entries <= 1024)) || fail "jump table at 0x$table has $entries entries"
