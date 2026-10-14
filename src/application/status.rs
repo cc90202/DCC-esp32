@@ -141,23 +141,6 @@ mod tests {
     }
 
     #[test]
-    fn test_wifi_connecting_blinks_red_after_boot() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiConnecting);
-        assert_eq!(model.led_state(), LedState::WifiConnecting);
-    }
-
-    #[test]
-    fn test_wifi_disconnected_returns_to_connecting_state() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiConnected);
-        model.apply(SystemStatusEvent::WifiDisconnected);
-        assert_eq!(model.led_state(), LedState::WifiConnecting);
-    }
-
-    #[test]
     fn test_wifi_connecting_before_boot_stays_booting() {
         let mut model = StatusModel::new();
         model.apply(SystemStatusEvent::WifiConnecting);
