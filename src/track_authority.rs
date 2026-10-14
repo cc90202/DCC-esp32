@@ -7,8 +7,7 @@
 //!
 //! Every check reads the clock inside the critical section, so the time a
 //! permit is judged against cannot go stale between the read and the
-//! decision. The cost is one timer read (a few hundred nanoseconds) held
-//! under the lock.
+//! decision. The cost is one timer read held under the lock.
 
 use core::cell::RefCell;
 

@@ -31,11 +31,9 @@
 mod qualifier;
 
 #[cfg(target_arch = "riscv32")]
-use crate::fault_manager::FaultStateReceiver;
-#[cfg(target_arch = "riscv32")]
 use crate::system_status::FaultManagerState;
 #[cfg(target_arch = "riscv32")]
-use crate::system_status::channels::{BootReadySender, FaultEventSender};
+use crate::system_status::channels::{BootReadySender, FaultEventSender, FaultStateReceiver};
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::{BootReadyEvent, announce_ready};
 #[cfg(target_arch = "riscv32")]

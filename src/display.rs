@@ -209,7 +209,7 @@ fn format_ip(addr: [u8; 4]) -> heapless::String<15> {
 #[cfg(target_arch = "riscv32")]
 /// The OLED panel driven by the display task.
 #[cfg(target_arch = "riscv32")]
-type Display = Ssd1306Async<
+type Oled = Ssd1306Async<
     I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
     DisplaySize128x64,
     BufferedGraphicsModeAsync<DisplaySize128x64>,
@@ -218,7 +218,7 @@ type Display = Ssd1306Async<
 /// Draw the fault row near the bottom of the panel, reusing `line` as scratch.
 #[cfg(target_arch = "riscv32")]
 fn draw_fault_row(
-    target: &mut Display,
+    target: &mut Oled,
     line: &mut RowText,
     cause: FaultCause,
     style: MonoTextStyle<'_, BinaryColor>,
@@ -252,7 +252,7 @@ async fn drain_degraded(
 }
 
 #[cfg(target_arch = "riscv32")]
-async fn render(display: &mut Display, model: &DisplayModel, throbber_frame: u8) {
+async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
     use core::fmt::Write;
 
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);

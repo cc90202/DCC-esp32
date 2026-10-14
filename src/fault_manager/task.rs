@@ -6,14 +6,15 @@ use embassy_time::{Duration, with_timeout};
 use super::policy::FaultDecision;
 use super::power_fence;
 use super::relay::{FaultEffectsSignal, FaultEffectsSnapshot};
-use super::step::FaultLoop;
-use super::{FaultStateSender, INTERLOCK_STOP_DONE, TRACK_POWER_ARMED};
+use super::step::{FaultLoop, TrackInputs};
+use super::{INTERLOCK_STOP_DONE, TRACK_POWER_ARMED};
 use crate::dcc::PowerGeneration;
 use crate::dcc::channels::{PowerFenceAckReceiver, PowerQuiesceSender};
-use crate::system_status::channels::{BootReadySender, FaultEventReceiver};
+use crate::system_status::channels::{BootReadySender, FaultEventReceiver, FaultStateSender};
 use crate::system_status::{BootReadyEvent, FaultEvent, FaultManagerState, announce_ready};
 use crate::track_output::TrackOutput;
 
+/// Channels, output and signals the fault-manager task owns for its lifetime.
 pub(crate) struct FaultManagerTaskContext {
     pub(crate) receiver: FaultEventReceiver,
     pub(crate) power_quiesce_sender: PowerQuiesceSender,
@@ -164,8 +165,10 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
         );
         let plan = loop_state.step(
             event,
-            track_output.is_track_enabled(),
-            crate::track_output::inhibited(),
+            TrackInputs {
+                output_enabled: track_output.is_track_enabled(),
+                interlock_engaged: crate::track_output::inhibited(),
+            },
         );
         // The stop policy takes effect even if the drain below is interrupted
         // by a higher-priority fault or times out; the bridge goes off at the
@@ -195,21 +198,23 @@ pub(crate) async fn fault_manager_task(context: FaultManagerTaskContext) -> ! {
             }
             None => true,
         };
-        let applied = fence_complete
-            && apply_track_power(event, plan.decision.track_enabled, &mut track_output);
+        let decision = plan.decision;
+        let interlock_stop = plan.interlock_stop;
+        let applied =
+            fence_complete && apply_track_power(event, decision.track_enabled, &mut track_output);
         if !applied {
             defmt::warn!("fault_manager: power transition interrupted, timed out or unauthorized");
             continue;
         }
-        loop_state.commit(&plan);
-        if signal_completion(event, plan.interlock_stop) {
+        loop_state.commit(plan);
+        if signal_completion(event, interlock_stop) {
             continue;
         }
 
-        if plan.decision.state != plan.decision.previous_state {
-            state_sender.send(plan.decision.state);
+        if decision.state != decision.previous_state {
+            state_sender.send(decision.state);
         }
-        log_decision(&plan.decision);
-        publish_effects(&mut effects, plan.decision, effects_signal);
+        log_decision(&decision);
+        publish_effects(&mut effects, decision, effects_signal);
     }
 }

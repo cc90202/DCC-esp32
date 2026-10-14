@@ -51,8 +51,8 @@ use crate::dcc::channels::{
 };
 use crate::dcc::pom_actor_task;
 use crate::fault_manager::{
-    FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerTaskContext, FaultStateWatch,
-    fault_effects_task, fault_manager_task,
+    FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerTaskContext, fault_effects_task,
+    fault_manager_task,
 };
 use crate::net::client_watchdog::{
     ClientWatchdogContext, LeaseRequestChannel, LeaseResponseChannel, LeaseTripChannel,
@@ -70,7 +70,8 @@ use crate::railcom::uart_reader::RailcomUartRuntimeResultChannel;
 use crate::short_detector::{new_short_detect_input, short_detector_task};
 use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
 use crate::system_status::channels::{
-    BootReadyChannel, DisplayChannel, FaultEventChannel, NetStatusChannel, SystemStatusChannel,
+    BootReadyChannel, DisplayChannel, FaultEventChannel, FaultStateWatch, NetStatusChannel,
+    SystemStatusChannel,
 };
 use crate::system_status::{
     BootStep, CriticalTask, DisplayEvent, FaultManagerState, SystemStatusEvent,

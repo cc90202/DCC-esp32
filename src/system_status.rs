@@ -163,11 +163,13 @@ macro_rules! critical_tasks {
 
         impl CriticalTask {
             /// Every critical task, in declaration order.
-            pub const ALL: [Self; [$(Self::$variant),+].len()] = [$(Self::$variant),+];
+            #[cfg(test)]
+            const ALL: [Self; [$(Self::$variant),+].len()] = [$(Self::$variant),+];
 
             /// Name of the Embassy task function spawned for this task.
+            #[cfg(test)]
             #[must_use]
-            pub const fn name(self) -> &'static str {
+            const fn name(self) -> &'static str {
                 match self {
                     $( Self::$variant => $name, )+
                 }
@@ -312,7 +314,9 @@ pub enum DisplayEvent {
 /// a module that does not exist there.
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod channels {
-    use super::{BootReadyEvent, DisplayEvent, FaultEvent, SystemStatusEvent};
+    use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch};
+
+    use super::{BootReadyEvent, DisplayEvent, FaultEvent, FaultManagerState, SystemStatusEvent};
     use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
 
     /// Status events fanned out to the display, the LED and the network task.
@@ -347,6 +351,17 @@ pub(crate) mod channels {
     pub(crate) type DisplayChannel = RuntimeChannel<DisplayEvent, DISPLAY_DEPTH>;
     pub(crate) type DisplaySender = RuntimeSender<DisplayEvent, DISPLAY_DEPTH>;
     pub(crate) type DisplayReceiver = RuntimeReceiver<DisplayEvent, DISPLAY_DEPTH>;
+
+    /// Receivers allowed on the fault-state watch; the short detector is the only one.
+    const FAULT_STATE_RECEIVERS: usize = 1;
+
+    /// Latest fault-manager state, published by the fault manager.
+    pub(crate) type FaultStateWatch =
+        watch::Watch<CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
+    pub(crate) type FaultStateSender =
+        watch::Sender<'static, CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
+    pub(crate) type FaultStateReceiver =
+        watch::Receiver<'static, CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
 }
 
 /// Publishes one readiness acknowledgement and records it consistently.
@@ -362,6 +377,9 @@ pub(crate) async fn announce_ready(sender: channels::BootReadySender, event: Boo
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::application::StatusModel;
+
     /// The first module-level example, as a test that actually runs.
     #[test]
     fn the_model_walks_boot_to_running_through_wifi() {
@@ -390,9 +408,6 @@ mod tests {
         model.apply(SystemStatusEvent::FaultCleared);
         assert_eq!(model.led_state(), LedState::Running);
     }
-
-    use super::*;
-    use crate::application::StatusModel;
 
     #[test]
     fn every_critical_task_has_a_distinct_name() {

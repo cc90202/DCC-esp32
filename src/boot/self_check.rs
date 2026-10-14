@@ -11,6 +11,10 @@ fn log_packet_bytes(label: &str, packet: DccPacket) {
     info!("{}: {:?}", label, bytes.as_slice());
 }
 
+/// Encodes and logs a few reference packets, failing if any cannot be built.
+///
+/// The idle waveform buffer is not covered here: it is built and checked in
+/// [`super::hardware::initialize_dcc_rmt`], which fails boot if that build fails.
 pub(super) fn verify_boot_packet_encoding() -> Result<(), BootError> {
     info!("boot: running DCC packet self-check");
 

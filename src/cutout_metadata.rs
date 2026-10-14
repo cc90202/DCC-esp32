@@ -8,21 +8,31 @@ use crate::cutout::{CutoutMode, PacketSequence};
 use crate::dcc::PackedAddressFlags;
 use crate::dcc::{DccAddress, PomRequestId};
 
+/// Cutout event published by the track-output interrupt to the RailCom tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum CutoutRuntimeEvent {
+    /// A cutout window opened after the packet with `packet_sequence`.
     Opened {
+        /// Sequence number of the packet that preceded the cutout.
         packet_sequence: PacketSequence,
+        /// Kind of answer expected in this cutout.
         cutout: CutoutMode,
+        /// Decoder addressed by the preceding packet, if it carried one.
         target_address: Option<DccAddress>,
+        /// POM request the cutout answers, if the packet was a POM.
         pom_request_id: Option<PomRequestId>,
     },
 }
 
+/// Metadata recorded for the cutout that follows one DCC packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailcomPacketMetadata {
+    /// Decoder addressed by the packet, if it carried one.
     pub target_address: Option<DccAddress>,
+    /// Kind of answer expected in the cutout.
     pub cutout: CutoutMode,
+    /// POM request the cutout answers, if the packet was a POM.
     pub pom_request_id: Option<PomRequestId>,
 }
 

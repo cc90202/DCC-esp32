@@ -39,24 +39,7 @@ pub(crate) use relay::{FaultEffectsSignal, FaultEffectsTaskContext, fault_effect
 pub(crate) use task::{FaultManagerTaskContext, fault_manager_task};
 
 #[cfg(target_arch = "riscv32")]
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal, watch};
-
-#[cfg(target_arch = "riscv32")]
-use crate::system_status::FaultManagerState;
-
-/// Receivers allowed on the fault-state watch; the short detector is the only one.
-#[cfg(target_arch = "riscv32")]
-const FAULT_STATE_RECEIVERS: usize = 1;
-
-#[cfg(target_arch = "riscv32")]
-pub type FaultStateWatch =
-    watch::Watch<CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
-#[cfg(target_arch = "riscv32")]
-pub(crate) type FaultStateSender =
-    watch::Sender<'static, CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
-#[cfg(target_arch = "riscv32")]
-pub(crate) type FaultStateReceiver =
-    watch::Receiver<'static, CriticalSectionRawMutex, FaultManagerState, FAULT_STATE_RECEIVERS>;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
 /// Signalled once a stop requested while the track interlock is engaged has
 /// taken effect and every frame queued before it has left the engine.

@@ -1,4 +1,4 @@
-//! Pure decision for one iteration of the fault-manager loop.
+//! I/O-free decision for one iteration of the fault-manager loop.
 //!
 //! [`FaultLoop`] owns the committed policy, the next power-fence generation
 //! and an event deferred by an interrupted fence. [`FaultLoop::step`] decides
@@ -19,8 +19,19 @@ pub(super) struct FaultLoop {
     pending: Option<FaultEvent>,
 }
 
-/// What one event requires from the firmware task.
+/// Track output conditions sampled by the firmware task for one event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TrackInputs {
+    /// Whether the track output is currently enabled.
+    pub(super) output_enabled: bool,
+    /// Whether the update interlock is engaged.
+    pub(super) interlock_engaged: bool,
+}
+
+/// What one event requires from the firmware task.
+///
+/// A plan is consumed by [`FaultLoop::commit`], so it can be committed once.
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct StepPlan {
     /// Policy to commit once the power transition has been applied.
     pub(super) candidate: FaultPolicy,
@@ -44,26 +55,26 @@ impl FaultLoop {
         }
     }
 
-    /// Decides what `event` requires, given whether the track output is on
-    /// and whether the update interlock is engaged.
+    /// Decides what `event` requires, given the sampled track `inputs`.
     ///
     /// A fence is needed for an interlock stop, or when the decision enables
     /// a track that is off; requesting one consumes a generation, which skips
     /// zero when it wraps. An interlock stop commits its candidate here, so
     /// the stop holds even if the fence is later interrupted or times out.
     #[must_use]
-    pub(super) fn step(&mut self, event: FaultEvent, track_on: bool, inhibited: bool) -> StepPlan {
+    pub(super) fn step(&mut self, event: FaultEvent, inputs: TrackInputs) -> StepPlan {
         let mut candidate = self.policy;
         let decision = candidate.handle(event);
-        let interlock_stop = event == FaultEvent::StopPressed && inhibited;
+        let interlock_stop = event == FaultEvent::StopPressed && inputs.interlock_engaged;
         if interlock_stop {
             self.policy = candidate;
         }
-        let fence = (interlock_stop || (decision.track_enabled && !track_on)).then(|| {
-            let generation = PowerGeneration::new(self.next_generation);
-            self.next_generation = self.next_generation.wrapping_add(1).max(1);
-            generation
-        });
+        let fence =
+            (interlock_stop || (decision.track_enabled && !inputs.output_enabled)).then(|| {
+                let generation = PowerGeneration::new(self.next_generation);
+                self.next_generation = self.next_generation.wrapping_add(1).max(1);
+                generation
+            });
         StepPlan {
             candidate,
             decision,
@@ -85,7 +96,11 @@ impl FaultLoop {
     }
 
     /// Commits the candidate policy of `plan`; nothing else changes.
-    pub(super) fn commit(&mut self, plan: &StepPlan) {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "taking the plan by value makes each plan committable once"
+    )]
+    pub(super) fn commit(&mut self, plan: StepPlan) {
         self.policy = plan.candidate;
     }
 
@@ -106,11 +121,28 @@ mod tests {
     use super::*;
     use crate::system_status::FaultCause;
 
+    const TRACK_OFF: TrackInputs = TrackInputs {
+        output_enabled: false,
+        interlock_engaged: false,
+    };
+    const TRACK_ON: TrackInputs = TrackInputs {
+        output_enabled: true,
+        interlock_engaged: false,
+    };
+    const TRACK_OFF_INTERLOCKED: TrackInputs = TrackInputs {
+        output_enabled: false,
+        interlock_engaged: true,
+    };
+    const TRACK_ON_INTERLOCKED: TrackInputs = TrackInputs {
+        output_enabled: true,
+        interlock_engaged: true,
+    };
+
     /// A loop whose policy has been armed and committed with the track on.
     fn armed() -> FaultLoop {
         let mut fault_loop = FaultLoop::new();
-        let plan = fault_loop.step(FaultEvent::TrackPowerArmed, false, false);
-        fault_loop.commit(&plan);
+        let plan = fault_loop.step(FaultEvent::TrackPowerArmed, TRACK_OFF);
+        fault_loop.commit(plan);
         fault_loop
     }
 
@@ -119,17 +151,17 @@ mod tests {
         let mut fault_loop = armed();
 
         // Powering a track that is already on needs no fence.
-        let plan = fault_loop.step(FaultEvent::ResumeShortPressed, true, false);
+        let plan = fault_loop.step(FaultEvent::ResumeShortPressed, TRACK_ON);
         assert_eq!(plan.fence, None);
         // A plain stop disables the track and needs no fence.
-        let plan = fault_loop.step(FaultEvent::StopPressed, true, false);
+        let plan = fault_loop.step(FaultEvent::StopPressed, TRACK_ON);
         assert!(!plan.interlock_stop);
         assert_eq!(plan.fence, None);
         // Powering a track that is off fences, using the next generation.
-        let plan = fault_loop.step(FaultEvent::ResumeShortPressed, false, false);
+        let plan = fault_loop.step(FaultEvent::ResumeShortPressed, TRACK_OFF);
         assert_eq!(plan.fence, Some(PowerGeneration::new(2)));
         // An interlock stop fences even though it disables the track.
-        let plan = fault_loop.step(FaultEvent::StopPressed, false, true);
+        let plan = fault_loop.step(FaultEvent::StopPressed, TRACK_OFF_INTERLOCKED);
         assert!(plan.interlock_stop);
         assert!(!plan.decision.track_enabled);
         assert_eq!(plan.fence, Some(PowerGeneration::new(3)));
@@ -139,11 +171,11 @@ mod tests {
     fn interlock_stop_commits_in_step_itself() {
         let mut fault_loop = armed();
 
-        let plain = fault_loop.step(FaultEvent::StopPressed, true, false);
+        let plain = fault_loop.step(FaultEvent::StopPressed, TRACK_ON);
         assert_eq!(plain.decision.state, FaultManagerState::EstopLatched);
         assert_eq!(fault_loop.state(), FaultManagerState::Normal);
 
-        let interlock = fault_loop.step(FaultEvent::StopPressed, true, true);
+        let interlock = fault_loop.step(FaultEvent::StopPressed, TRACK_ON_INTERLOCKED);
         assert!(interlock.interlock_stop);
         assert_eq!(fault_loop.state(), FaultManagerState::EstopLatched);
         assert!(!fault_loop.track_enabled());
@@ -152,10 +184,10 @@ mod tests {
     #[test]
     fn interrupted_fence_defer_leaves_policy_untouched_and_stores_pending() {
         let mut fault_loop = armed();
-        let stop = fault_loop.step(FaultEvent::StopPressed, true, false);
-        fault_loop.commit(&stop);
+        let stop = fault_loop.step(FaultEvent::StopPressed, TRACK_ON);
+        fault_loop.commit(stop);
 
-        let resume = fault_loop.step(FaultEvent::ResumeShortPressed, false, false);
+        let resume = fault_loop.step(FaultEvent::ResumeShortPressed, TRACK_OFF);
         assert!(resume.fence.is_some());
         let short = FaultEvent::FaultLatched(FaultCause::TrackShort);
         fault_loop.defer(short);
@@ -168,19 +200,18 @@ mod tests {
     #[test]
     fn commit_sets_the_policy_only() {
         let mut fault_loop = FaultLoop::new();
-        let plan = fault_loop.step(FaultEvent::TrackPowerArmed, false, false);
+        let plan = fault_loop.step(FaultEvent::TrackPowerArmed, TRACK_OFF);
         assert_eq!(fault_loop.state(), FaultManagerState::Normal);
         assert!(!fault_loop.track_enabled());
 
         fault_loop.defer(FaultEvent::StopPressed);
-        fault_loop.commit(&plan);
+        fault_loop.commit(plan);
         assert!(fault_loop.track_enabled());
         assert_eq!(fault_loop.take_pending(), Some(FaultEvent::StopPressed));
         // Committing does not consume a fence generation.
-        fault_loop.commit(&plan);
-        let stop = fault_loop.step(FaultEvent::StopPressed, true, false);
-        fault_loop.commit(&stop);
-        let resume = fault_loop.step(FaultEvent::ResumeLongPressed, false, false);
+        let stop = fault_loop.step(FaultEvent::StopPressed, TRACK_ON);
+        fault_loop.commit(stop);
+        let resume = fault_loop.step(FaultEvent::ResumeLongPressed, TRACK_OFF);
         assert_eq!(resume.fence, Some(PowerGeneration::new(2)));
     }
 
@@ -188,7 +219,7 @@ mod tests {
     fn new_starts_the_generation_at_one() {
         let mut fault_loop = FaultLoop::new();
 
-        let plan = fault_loop.step(FaultEvent::TrackPowerArmed, false, false);
+        let plan = fault_loop.step(FaultEvent::TrackPowerArmed, TRACK_OFF);
 
         assert_eq!(plan.fence, Some(PowerGeneration::new(1)));
     }
@@ -198,8 +229,8 @@ mod tests {
         let mut fault_loop = armed();
         fault_loop.next_generation = u32::MAX;
 
-        let last = fault_loop.step(FaultEvent::ResumeShortPressed, false, false);
-        let wrapped = fault_loop.step(FaultEvent::ResumeShortPressed, false, false);
+        let last = fault_loop.step(FaultEvent::ResumeShortPressed, TRACK_OFF);
+        let wrapped = fault_loop.step(FaultEvent::ResumeShortPressed, TRACK_OFF);
 
         assert_eq!(last.fence, Some(PowerGeneration::new(u32::MAX)));
         assert_eq!(wrapped.fence, Some(PowerGeneration::new(1)));

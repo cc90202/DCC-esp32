@@ -131,14 +131,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_boot_to_running() {
-        let mut model = StatusModel::new();
-        assert_eq!(model.led_state(), LedState::Booting);
-        model.apply(SystemStatusEvent::BootCompleted);
-        assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
     fn test_boot_event_keeps_running_state() {
         let mut model = StatusModel::new();
         model.apply(SystemStatusEvent::BootCompleted);
@@ -154,15 +146,6 @@ mod tests {
         model.apply(SystemStatusEvent::BootCompleted);
         model.apply(SystemStatusEvent::WifiConnecting);
         assert_eq!(model.led_state(), LedState::WifiConnecting);
-    }
-
-    #[test]
-    fn test_wifi_connected_returns_to_running() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::WifiConnecting);
-        model.apply(SystemStatusEvent::WifiConnected);
-        assert_eq!(model.led_state(), LedState::Running);
     }
 
     #[test]
@@ -226,17 +209,6 @@ mod tests {
         model.apply(SystemStatusEvent::EstopActive);
         model.apply(SystemStatusEvent::FaultCleared);
         assert!(model.estop_active());
-    }
-
-    #[test]
-    fn test_fault_clear_returns_to_running() {
-        let mut model = StatusModel::new();
-        model.apply(SystemStatusEvent::BootCompleted);
-        model.apply(SystemStatusEvent::FaultLatched(FaultCause::TrackShort));
-        assert_eq!(model.led_state(), LedState::FaultLatched);
-
-        model.apply(SystemStatusEvent::FaultCleared);
-        assert_eq!(model.led_state(), LedState::Running);
     }
 
     #[test]

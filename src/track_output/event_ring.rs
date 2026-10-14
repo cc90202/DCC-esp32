@@ -28,6 +28,10 @@ pub fn stats() -> TrackOutputStats {
     CUTOUT.snapshot()
 }
 
+/// Returns the metadata recorded for the cutout after `packet_sequence`.
+///
+/// Returns `None` when the slot was never written, is being written, was
+/// read torn, or has already been reused by a later packet.
 #[must_use]
 pub fn railcom_packet_metadata(packet_sequence: PacketSequence) -> Option<RailcomPacketMetadata> {
     let packet_sequence = packet_sequence.value();
@@ -80,6 +84,9 @@ pub fn drain_cutout_runtime_events(
     }
 }
 
+/// Returns a receiver that yields one wake-up token whenever the interrupt
+/// pushes a cutout event; the events themselves are read with
+/// [`drain_cutout_runtime_events`].
 #[must_use]
 pub fn cutout_event_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1> {
     CUTOUT_EVENT_NOTIFY.receiver()
