@@ -38,12 +38,25 @@ impl SlotManager {
         Some(DccPacket::EmergencyStop { address, direction })
     }
 
+    /// Slot indices in scan order, starting at the dirty cursor and wrapping once.
+    fn dirty_scan_order(&self) -> impl Iterator<Item = usize> + use<> {
+        let len = self.slots.len();
+        let start = if self.dirty_cursor < len {
+            self.dirty_cursor
+        } else {
+            0
+        };
+        (0..len).map(move |offset| (start + offset) % len)
+    }
+
     fn take_dirty_speed_packet(&mut self) -> Option<DccPacket> {
-        for slot in &mut self.slots {
-            if !slot.dirty_speed {
+        for index in self.dirty_scan_order() {
+            if !self.slots[index].dirty_speed {
                 continue;
             }
 
+            self.dirty_cursor = (index + 1) % self.slots.len();
+            let slot = &mut self.slots[index];
             if slot.dirty_speed_retries == 0 {
                 slot.dirty_speed = false;
             } else {
@@ -64,15 +77,16 @@ impl SlotManager {
     }
 
     fn take_dirty_function_packet(&mut self) -> DirtyFunctionSelection {
-        let Some(slot) = self
-            .slots
-            .iter_mut()
-            .find(|slot| slot.dirty_function_groups != 0)
+        let Some(index) = self
+            .dirty_scan_order()
+            .find(|&index| self.slots[index].dirty_function_groups != 0)
         else {
             return DirtyFunctionSelection::NoPendingGroup;
         };
+        let slot = &mut self.slots[index];
         let packet = slot.next_dirty_function_packet();
         slot.last_sent = slot.last_sent.wrapping_add(1);
+        self.dirty_cursor = (index + 1) % self.slots.len();
         DirtyFunctionSelection::Selected(packet)
     }
 

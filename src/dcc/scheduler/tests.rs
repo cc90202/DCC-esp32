@@ -794,6 +794,62 @@ fn targeted_emergency_stops_are_emitted_in_request_order() {
 }
 
 #[test]
+fn twelve_individual_stops_each_get_a_first_packet_within_one_pass() {
+    let mut mgr = SlotManager::new();
+    for value in 1..=12 {
+        assert!(matches!(
+            mgr.handle_loco_request(LocoRequest::SetSpeed {
+                address: addr(value),
+                speed: ls(0, SpeedFormat::Speed128),
+                direction: Direction::Forward,
+            }),
+            LocoRequestResult::Inserted(_)
+        ));
+    }
+
+    let mut first_pass = [0u8; 12];
+    for slot in &mut first_pass {
+        let DccPacket::Speed128 { address, .. } = mgr.build_next_packet().unwrap() else {
+            panic!("expected a Speed128 stop packet");
+        };
+        *slot = address.value() as u8;
+    }
+    first_pass.sort_unstable();
+    assert_eq!(first_pass, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+}
+
+#[test]
+fn dirty_cursor_wraps_and_skips_clean_slots() {
+    let mut mgr = SlotManager::new();
+    fill_with_moving_locomotives(&mut mgr);
+    drain_pending_slot_transmissions(&mut mgr);
+
+    let retarget = |mgr: &mut SlotManager, value: u8| {
+        let _ = mgr.handle_loco_request(LocoRequest::SetSpeed {
+            address: addr(value),
+            speed: ls(value + 50, SpeedFormat::Speed128),
+            direction: Direction::Forward,
+        });
+    };
+    let next_dirty = |mgr: &mut SlotManager| {
+        let DccPacket::Speed128 { address, .. } = mgr.build_next_packet().unwrap() else {
+            panic!("expected a Speed128 packet");
+        };
+        address.value() as u8
+    };
+
+    retarget(&mut mgr, 5);
+    assert_eq!(next_dirty(&mut mgr), 5);
+
+    // The scan resumes after address 5, passes the clean slots, and only then
+    // wraps around to the lower address.
+    retarget(&mut mgr, 3);
+    retarget(&mut mgr, 8);
+    assert_eq!(next_dirty(&mut mgr), 8);
+    assert_eq!(next_dirty(&mut mgr), 3);
+}
+
+#[test]
 fn test_build_next_packet_empty() {
     let mut mgr = SlotManager::new();
     assert!(mgr.build_next_packet().is_none());
@@ -1197,6 +1253,32 @@ fn test_function_refresh_bound_under_12_slots() {
         deadline_hits > 0,
         "deadline enforcement path should be exercised under 12-slot pressure"
     );
+}
+
+#[test]
+fn dirty_function_scan_alternates_between_locomotives_with_pending_groups() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.set_speed(addr(1), ls(0, SpeedFormat::Speed28), Direction::Forward));
+    assert!(mgr.set_speed(addr(2), ls(0, SpeedFormat::Speed28), Direction::Forward));
+    drain_pending_slot_transmissions(&mut mgr);
+
+    // Two function groups per locomotive, so each address stays dirty across
+    // the first four function packets.
+    for address in [addr(1), addr(2)] {
+        assert!(set_function(&mut mgr, address, 1, true));
+        assert!(set_function(&mut mgr, address, 5, true));
+    }
+
+    let mut served = Vec::new();
+    for _ in 0..16 {
+        if let Some(DccPacket::FunctionGroup { address, .. }) = mgr.build_next_packet() {
+            served.push(address.value());
+            if served.len() == 4 {
+                break;
+            }
+        }
+    }
+    assert_eq!(served, [1, 2, 1, 2]);
 }
 
 #[test]
