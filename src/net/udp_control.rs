@@ -17,11 +17,11 @@ use embassy_net::{IpEndpoint, Stack};
 use embassy_time::{Duration, with_timeout};
 use static_cell::StaticCell;
 
+use crate::application::LeasePermit;
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
 use crate::application::client_safety::{LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
-use crate::application::{LeaseEpoch, LeasePermit};
 use crate::dcc::LOCO_SLOT_CAPACITY;
 use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
@@ -98,7 +98,6 @@ struct Z21LoopIo {
 struct Z21LoopState {
     loco_slots: LocoSlots,
     lease_owner: Option<IpEndpoint>,
-    scheduler_epoch: Option<LeaseEpoch>,
     status_model: StatusModel,
     next_pom_request_id: Cell<u32>,
     next_loco_request_id: Cell<u32>,
@@ -109,7 +108,6 @@ impl Z21LoopState {
         Self {
             loco_slots: [None; LOCO_SLOT_CAPACITY],
             lease_owner: None,
-            scheduler_epoch: None,
             status_model: StatusModel::new(),
             next_pom_request_id: Cell::new(1),
             next_loco_request_id: Cell::new(1),
@@ -215,21 +213,20 @@ async fn handle_udp_datagram(
                 continue;
             }
         };
+        // The registry decides, not a cached epoch: the OTA interlock invalidates
+        // it without notifying this task, so a still-held lease can be unaccepted.
         if let Some(permit) = lease_permit
-            && state.scheduler_epoch != Some(permit.epoch())
-        {
-            if !reset_for_lease(
+            && !crate::track_authority::accepts(permit)
+            && !reset_for_lease(
                 &io.loco_request_sender,
                 &io.loco_response_receiver,
                 &state.next_loco_request_id,
                 permit,
             )
             .await
-            {
-                warn!("Z21 command rejected: controller lease synchronization failed");
-                continue;
-            }
-            state.scheduler_epoch = Some(permit.epoch());
+        {
+            warn!("Z21 command rejected: controller lease synchronization failed");
+            continue;
         }
         let ctx = Z21Ctx {
             status_model: &state.status_model,
@@ -347,7 +344,6 @@ async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
                 if owner_endpoint.is_some() {
                     state.lease_owner = None;
                 }
-                state.scheduler_epoch = None;
                 let response_len = encoded_len(z21_proto::encode_bc_stopped(&mut send_buf));
                 if let Some(endpoint) = owner_endpoint
                     && send_reply(&socket, &send_buf, response_len, endpoint)

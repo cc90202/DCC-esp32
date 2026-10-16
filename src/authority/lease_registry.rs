@@ -135,4 +135,30 @@ mod tests {
         assert!(!registry.accepts(first, first.expires_at_ms()));
         assert!(registry.accepts(renewed, first.expires_at_ms()));
     }
+
+    #[test]
+    fn invalidation_requires_the_epoch_to_be_accepted_again() {
+        let mut policy = ClientSafetyPolicy::new(30_000);
+        let LeaseDecision::Acquired(permit) = policy.handle(
+            LeaseRequest {
+                client: 1,
+                activity: LeaseActivity::Acquire,
+                observed_at_ms: 100,
+            },
+            100,
+        ) else {
+            panic!("expected permit");
+        };
+        let mut registry = LeaseRegistry::new();
+        registry.publish(permit);
+        assert!(registry.accept_epoch(permit, 100));
+
+        registry.invalidate();
+        registry.publish(permit);
+
+        assert!(registry.accepts(permit, 100));
+        assert!(!registry.accepts_mutation(permit, 100));
+        assert!(registry.accept_epoch(permit, 100));
+        assert!(registry.accepts_mutation(permit, 100));
+    }
 }

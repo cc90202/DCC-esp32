@@ -10,5 +10,4 @@
 20 src/track_output.rs::cutout_timer_interrupt::<anonymous>
 20 src/z21/parsing.rs::parse_xbus
 16 src/dcc/scheduler/slot_manager/locomotives.rs::SlotManager::handle_loco_request
-16 src/net/udp_control.rs::handle_udp_datagram
 16 src/short_detector.rs::short_detector_task
