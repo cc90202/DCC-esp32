@@ -4,7 +4,7 @@
 //! `net` module declaration.
 //!
 //! This is the wiring module: it binds the UDP socket, drives the
-//! `select3` event loop, and constructs [`Z21Ctx`] per incoming frame. Command
+//! `select4` event loop, and constructs [`Z21Ctx`] per incoming frame. Command
 //! dispatch lives in `z21_dispatch`, WiFi bring-up in `wifi`, POM client logic
 //! in `pom_client`, and RailCom sighting lookups in `railcom_lookup`.
 
@@ -21,16 +21,18 @@ use crate::application::LeasePermit;
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
 use crate::application::client_safety::{LeaseRequest, LeaseVerdict, lease_verdict};
+use crate::application::pom::PomCompletion;
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
-use crate::dcc::LOCO_SLOT_CAPACITY;
 use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
 };
+use crate::dcc::{LOCO_SLOT_CAPACITY, PomResponse};
 use crate::macros::bench_diag;
 use crate::net::client_watchdog::{LeaseRequestSender, LeaseResponseReceiver, LeaseTripReceiver};
 use crate::net::loco_client::reset_for_lease;
+use crate::net::pom_client::{encode_delivery, response_outcome, start_request};
 use crate::net::wifi_config::WifiCredentials;
-use crate::net::z21_context::{LocoChannels, PomChannels, Z21Ctx};
+use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
 use crate::net::z21_dispatch::{
     LeaseClassification, classify_lease_activity, encode_system_state, encoded_len, handle_command,
 };
@@ -99,7 +101,7 @@ struct Z21LoopState {
     loco_slots: LocoSlots,
     lease_owner: Option<IpEndpoint>,
     status_model: StatusModel,
-    next_pom_request_id: Cell<u32>,
+    pom_session: Z21PomSession,
     next_loco_request_id: Cell<u32>,
 }
 
@@ -109,7 +111,7 @@ impl Z21LoopState {
             loco_slots: [None; LOCO_SLOT_CAPACITY],
             lease_owner: None,
             status_model: StatusModel::new(),
-            next_pom_request_id: Cell::new(1),
+            pom_session: Z21PomSession::new(),
             next_loco_request_id: Cell::new(1),
         }
     }
@@ -229,6 +231,7 @@ async fn handle_udp_datagram(
             continue;
         }
         let ctx = Z21Ctx {
+            endpoint,
             status_model: &state.status_model,
             lease_permit,
             fault_sender: &io.fault_sender,
@@ -237,14 +240,17 @@ async fn handle_udp_datagram(
                 response_receiver: &io.loco_response_receiver,
                 next_request_id: &state.next_loco_request_id,
             },
-            pom: PomChannels {
-                request_sender: &io.pom_request_sender,
-                response_receiver: &io.pom_response_receiver,
-                next_request_id: &state.next_pom_request_id,
-            },
+            pom_request_sender: &io.pom_request_sender,
         };
-        let response_len =
-            handle_command(command, frame, &mut state.loco_slots, send_buf, &ctx).await;
+        let response_len = handle_command(
+            command,
+            frame,
+            &mut state.loco_slots,
+            &mut state.pom_session,
+            send_buf,
+            &ctx,
+        )
+        .await;
         if send_reply(socket, send_buf, response_len, endpoint)
             .await
             .is_err()
@@ -299,21 +305,84 @@ async fn broadcast_status(
     }
 }
 
+/// Completes the session entry the actor's response belongs to and settles it.
+async fn settle_pom_response(
+    socket: &UdpSocket<'_>,
+    response: PomResponse,
+    send_buf: &mut [u8],
+    state: &mut Z21LoopState,
+    io: &Z21LoopIo,
+) {
+    let completion = state
+        .pom_session
+        .complete(response.request_id(), response_outcome(response));
+    settle_pom(socket, completion, send_buf, state, io).await;
+}
+
+/// Sends the reply a finished POM request is owed, then starts the queued
+/// successor, until the session has a request in flight or nothing left.
+async fn settle_pom(
+    socket: &UdpSocket<'_>,
+    mut completion: PomCompletion<IpEndpoint>,
+    send_buf: &mut [u8],
+    state: &mut Z21LoopState,
+    io: &Z21LoopIo,
+) {
+    loop {
+        if let Some(delivery) = completion.delivery {
+            let response_len = encode_delivery(delivery, send_buf);
+            if send_reply(socket, send_buf, response_len, delivery.reply)
+                .await
+                .is_err()
+            {
+                warn!("Z21 UDP send failed");
+            }
+        }
+        let Some(start) = completion.next else {
+            return;
+        };
+        let loco = LocoChannels {
+            request_sender: &io.loco_request_sender,
+            response_receiver: &io.loco_response_receiver,
+            next_request_id: &state.next_loco_request_id,
+        };
+        completion = start_request(
+            start,
+            &mut state.loco_slots,
+            &mut state.pom_session,
+            &loco,
+            &io.pom_request_sender,
+        )
+        .await;
+    }
+}
+
 async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
     let mut state = Z21LoopState::new();
     let mut recv_buf = [0u8; 256];
     let mut send_buf = [0u8; 64];
 
     loop {
-        use embassy_futures::select::{Either3, select3};
+        use embassy_futures::select::{Either4, select4};
 
         crate::liveness::beat(crate::liveness::Task::Net);
+        // A buffered response is taken before the deadline check: the select
+        // below polls the socket first, so it could otherwise stay unread
+        // while its request expires.
+        if let Ok(response) = io.pom_response_receiver.try_receive() {
+            settle_pom_response(&socket, response, &mut send_buf, &mut state, &io).await;
+        }
+        // The loop wakes at least once per beat period, which bounds how late
+        // a POM deadline is noticed.
+        let expired = state.pom_session.expire(crate::clock::now_ms());
+        settle_pom(&socket, expired, &mut send_buf, &mut state, &io).await;
         let Ok(event) = with_timeout(
             Z21_BEAT_PERIOD,
-            select3(
+            select4(
                 socket.recv_from(&mut recv_buf),
                 io.net_status.receive(),
                 io.lease_trip_receiver.receive(),
+                io.pom_response_receiver.receive(),
             ),
         )
         .await
@@ -321,7 +390,7 @@ async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
             continue;
         };
         match event {
-            Either3::First(Ok((len, metadata))) => {
+            Either4::First(Ok((len, metadata))) => {
                 handle_udp_datagram(
                     &socket,
                     &recv_buf[..len],
@@ -332,14 +401,14 @@ async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
                 )
                 .await;
             }
-            Either3::First(Err(_error)) => {
+            Either4::First(Err(_error)) => {
                 UDP_RECEIVE_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
                 warn!("Z21 UDP receive failed");
             }
-            Either3::Second(event) => {
+            Either4::Second(event) => {
                 broadcast_status(&socket, event, &mut send_buf, &mut state).await;
             }
-            Either3::Third(trip) => {
+            Either4::Third(trip) => {
                 let owner_endpoint = state.lease_owner.filter(|owner| owner.addr == trip.client);
                 if owner_endpoint.is_some() {
                     state.lease_owner = None;
@@ -354,6 +423,9 @@ async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
                     warn!("Z21 stopped broadcast send failed after controller lease trip");
                 }
                 info!("Controller lease tripped: track output disabled");
+            }
+            Either4::Fourth(response) => {
+                settle_pom_response(&socket, response, &mut send_buf, &mut state, &io).await;
             }
         }
     }

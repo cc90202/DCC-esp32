@@ -11,7 +11,7 @@ use crate::application::LocoSlots;
 use crate::application::client_safety::LeaseActivity;
 use crate::application::track_control::TrackPowerRequest;
 use crate::macros::bench_diag;
-use crate::net::z21_context::Z21Ctx;
+use crate::net::z21_context::{Z21Ctx, Z21PomSession};
 use crate::z21::{self as z21_proto, HEADER_XBUS, Z21Command};
 
 use super::pom_client::{handle_cv_pom_read, handle_cv_pom_write};
@@ -63,11 +63,12 @@ pub(super) async fn handle_command(
     command: Z21Command,
     raw_frame: &[u8],
     loco_slots: &mut LocoSlots,
+    pom_session: &mut Z21PomSession,
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
 ) -> usize {
     log_command(command);
-    route_command(command, raw_frame, loco_slots, out, ctx).await
+    route_command(command, raw_frame, loco_slots, pom_session, out, ctx).await
 }
 
 /// Bench diagnostic: one line per accepted Z21 command.
@@ -95,6 +96,7 @@ async fn route_command(
     command: Z21Command,
     raw_frame: &[u8],
     loco_slots: &mut LocoSlots,
+    pom_session: &mut Z21PomSession,
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
 ) -> usize {
@@ -162,10 +164,10 @@ async fn route_command(
         } => locomotive::set_function(loco_slots, out, ctx, address, function, action).await,
 
         Z21Command::CvPomWriteByte { address, cv, value } => {
-            handle_cv_pom_write(out, ctx, address, cv, value).await
+            handle_cv_pom_write(loco_slots, pom_session, out, ctx, address, cv, value).await
         }
         Z21Command::CvPomReadByte { address, cv } => {
-            handle_cv_pom_read(loco_slots, out, ctx, address, cv).await
+            handle_cv_pom_read(loco_slots, pom_session, out, ctx, address, cv).await
         }
 
         Z21Command::RailcomGetData {

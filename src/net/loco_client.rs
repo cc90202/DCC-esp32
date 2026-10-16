@@ -7,7 +7,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::Duration;
 
-use super::correlated::{SendMode, correlated_request};
+use super::correlated::correlated_request;
 use crate::application::LeasePermit;
 #[cfg(target_arch = "riscv32")]
 use crate::dcc::LocoRequestResult;
@@ -47,7 +47,6 @@ async fn send_correlated_request(
             deadline: LocoRequestDeadline::from_ticks((now + LOCO_EXECUTION_TIMEOUT).as_ticks()),
         },
         |response| response.request_id,
-        SendMode::Blocking,
         LOCO_RESPONSE_TIMEOUT,
     )
     .await

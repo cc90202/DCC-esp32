@@ -1,25 +1,27 @@
 //! Z21-side POM (Programming on Main) request/response client.
 //!
-//! Talks to the POM actor task (`dcc::cv::pom_actor_task`) over the
-//! single-slot request/response channels threaded through [`Z21Ctx`].
+//! Admits Z21 POM commands into the loop's [`Z21PomSession`] and hands the
+//! started requests to the POM actor task (`dcc::cv::pom_actor_task`). The
+//! actor's responses are received by the Z21 loop, which settles them through
+//! the session and sends the replies encoded here.
 //!
 //! ESP32-C6 only, gated behind `#[cfg(target_arch = "riscv32")]` at the
 //! `net` module declaration.
 
-use core::cell::Cell;
-
 use defmt::{info, warn};
 
-use super::correlated::{SendMode, correlated_request};
-use crate::application::LocoSlots;
 use crate::application::locomotive::{
     LocoCommandFailure, LocoCommandOutcome, resolve_loco_command,
 };
-use crate::application::pom::{PomAdmissionError, prepare_read, prepare_write};
-use crate::dcc::channels::{PomRequestSender, PomResponseReceiver};
-use crate::dcc::{PomOp, PomRequest, PomRequestId, PomResponse};
+use crate::application::pom::{
+    PomAdmissionError, PomCompletion, PomDelivery, PomJob, PomOutcome, PomPlan, PomReadPlan,
+    PomStart, PomSubmission, prepare_read, prepare_write,
+};
+use crate::application::{LeasePermit, LocoSlots};
+use crate::dcc::channels::PomRequestSender;
+use crate::dcc::{PomOp, PomRequest, PomResponse};
 use crate::net::loco_client::request_loco;
-use crate::net::z21_context::Z21Ctx;
+use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
 use crate::net::z21_dispatch::encoded_len;
 use crate::z21 as z21_proto;
 
@@ -33,38 +35,9 @@ enum PomOperation {
     Write,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PomOutcome {
-    Value(u8),
-    Ack,
-    Nack,
-    Unavailable,
-}
-
-/// Sends one POM request to the actor and waits for the reply carrying its id.
-///
-/// The id comes from the net task's local counter: it only needs to be unique
-/// within this task's single-flight request/response channel.
-async fn request_pom(
-    pom_request_sender: &PomRequestSender,
-    pom_response_receiver: &PomResponseReceiver,
-    next_request_id: &Cell<u32>,
-    build_request: impl FnOnce(PomRequestId) -> PomRequest,
-) -> Option<PomResponse> {
-    correlated_request(
-        pom_request_sender,
-        pom_response_receiver,
-        next_request_id,
-        PomRequestId::new,
-        |request_id, _now| build_request(request_id),
-        PomResponse::request_id,
-        SendMode::TryOnce,
-        POM_CLIENT_TIMEOUT,
-    )
-    .await
-}
-
 pub(super) async fn handle_cv_pom_write(
+    loco_slots: &mut LocoSlots,
+    session: &mut Z21PomSession,
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
@@ -75,42 +48,19 @@ pub(super) async fn handle_cv_pom_write(
         Ok(plan) => plan,
         Err(error) => return reject_admission(out, ctx, address, cv, PomOperation::Write, error),
     };
-
     let Some(permit) = ctx.lease_permit else {
         return encode_nack(out);
     };
-
-    let reply = classify_reply(
-        request_pom(
-            ctx.pom.request_sender,
-            ctx.pom.response_receiver,
-            ctx.pom.next_request_id,
-            |request_id| PomRequest {
-                request_id,
-                permit,
-                address: plan.address,
-                cv: plan.cv,
-                op: PomOp::Write(plan.value),
-            },
-        )
-        .await,
-    );
-    match reply {
-        PomOutcome::Ack => encoded_len(z21_proto::encode_cv_result(cv, value, out)),
-        PomOutcome::Nack => encode_nack(out),
-        PomOutcome::Value(_) | PomOutcome::Unavailable => {
-            warn!(
-                "POM write addr={} cv={} completed without ACK",
-                address.value(),
-                cv
-            );
-            encode_nack(out)
-        }
-    }
+    let job = PomJob {
+        permit,
+        plan: PomPlan::Write(plan),
+    };
+    submit(loco_slots, session, out, ctx, job).await
 }
 
 pub(super) async fn handle_cv_pom_read(
     loco_slots: &mut LocoSlots,
+    session: &mut Z21PomSession,
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
@@ -123,23 +73,119 @@ pub(super) async fn handle_cv_pom_read(
     let Some(permit) = ctx.lease_permit else {
         return encode_nack(out);
     };
+    let job = PomJob {
+        permit,
+        plan: PomPlan::Read(plan),
+    };
+    submit(loco_slots, session, out, ctx, job).await
+}
+
+/// Answers at once only when the request is refused or fails to start; a
+/// pending or queued request is answered later from the Z21 loop.
+async fn submit(
+    loco_slots: &mut LocoSlots,
+    session: &mut Z21PomSession,
+    out: &mut [u8],
+    ctx: &Z21Ctx<'_>,
+    job: PomJob,
+) -> usize {
+    match session.submit(ctx.endpoint.addr, ctx.endpoint, job) {
+        PomSubmission::Start(start) => {
+            let completion = start_request(
+                start,
+                loco_slots,
+                session,
+                &ctx.loco,
+                ctx.pom_request_sender,
+            )
+            .await;
+            debug_assert!(
+                completion.next.is_none(),
+                "a request started from a free slot has no successor"
+            );
+            completion
+                .delivery
+                .map_or(0, |delivery| encode_delivery(delivery, out))
+        }
+        PomSubmission::Queued => 0,
+        PomSubmission::Busy => {
+            let (operation, address, cv) = match job.plan {
+                PomPlan::Read(plan) => (PomOperation::Read, plan.address, plan.cv),
+                PomPlan::Write(plan) => (PomOperation::Write, plan.address, plan.cv),
+            };
+            warn!(
+                "POM {:?} addr={} cv={} refused: another request is pending",
+                operation,
+                address.value(),
+                cv.value()
+            );
+            encode_nack(out)
+        }
+    }
+}
+
+/// Hands `start` to the actor and arms its deadline.
+///
+/// A read first makes sure the target loco is in the refresh cycle. When the
+/// request cannot be handed over, returns the session's completion for that
+/// failure. Returns [`PomCompletion::idle`] once the actor has the request:
+/// the reply then follows from its response or its deadline.
+pub(super) async fn start_request(
+    start: PomStart,
+    loco_slots: &mut LocoSlots,
+    session: &mut Z21PomSession,
+    loco: &LocoChannels<'_>,
+    pom_request_sender: &PomRequestSender,
+) -> PomCompletion<embassy_net::IpEndpoint> {
+    let PomStart { request_id, job } = start;
+    let (address, cv, op) = match job.plan {
+        PomPlan::Read(plan) => {
+            if !refresh_target(loco_slots, loco, job.permit, plan).await {
+                return session.complete(request_id, PomOutcome::Refused);
+            }
+            (plan.address, plan.cv, PomOp::Read)
+        }
+        PomPlan::Write(plan) => (plan.address, plan.cv, PomOp::Write(plan.value)),
+    };
+    let request = PomRequest {
+        request_id,
+        permit: job.permit,
+        address,
+        cv,
+        op,
+    };
+    if pom_request_sender.try_send(request).is_err() {
+        return session.complete(request_id, PomOutcome::Unavailable);
+    }
+    session.arm_deadline(crate::clock::now_ms() + POM_CLIENT_TIMEOUT.as_millis());
+    PomCompletion::idle()
+}
+
+async fn refresh_target(
+    loco_slots: &mut LocoSlots,
+    loco: &LocoChannels<'_>,
+    permit: LeasePermit,
+    plan: PomReadPlan,
+) -> bool {
+    let address = plan.address;
+    let cv = plan.cv.value();
     let refresh = request_loco(
-        ctx.loco.request_sender,
-        ctx.loco.response_receiver,
-        ctx.loco.next_request_id,
+        loco.request_sender,
+        loco.response_receiver,
+        loco.next_request_id,
         Some(permit),
         plan.refresh_request,
     )
     .await;
     match resolve_loco_command(loco_slots, address, refresh.map(|response| response.result)) {
-        LocoCommandOutcome::Applied(_) => {}
+        LocoCommandOutcome::Applied(_) => true,
         LocoCommandOutcome::Rejected(LocoCommandFailure::SchedulerTimeout) => {
             warn!(
                 "POM read addr={} cv={} rejected: scheduler response timed out",
                 address.value(),
                 cv
             );
-            return encode_nack(out);
+            false
         }
         LocoCommandOutcome::Rejected(LocoCommandFailure::SchedulerRejected(result)) => {
             warn!(
@@ -148,7 +194,7 @@ pub(super) async fn handle_cv_pom_read(
                 cv,
                 result
             );
-            return encode_nack(out);
+            false
         }
         LocoCommandOutcome::Rejected(LocoCommandFailure::Projection(error)) => {
             warn!(
@@ -157,52 +203,59 @@ pub(super) async fn handle_cv_pom_read(
                 cv,
                 error
             );
-            return encode_nack(out);
+            false
         }
     }
+}
 
-    let reply = classify_reply(
-        request_pom(
-            ctx.pom.request_sender,
-            ctx.pom.response_receiver,
-            ctx.pom.next_request_id,
-            |request_id| PomRequest {
-                request_id,
-                permit,
-                address: plan.address,
-                cv: plan.cv,
-                op: PomOp::Read,
-            },
-        )
-        .await,
-    );
-    match reply {
-        PomOutcome::Value(value) => {
+/// Outcome carried by an actor response.
+#[must_use]
+pub(super) const fn response_outcome(response: PomResponse) -> PomOutcome {
+    match response {
+        PomResponse::Value { value, .. } => PomOutcome::Value(value),
+        PomResponse::Ack { .. } => PomOutcome::Ack,
+        PomResponse::Nack { .. } => PomOutcome::Nack,
+    }
+}
+
+/// Encodes the Z21 reply for a finished request into `out`.
+pub(super) fn encode_delivery(
+    delivery: PomDelivery<embassy_net::IpEndpoint>,
+    out: &mut [u8],
+) -> usize {
+    match (delivery.job.plan, delivery.outcome) {
+        (PomPlan::Read(plan), PomOutcome::Value(value)) => {
+            let cv = plan.cv.value();
             info!(
                 "POM read addr={} cv={} value={}",
-                address.value(),
+                plan.address.value(),
                 cv,
                 value
             );
             encoded_len(z21_proto::encode_cv_result(cv, value, out))
         }
-        PomOutcome::Ack | PomOutcome::Nack | PomOutcome::Unavailable => {
+        (PomPlan::Read(plan), PomOutcome::Ack | PomOutcome::Nack | PomOutcome::Unavailable) => {
             warn!(
                 "POM read addr={} cv={} completed without value",
-                address.value(),
-                cv
+                plan.address.value(),
+                plan.cv.value()
             );
             encode_nack(out)
         }
-    }
-}
-
-fn classify_reply(response: Option<PomResponse>) -> PomOutcome {
-    match response {
-        Some(PomResponse::Value { value, .. }) => PomOutcome::Value(value),
-        Some(PomResponse::Ack { .. }) => PomOutcome::Ack,
-        Some(PomResponse::Nack { .. }) => PomOutcome::Nack,
-        None => PomOutcome::Unavailable,
+        (PomPlan::Write(plan), PomOutcome::Ack) => encoded_len(z21_proto::encode_cv_result(
+            plan.cv.value(),
+            plan.value,
+            out,
+        )),
+        (PomPlan::Write(_), PomOutcome::Nack) | (_, PomOutcome::Refused) => encode_nack(out),
+        (PomPlan::Write(plan), PomOutcome::Value(_) | PomOutcome::Unavailable) => {
+            warn!(
+                "POM write addr={} cv={} completed without ACK",
+                plan.address.value(),
+                plan.cv.value()
+            );
+            encode_nack(out)
+        }
     }
 }
 
