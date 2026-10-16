@@ -58,6 +58,7 @@ static TX_META: StaticCell<[PacketMetadata; 16]> = StaticCell::new();
 static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
 static STATUS_BROADCAST_SEND_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 static UDP_RECEIVE_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
+static LEASE_ROUND_TRIP_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(feature = "bench-diag")]
 #[must_use]
@@ -69,6 +70,12 @@ pub(crate) fn status_broadcast_send_failure_count() -> u32 {
 #[must_use]
 pub(crate) fn udp_receive_failure_count() -> u32 {
     UDP_RECEIVE_FAILURE_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "bench-diag")]
+#[must_use]
+pub(crate) fn lease_round_trip_count() -> u32 {
+    LEASE_ROUND_TRIP_COUNT.load(Ordering::Relaxed)
 }
 
 pub(crate) struct NetTaskChannels {
@@ -515,7 +522,9 @@ async fn authorize_command(
             observed_at_ms,
         })
         .await;
-    match lease_verdict(&response_receiver.receive().await, activity) {
+    let decision = response_receiver.receive().await;
+    LEASE_ROUND_TRIP_COUNT.fetch_add(1, Ordering::Relaxed);
+    match lease_verdict(&decision, activity) {
         LeaseVerdict::ExecuteWithoutLeaseUpdate => CommandAuthorization::ExecuteWithoutLeaseUpdate,
         LeaseVerdict::ExecuteForOwner { permit } => CommandAuthorization::ExecuteForOwner {
             owner: endpoint,

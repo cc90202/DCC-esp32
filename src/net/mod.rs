@@ -40,7 +40,9 @@ mod z21_dispatch;
 #[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
 pub(crate) use {
     loco_client::loco_response_timeout_count,
-    udp_control::{status_broadcast_send_failure_count, udp_receive_failure_count},
+    udp_control::{
+        lease_round_trip_count, status_broadcast_send_failure_count, udp_receive_failure_count,
+    },
     z21_dispatch::{loco_command_rejected_count, railcom_getdata_no_data_count},
 };
 // esp-radio 0.17.0 defines these stubs only for Xtensa chips (#[cfg(xtensa)]).
