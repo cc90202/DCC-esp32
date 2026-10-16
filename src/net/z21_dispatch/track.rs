@@ -2,7 +2,8 @@
 
 use crate::application::StatusModel;
 use crate::application::track_control::{
-    TrackPowerFeedback, TrackPowerRequest, TrackStatus, decide_track_power,
+    LeaseCheck, RefusalReply, RefuseReason, TrackPowerFeedback, TrackPowerRequest,
+    TrackPowerVerdict, TrackStatus, judge_track_power, refusal_reply,
 };
 use crate::net::z21_context::Z21Ctx;
 use crate::z21 as z21_proto;
@@ -30,16 +31,50 @@ pub(super) fn encode_current_status(status_model: StatusModel, out: &mut [u8]) -
     encoded_len(z21_proto::encode_status(central_state(status), out))
 }
 
+fn lease_check(ctx: &Z21Ctx<'_>) -> LeaseCheck {
+    match ctx.lease_permit {
+        None => LeaseCheck::None,
+        Some(permit) if crate::track_authority::accepts(permit) => LeaseCheck::Valid(permit),
+        Some(_) => LeaseCheck::Expired,
+    }
+}
+
+fn warn_refused(reason: RefuseReason) {
+    match reason {
+        RefuseReason::NoLease => {
+            defmt::warn!("Z21 power-on rejected without a controller lease");
+        }
+        RefuseReason::ExpiredLease => {
+            defmt::warn!("Z21 power-on rejected with an expired controller lease");
+        }
+        RefuseReason::Inhibited => {
+            defmt::warn!("Z21 power-on refused: an update holds the track off");
+        }
+    }
+}
+
 pub(super) async fn apply_power_request(
     request: TrackPowerRequest,
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
 ) -> usize {
-    if matches!(request, TrackPowerRequest::Enable(_)) && crate::track_output::inhibited() {
-        defmt::warn!("Z21 power-on refused: an update holds the track off");
-        return encoded_len(z21_proto::encode_bc_track_power(false, out));
-    }
-    let decision = decide_track_power(request);
+    let (lease, inhibited) = if matches!(request, TrackPowerRequest::Enable) {
+        (lease_check(ctx), crate::track_output::inhibited())
+    } else {
+        (LeaseCheck::None, false)
+    };
+    let decision = match judge_track_power(request, lease, inhibited) {
+        TrackPowerVerdict::Refuse(reason) => {
+            warn_refused(reason);
+            return match refusal_reply(reason) {
+                RefusalReply::Silent => 0,
+                RefusalReply::TrackPowerOff => {
+                    encoded_len(z21_proto::encode_bc_track_power(false, out))
+                }
+            };
+        }
+        TrackPowerVerdict::Apply(decision) => decision,
+    };
     if decision.disable_output_immediately {
         crate::track_safety::disable_track_intentionally();
     }

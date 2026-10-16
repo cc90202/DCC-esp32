@@ -113,15 +113,7 @@ async fn route_command(
         Z21Command::SetBroadcastFlags => track::encode_current_system_state(*ctx.status_model, out),
         Z21Command::GetStatus => track::encode_current_status(*ctx.status_model, out),
         Z21Command::SetTrackPowerOn => {
-            let Some(permit) = ctx.lease_permit else {
-                warn!("Z21 power-on rejected without a controller lease");
-                return 0;
-            };
-            if !crate::track_authority::accepts(permit) {
-                warn!("Z21 power-on rejected with an expired controller lease");
-                return 0;
-            }
-            track::apply_power_request(TrackPowerRequest::Enable(permit), out, ctx).await
+            track::apply_power_request(TrackPowerRequest::Enable, out, ctx).await
         }
         Z21Command::SetTrackPowerOff => {
             track::apply_power_request(TrackPowerRequest::Disable, out, ctx).await
