@@ -2,8 +2,8 @@
 //! runtime dispatch.
 //!
 //! This module intentionally contains data contracts only. Keeping these types
-//! outside `railcom::parser` lets DCC code consume decoded feedback without
-//! depending on the parser implementation module.
+//! outside the firmware's RailCom parser lets DCC code consume decoded feedback
+//! without depending on the parser implementation.
 
 /// Payload of an `app:ext` datagram, which comes in two widths.
 ///
@@ -11,7 +11,7 @@
 /// decoders emit it in two symbols, leaving 8. Carrying the width as the
 /// variant keeps a short payload from ever holding a long value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ExtPayload {
     /// The two-symbol form, 8 payload bits.
     Short(u8),
@@ -20,7 +20,7 @@ pub enum ExtPayload {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RailcomDatagram {
     CvData(u8),
     AdrHigh(u8),
@@ -44,7 +44,7 @@ pub enum RailcomDatagram {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RailcomItem {
     Ack,
     Nack,

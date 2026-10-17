@@ -31,16 +31,19 @@
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod channels;
 pub(crate) mod cv;
-pub(crate) mod encoder;
-pub(crate) mod function_groups;
 #[cfg(test)]
 mod golden_tests;
-pub(crate) mod packet;
+#[cfg(any(test, target_arch = "riscv32"))]
+mod packed;
 pub(crate) mod scheduler;
-pub(crate) mod speed28;
+#[cfg(target_arch = "riscv32")]
 pub(crate) mod timing;
+
+// The HAL-free protocol modules live in `dcc_protocol`; mounted here under
+// their old names so `crate::dcc::<module>::` paths keep resolving.
 #[cfg(test)]
-pub(crate) mod validator;
+pub(crate) use dcc_protocol::validator;
+pub(crate) use dcc_protocol::{encoder, function_groups, packet, speed28};
 
 pub use crate::cutout::CutoutMode;
 
@@ -173,7 +176,7 @@ pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_
 #[doc(inline)]
 pub use function_groups::FunctionGroupKind;
 #[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) use packet::PackedAddressFlags;
+pub(crate) use packed::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{
     BinaryStateAddress, DCC_MAX_PACKET_BYTES, DccAddress, DccAddressKind, DccPacket, Direction,

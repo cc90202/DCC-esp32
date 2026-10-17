@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Module dependency rules for the firmware crate, checked on the module graph
 # of both targets (host and riscv32): much of the crate only exists on one.
+# The protocol crate (crates/dcc-protocol) is checked the same way, with all
+# its features on, and may have no cycle at all: the allowlist is the
+# firmware's.
 #
 # - Only module-to-module "uses" edges count. Any edge is lifted to the two
 #   sibling modules under the closest common ancestor, so a::x::y -> a::z
@@ -22,7 +25,7 @@
 # Usage: scripts/check-module-deps.sh [--dot-dir DIR]
 #        scripts/check-module-deps.sh --self-test
 # --dot-dir reads host.dot and riscv32.dot from DIR instead of running
-# cargo-modules; --self-test runs the rules on built-in graphs. Requires
+# cargo-modules (and, when present, DIR/dcc-protocol/{host,riscv32}.dot); --self-test runs the rules on built-in graphs. Requires
 # cargo-modules (except with those options), git and python3.
 set -euo pipefail
 
@@ -317,21 +320,39 @@ if ((self_test)); then
     expect "forbidden direction from a #[path] module" fail "dcc::engine -> net::wifi breaks the rule" \
         "$tmp/mounted" "$tmp/mounts-engine.txt" "$tmp/empty.txt" "$tmp/empty.txt" base "${forbidden[@]}"
 
+    graph "$tmp/protocol" "packet -> encoder" "encoder::tail -> packet"
+    expect "protocol crate: any cycle fails against the empty list" fail 'cycle among encoder, packet' \
+        "$tmp/protocol" "$tmp/mounts.txt" "$tmp/empty.txt" "$tmp/empty.txt" "(none)"
+
     ((failures == 0)) || { echo "check-module-deps: $failures self-test case(s) failed" >&2; exit 1; }
     echo "All self-test cases passed."
     exit 0
 fi
 
+# Writes DIR/host.dot and DIR/riscv32.dot for one package; extra arguments go
+# to cargo-modules.
+module_graphs() {
+    local package="$1" dir="$2" entry target label
+    shift 2
+    mkdir -p "$dir"
+    for entry in "${targets[@]}"; do
+        target="${entry%%:*}" label="${entry#*:}"
+        (cd "$root" && cargo modules dependencies -p "$package" --lib --target "$target" "$@" \
+            --no-externs --no-sysroot --no-fns --no-traits --no-types) >"$dir/$label.dot" 2>"$dir/$label.err" ||
+            { cat "$dir/$label.err" >&2; echo "check-module-deps: cargo-modules failed for $package on $target" >&2; exit 1; }
+    done
+}
+
+protocol_dot_dir=""
 if [[ -z "$dot_dir" ]]; then
     command -v cargo-modules >/dev/null ||
         { echo "check-module-deps: cargo-modules not found (cargo install cargo-modules)" >&2; exit 1; }
     dot_dir="$tmp"
-    for entry in "${targets[@]}"; do
-        target="${entry%%:*}" label="${entry#*:}"
-        (cd "$root" && cargo modules dependencies -p dcc-esp32 --lib --target "$target" \
-            --no-externs --no-sysroot --no-fns --no-traits --no-types) >"$tmp/$label.dot" 2>"$tmp/$label.err" ||
-            { cat "$tmp/$label.err" >&2; echo "check-module-deps: cargo-modules failed for $target" >&2; exit 1; }
-    done
+    module_graphs dcc-esp32 "$dot_dir"
+    protocol_dot_dir="$tmp/dcc-protocol"
+    module_graphs dcc-protocol "$protocol_dot_dir" --all-features
+elif [[ -d "$dot_dir/dcc-protocol" ]]; then
+    protocol_dot_dir="$dot_dir/dcc-protocol"
 fi
 
 # #[path] mounts, as grep output: the attribute line and the lines after it.
@@ -343,4 +364,14 @@ if git -C "$root" cat-file -e "$base_ref:scripts/module-cycles-allowlist.txt" 2>
     base_list="$tmp/base-cycles.txt"
 fi
 
+# The protocol crate: no #[path] mounts, no direction rules, and an empty cycle
+# list that is also its own base, so any cycle fails.
+if [[ -n "$protocol_dot_dir" ]]; then
+    echo "dcc-protocol:"
+    : >"$tmp/no-mounts.txt"
+    : >"$tmp/no-cycles.txt"
+    check "$protocol_dot_dir" "$tmp/no-mounts.txt" "$tmp/no-cycles.txt" "$tmp/no-cycles.txt" "(none)"
+fi
+
+[[ -z "$protocol_dot_dir" ]] || echo "dcc-esp32:"
 check "$dot_dir" "$tmp/path-mounts.txt" "$cycles_allowlist" "$base_list" "$base_ref" "${forbidden[@]}"

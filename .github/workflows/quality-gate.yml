@@ -47,6 +47,10 @@ jobs:
       - name: Host unit tests
         run: cargo test-host
 
+      # `cargo test-host` runs `--lib` only, which skips doctests.
+      - name: Protocol crate doctests
+        run: cargo test --doc -p dcc-protocol --target x86_64-unknown-linux-gnu
+
       - name: ESP target compile check
         run: cargo check-esp
 

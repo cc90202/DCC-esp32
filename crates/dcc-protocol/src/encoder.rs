@@ -7,29 +7,30 @@
 //! - DCC "1" bit: 58μs ±3μs high, 58μs ±3μs low
 //! - DCC "0" bit: ≥100μs high, ≥100μs low
 //!
-//! Packets are prepended with a 14-bit preamble (sixteen "1" bits minus 2), followed by
-//! start bit (0), payload bytes, and end bit (1). All in MSB-first order.
+//! Packets are prepended with a preamble of [`PREAMBLE_BITS`] "1" bits (20; NMRA S-9.1 asks
+//! for at least 14), followed by start bit (0), payload bytes, and end bit (1). All in
+//! MSB-first order.
 //!
 //! # Examples
 //!
 //! Encode a complete packet:
 //!
-//! ```ignore
-//! use crate::dcc::{DccAddress, DccPacket, Direction, encode_dcc_packet};
+//! ```
+//! use dcc_protocol::{DccAddress, DccPacket, Direction, encode_dcc_packet};
 //!
 //! let addr = DccAddress::new_short(10).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 100, Direction::Forward).unwrap();
 //!
 //! // Encode to RMT pulse sequence (Vec<PulseCode>)
 //! let pulses = encode_dcc_packet(&packet).expect("valid packet");
-//! println!("Generated {} pulses", pulses.len());
-//! // Output: 14 (preamble) + 1 (start) + 16 (2 bytes × 8 bits) + 1 (end) = 32 pulses
+//! // 20 (preamble) + 1 (start) + 32 (4 bytes × 8 bits) + 3 (separators) + 1 (end)
+//! assert_eq!(pulses.len(), 57);
 //! ```
 //!
 //! Convert a single bit:
 //!
-//! ```ignore
-//! use crate::dcc::dcc_bit_to_pulse;
+//! ```
+//! use dcc_protocol::dcc_bit_to_pulse;
 //!
 //! let one_bit = dcc_bit_to_pulse(true);
 //! assert_eq!(one_bit.length1, 58); // 58μs high
@@ -41,8 +42,8 @@
 //!
 //! Encode a byte:
 //!
-//! ```ignore
-//! use crate::dcc::encode_byte;
+//! ```
+//! use dcc_protocol::encode_byte;
 //!
 //! let pulses = encode_byte(0x3F); // 8 pulses (one per bit, MSB first)
 //! assert_eq!(pulses.len(), 8);
@@ -57,18 +58,17 @@
 
 use core::fmt;
 
-use crate::dcc::packet::DccPacket;
-use crate::dcc::timing::{
+use crate::packet::DccPacket;
+use crate::timing::{
     DCC_MAX_PACKET_PULSES, DCC_ONE_HIGH_US, DCC_ONE_LOW_US, DCC_ZERO_HIGH_US, DCC_ZERO_LOW_US,
     PREAMBLE_BITS,
 };
-#[cfg(any(test, target_arch = "riscv32"))]
-use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US};
+use crate::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US};
 use heapless::Vec;
 
 /// Errors produced while encoding packets into pulse sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum EncodeError {
     /// `PulseBufferOverflow` means the pulse output buffer capacity was exceeded.
     PulseBufferOverflow,
@@ -88,7 +88,7 @@ impl core::error::Error for EncodeError {}
 ///
 /// Represents one DCC bit as two transitions (high→low)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PulseCode {
     /// First level (typically high)
     pub level1: bool,
@@ -101,8 +101,7 @@ pub struct PulseCode {
 }
 
 /// Variable packet tail together with the duration of the full DCC packet.
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) struct EncodedDccData {
+pub struct EncodedDccData {
     pub pulses: Vec<PulseCode, MAX_DATA_PULSES>,
     pub dcc_duration_us: u32,
 }
@@ -171,12 +170,11 @@ pub fn encode_dcc_packet(
 /// Encode only the variable packet tail written by the ISR.
 ///
 /// Format: \[start_bit\]\[data_bytes\]\[end_bit\]
-#[cfg(any(test, target_arch = "riscv32"))]
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "the waveform engine hands over the packet it borrows from its queue"
 )]
-pub(crate) fn encode_dcc_data_portion(packet: &DccPacket) -> Result<EncodedDccData, EncodeError> {
+pub fn encode_dcc_data_portion(packet: &DccPacket) -> Result<EncodedDccData, EncodeError> {
     let mut pulses = Vec::new();
     let mut dcc_duration_us = PREAMBLE_DURATION_US;
 
@@ -210,7 +208,6 @@ fn encode_packet_tail<const N: usize>(
     push(pulses, dcc_bit_to_pulse(true))
 }
 
-#[cfg(any(test, target_arch = "riscv32"))]
 fn push_timed_pulse(
     pulses: &mut Vec<PulseCode, MAX_DATA_PULSES>,
     dcc_duration_us: &mut u32,
@@ -265,8 +262,8 @@ mod tests {
     }
 
     use super::*;
-    use crate::dcc::FunctionGroupKind;
-    use crate::dcc::packet::*;
+    use crate::FunctionGroupKind;
+    use crate::packet::*;
 
     fn service_cv(cv: u16) -> ServiceModeCv {
         ServiceModeCv::new(cv).expect("test service-mode CV must be valid")

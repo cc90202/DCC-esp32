@@ -1,0 +1,21 @@
+[package]
+edition.workspace      = true
+name                   = "dcc-protocol"
+publish.workspace      = true
+rust-version.workspace = true
+version                = "0.1.0"
+description            = "DCC packets, their pulse encoding and the RailCom and logon data of the DCC command station, free of any HAL."
+
+[lints]
+workspace = true
+
+[features]
+# `defmt::Format` for the protocol types, so the firmware can log them.
+defmt = ["dep:defmt"]
+# The pulse-stream validator and the test-only constructors, for the tests of
+# the crates built on this one; host only.
+test-support = []
+
+[dependencies]
+defmt    = { workspace = true, optional = true }
+heapless = { workspace = true }

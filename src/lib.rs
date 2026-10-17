@@ -6,8 +6,10 @@
 //!
 //! [`application`] holds the framework-independent use cases and read
 //! projections. [`dcc`] covers packet encoding, RMT pulse generation, the
-//! scheduler and CV programming, while [`z21`] is the pure protocol contract
-//! and [`net`] the adapters around it: Z21 wiring, WiFi and UDP transport.
+//! scheduler and CV programming (the packet types and their encoding come from
+//! the HAL-free `dcc_protocol` crate and are re-exported there), while
+//! [`z21`] is the pure protocol contract and [`net`] the adapters around it:
+//! Z21 wiring, WiFi and UDP transport.
 //! Runtime state lives in [`system_status`] and `fault_manager`, which react
 //! to boot, e-stop and fault events.
 //!
@@ -49,7 +51,7 @@ pub(crate) mod fault_manager;
 pub(crate) mod flash;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod liveness;
-pub(crate) mod logon;
+pub(crate) use dcc_protocol::logon;
 mod macros;
 pub mod net;
 #[cfg(target_arch = "riscv32")]
@@ -58,7 +60,7 @@ pub mod railcom;
 #[cfg(target_arch = "riscv32")]
 #[path = "railcom/isr_capture.rs"]
 pub(crate) mod railcom_capture;
-mod railcom_data;
+use dcc_protocol::railcom_data;
 #[cfg(target_arch = "riscv32")]
 pub mod restart;
 #[cfg(target_arch = "riscv32")]

@@ -25,6 +25,9 @@ impl PackedDccAddress {
         self.0
     }
 
+    // Forced inline: the RMT and cutout handlers, which run from RAM, pack
+    // addresses through this.
+    #[inline(always)]
     pub(crate) fn from_address(address: Option<DccAddress>) -> Self {
         match address {
             Some(address) if address.is_short() => Self(address.value()),
@@ -120,5 +123,73 @@ impl PackedAddressFlags {
     pub(crate) const fn field(self, index: u32, width: u32) -> u32 {
         let field_mask = (1u32 << width) - 1;
         (self.0 >> (Self::FLAG_BASE_BIT + index)) & field_mask
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_packed_dcc_address_roundtrip() {
+        let short = DccAddress::new_short(3).unwrap();
+        let long = DccAddress::new_long(1000).unwrap();
+
+        assert_eq!(PackedDccAddress::from_address(None).raw(), 0);
+        assert_eq!(
+            PackedDccAddress::from_address(Some(short)).address(),
+            Some(short)
+        );
+        assert_eq!(
+            PackedDccAddress::from_address(Some(long)).address(),
+            Some(long)
+        );
+        assert_eq!(PackedDccAddress::from_raw(0).address(), None);
+    }
+
+    #[test]
+    fn test_packed_dcc_address_rejects_invalid_raw_values() {
+        assert_eq!(PackedDccAddress::from_raw(128).address(), None);
+        assert_eq!(PackedDccAddress::from_raw(0x8000 | 127).address(), None);
+        assert_eq!(PackedDccAddress::from_raw(0x8000 | 10_240).address(), None);
+    }
+
+    #[test]
+    fn test_packed_address_flags_roundtrip() {
+        let short = DccAddress::new_short(3).unwrap();
+
+        let packed = PackedAddressFlags::new(Some(short))
+            .with_flag(0, true)
+            .with_flag(0, true)
+            .with_flag(1, false);
+
+        assert_eq!(packed.address(), Some(short));
+        assert!(packed.flag(0));
+        assert!(!packed.flag(1));
+        assert_eq!(PackedAddressFlags::from_raw(packed.raw()), packed);
+    }
+
+    #[test]
+    fn test_packed_address_flags_no_flags_set_by_default() {
+        let packed = PackedAddressFlags::new(None);
+
+        assert_eq!(packed.address(), None);
+        assert!(!packed.flag(0));
+        assert!(!packed.flag(1));
+    }
+
+    #[test]
+    fn test_packed_address_flags_field_replaces_previous_value() {
+        let short = DccAddress::new_short(3).unwrap();
+        let packed = PackedAddressFlags::new(Some(short))
+            .with_field(2, 2, 3)
+            .with_field(2, 2, 1);
+
+        assert_eq!(packed.field(2, 2), 1);
+        assert_eq!(packed.address(), Some(short));
+        assert_eq!(
+            [0, 1, 2, 3].map(|index| packed.flag(index)),
+            [false, false, true, false]
+        );
     }
 }

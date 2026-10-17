@@ -5,16 +5,12 @@
 # Format: "from -> to", both module paths under the crate root.
 
 # dcc: the channel definitions name the POM and scheduler message types, while
-# the POM actor and the scheduler send on those channels; dcc::packet and
-# dcc::cv::pom also name each other's items.
+# the POM actor and the scheduler send on those channels.
 dcc::channels -> dcc::cv
 dcc::channels -> dcc::scheduler
 dcc::cv -> dcc::channels
-dcc::cv -> dcc::packet
 dcc::cv -> dcc::scheduler
-dcc::packet -> dcc::cv
 dcc::scheduler -> dcc::channels
-dcc::scheduler -> dcc::packet
 
 # net: the Z21 dispatcher hands POM requests to the POM client, which sizes its
 # replies with the dispatcher's encoder.

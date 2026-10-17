@@ -1,7 +1,7 @@
 use super::*;
-use crate::dcc::encoder::dcc_bit_to_pulse;
-use crate::dcc::function_groups::GROUP_LAYOUTS;
-use crate::dcc::{DccAddress, Direction, PomCv, ServiceModeCv, encode_dcc_packet};
+use crate::encoder::dcc_bit_to_pulse;
+use crate::function_groups::GROUP_LAYOUTS;
+use crate::{DccAddress, Direction, PomCv, ServiceModeCv, encode_dcc_packet};
 
 fn service_cv(cv: u16) -> ServiceModeCv {
     ServiceModeCv::new(cv).expect("test service-mode CV must be valid")

@@ -168,69 +168,6 @@ fn test_from_magnitude_picks_short_or_long_by_range() {
 }
 
 #[test]
-fn test_packed_dcc_address_roundtrip() {
-    let short = DccAddress::new_short(3).unwrap();
-    let long = DccAddress::new_long(1000).unwrap();
-
-    assert_eq!(PackedDccAddress::from_address(None).raw(), 0);
-    assert_eq!(
-        PackedDccAddress::from_address(Some(short)).address(),
-        Some(short)
-    );
-    assert_eq!(
-        PackedDccAddress::from_address(Some(long)).address(),
-        Some(long)
-    );
-    assert_eq!(PackedDccAddress::from_raw(0).address(), None);
-}
-
-#[test]
-fn test_packed_dcc_address_rejects_invalid_raw_values() {
-    assert_eq!(PackedDccAddress::from_raw(128).address(), None);
-    assert_eq!(PackedDccAddress::from_raw(0x8000 | 127).address(), None);
-    assert_eq!(PackedDccAddress::from_raw(0x8000 | 10_240).address(), None);
-}
-
-#[test]
-fn test_packed_address_flags_roundtrip() {
-    let short = DccAddress::new_short(3).unwrap();
-
-    let packed = PackedAddressFlags::new(Some(short))
-        .with_flag(0, true)
-        .with_flag(0, true)
-        .with_flag(1, false);
-
-    assert_eq!(packed.address(), Some(short));
-    assert!(packed.flag(0));
-    assert!(!packed.flag(1));
-    assert_eq!(PackedAddressFlags::from_raw(packed.raw()), packed);
-}
-
-#[test]
-fn test_packed_address_flags_no_flags_set_by_default() {
-    let packed = PackedAddressFlags::new(None);
-
-    assert_eq!(packed.address(), None);
-    assert!(!packed.flag(0));
-    assert!(!packed.flag(1));
-}
-
-#[test]
-fn test_packed_address_flags_field_replaces_previous_value() {
-    let short = DccAddress::new_short(3).unwrap();
-    let packed = PackedAddressFlags::new(Some(short))
-        .with_field(2, 2, 3)
-        .with_field(2, 2, 1);
-
-    assert_eq!(packed.field(2, 2), 1);
-    assert_eq!(packed.address(), Some(short));
-    assert_eq!(
-        [0, 1, 2, 3].map(|index| packed.flag(index)),
-        [false, false, true, false]
-    );
-}
-
-#[test]
 fn test_short_address_validation() {
     assert_eq!(DccAddress::new_short(0), None);
     assert_eq!(DccAddress::new_short(128), None);

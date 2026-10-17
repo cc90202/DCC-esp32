@@ -5,8 +5,8 @@
 //! Address, speed, service-mode CV, POM CV, and binary-state address fields use
 //! validated newtypes so invalid ranges are rejected before packet construction.
 //!
-//! ```ignore
-//! use crate::dcc::{DccAddress, DccPacket, Direction};
+//! ```
+//! use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
 //!
 //! let addr = DccAddress::new_short(42).expect("42 is a valid short address");
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
@@ -24,29 +24,23 @@
 //! - POM CV range: 1-1024 (Long Form CV access)
 
 mod address;
-#[cfg(any(test, target_arch = "riscv32"))]
-mod packed;
 mod values;
 
 use heapless::Vec;
 
-use crate::dcc::function_groups::FunctionGroupKind;
-pub use crate::dcc::speed28::NmraSpeed28;
-use crate::dcc::speed28::encode_nmra_instruction_speed_bits;
+use crate::function_groups::FunctionGroupKind;
+pub use crate::speed28::NmraSpeed28;
+use crate::speed28::encode_nmra_instruction_speed_bits;
 
-pub(crate) use address::HighFragment;
+pub use address::HighFragment;
 pub use address::{DccAddress, DccAddressKind};
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) use packed::PackedAddressFlags;
-#[cfg(test)]
-pub(crate) use packed::PackedDccAddress;
 pub use values::{
     BinaryStateAddress, LogonGroup, LogonSessionId, NmraSpeed128, PomCv, ServiceModeCv,
 };
 
 /// Locomotive direction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Direction {
     Forward,
     Reverse,

@@ -28,7 +28,7 @@ ESP_HAL_CONFIG_PLACE_RMT_DRIVER_IN_RAM = "true"
 
 [alias]
 # Host-side unit tests for protocol logic (fast feedback).
-test-host = "test --lib --target x86_64-unknown-linux-gnu -p dcc-esp32 -p dcc-ota -p dcc-ota-format -- --test-threads=1"
+test-host = "test --lib --target x86_64-unknown-linux-gnu -p dcc-esp32 -p dcc-ota -p dcc-ota-format -p dcc-protocol -- --test-threads=1"
 # Host-side tests of the update crates and the packaging tool, doctests included.
 test-ota = "test --target x86_64-unknown-linux-gnu -p dcc-ota -p dcc-ota-format -p ota-pack"
 # Host-side linting for library/tests plus host-safe bin stub.

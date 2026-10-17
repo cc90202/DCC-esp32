@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Cognitive complexity ratchet for the firmware crate (src/).
+# Cognitive complexity ratchet for the firmware crate (src/) and the protocol
+# crate it is built on (crates/dcc-protocol/src/).
 #
 # Fails when a function has cognitive complexity above the limit and is not
 # listed in scripts/complexity-allowlist.txt, when a listed function rises above
@@ -28,7 +29,7 @@ command -v rust-code-analysis-cli >/dev/null ||
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-(cd "$root" && rust-code-analysis-cli -m -p src -O json) >"$tmp/metrics.json"
+(cd "$root" && rust-code-analysis-cli -m -p src -p crates/dcc-protocol/src -O json) >"$tmp/metrics.json"
 [[ -s "$tmp/metrics.json" ]] || { echo "check-complexity: no metrics produced" >&2; exit 1; }
 
 base_list="$tmp/base-allowlist.txt"

@@ -4,8 +4,8 @@
 //! is on. Each NMRA function group (S-9.2.1 Function Group One and Two, and
 //! the binary state control long forms 0xDE and 0xDF) carries a contiguous
 //! run of those bits in its data byte. [`GROUP_LAYOUTS`] is the one place
-//! that run is written down; the slot scheduler reads it, so it is built
-//! wherever the scheduler is (the firmware target and host tests).
+//! that run is written down; the packet encoder and the firmware's slot
+//! scheduler both read it.
 
 /// NMRA function group carried by one multi-function decoder packet.
 ///
@@ -28,9 +28,8 @@ pub enum FunctionGroupKind {
 impl FunctionGroupKind {
     /// Position of this group in [`GROUP_LAYOUTS`], also used as its bit in
     /// per-slot group masks.
-    #[cfg(any(test, target_arch = "riscv32"))]
     #[must_use]
-    pub(crate) const fn index(self) -> u8 {
+    pub const fn index(self) -> u8 {
         self as u8
     }
 
@@ -46,9 +45,8 @@ impl FunctionGroupKind {
 }
 
 /// Where one function group's functions sit in the `u32` function word.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct GroupLayout {
+pub struct GroupLayout {
     pub kind: FunctionGroupKind,
     /// Function-word bits carried by this group.
     pub mask: u32,
@@ -60,8 +58,7 @@ pub(crate) struct GroupLayout {
 
 /// Every function group in transmission order, indexed by
 /// [`FunctionGroupKind::index`].
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) const GROUP_LAYOUTS: [GroupLayout; 5] = [
+pub const GROUP_LAYOUTS: [GroupLayout; 5] = [
     GroupLayout {
         kind: FunctionGroupKind::G1,
         mask: 0x0000_001F, // F0..=F4
@@ -93,9 +90,8 @@ pub(crate) const GROUP_LAYOUTS: [GroupLayout; 5] = [
 ///
 /// Callers pass a validated function number (0..=28); anything above F28 is
 /// folded into G4, which carries no bit for it.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[must_use]
-pub(crate) const fn group_of(function: u8) -> FunctionGroupKind {
+pub const fn group_of(function: u8) -> FunctionGroupKind {
     let bit = match 1u32.checked_shl(function as u32) {
         Some(bit) => bit,
         None => 0,
@@ -114,9 +110,8 @@ pub(crate) const fn group_of(function: u8) -> FunctionGroupKind {
 ///
 /// F0 lands in bit 4 of G1 (NMRA FL position); every other function lands at
 /// its offset from the group's first function.
-#[cfg(any(test, target_arch = "riscv32"))]
 #[must_use]
-pub(crate) const fn group_bits(functions: u32, kind: FunctionGroupKind) -> u8 {
+pub const fn group_bits(functions: u32, kind: FunctionGroupKind) -> u8 {
     let layout = GROUP_LAYOUTS[kind.index() as usize];
     let run = ((functions & layout.mask) >> layout.shift) as u8;
     match kind {

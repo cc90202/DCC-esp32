@@ -5,7 +5,7 @@
 ///
 /// Range 0-126: 0=stop, 1-126=speed steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NmraSpeed128(u8);
 
 impl NmraSpeed128 {
@@ -25,7 +25,7 @@ impl NmraSpeed128 {
 ///
 /// Direct service-mode packets encode CVs 1..=256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ServiceModeCv(u16);
 
 impl ServiceModeCv {
@@ -47,7 +47,7 @@ impl ServiceModeCv {
 ///
 /// Long-form POM CV access packets encode CVs 1..=1024.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PomCv(u16);
 
 impl PomCv {
@@ -67,7 +67,7 @@ impl PomCv {
 
 /// Validated seven-bit binary-state address used by NMRA feature expansion packets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct BinaryStateAddress(u8);
 
 impl BinaryStateAddress {
@@ -90,7 +90,7 @@ impl BinaryStateAddress {
 ///
 /// Values are 0=all, 1=loco, 2=accessory, 3=now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct LogonGroup(u8);
 
 impl LogonGroup {
@@ -111,7 +111,7 @@ impl LogonGroup {
 
 /// RCN-218 logon session identifier emitted by one command station.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(transparent)]
 pub struct LogonSessionId(u8);
 

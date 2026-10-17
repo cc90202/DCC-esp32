@@ -4,7 +4,7 @@
 ///
 /// Range 0-29: 0=stop, 1=e-stop, 2-29=speed steps 1-28.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NmraSpeed28(u8);
 
 impl NmraSpeed28 {
