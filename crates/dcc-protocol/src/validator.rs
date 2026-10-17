@@ -1,7 +1,8 @@
 //! Test-only NMRA DCC compliance validator.
 //!
-//! This module deliberately has no production feature flag or public re-export.
-//! It checks encoded pulse streams against NMRA S-9.1 and S-9.2 so tests can
+//! This module is built only for this crate's tests and, through the
+//! `test-support` feature, for the tests of crates that depend on it. It
+//! checks encoded pulse streams against NMRA S-9.1 and S-9.2 so tests can
 //! catch regressions in packet construction and pulse generation. Every check
 //! reads the pulse stream alone; none of them asks the packet for its bytes, so
 //! a fault in the encoder cannot hide itself from the validator.
@@ -21,10 +22,16 @@
 //! bit (0), the address byte, one or more data bytes, the error detection byte,
 //! and a final end bit (1).
 
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test-support only: a malformed pulse stream is a test bug to surface"
+)]
+
 use core::fmt;
 
-use crate::dcc::timing::{DCC_ONE_HIGH_US, DCC_ZERO_HIGH_US};
-use crate::dcc::{DCC_MAX_PACKET_BYTES, DccPacket, encoder::PulseCode};
+use crate::timing::{DCC_ONE_HIGH_US, DCC_ZERO_HIGH_US};
+use crate::{DCC_MAX_PACKET_BYTES, DccPacket, encoder::PulseCode};
 
 const ONE_BIT_MIN_US: u16 = 55;
 const ONE_BIT_MAX_US: u16 = 61;
@@ -39,20 +46,42 @@ enum DccBitKind {
 
 /// Validation errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ValidationError {
     /// Pulse timing outside NMRA acceptable range
-    TimingOutOfRange { expected_us: u16, actual_us: u16 },
+    TimingOutOfRange {
+        /// Nominal duration of the bit kind the high half was read as; 0
+        /// when it matches neither kind.
+        expected_us: u16,
+        /// Duration of the half that is out of range.
+        actual_us: u16,
+    },
     /// Preamble has fewer than 14 bits
-    InsufficientPreamble { found: usize },
+    InsufficientPreamble {
+        /// Preamble bits found.
+        found: usize,
+    },
     /// Packet checksum doesn't match
-    InvalidChecksum { expected: u8, actual: u8 },
+    InvalidChecksum {
+        /// XOR of the data bytes.
+        expected: u8,
+        /// Error detection byte found on the wire.
+        actual: u8,
+    },
     /// Missing start bit
     MissingStartBit,
     /// Packet too short
-    PacketTooShort { min: usize, actual: usize },
+    PacketTooShort {
+        /// Fewest pulses a packet needs.
+        min: usize,
+        /// Pulses found.
+        actual: usize,
+    },
     /// Packet carries more bytes than a DCC packet can hold
-    PacketTooLong { max_bytes: usize },
+    PacketTooLong {
+        /// Most bytes a packet may carry.
+        max_bytes: usize,
+    },
     /// Invalid byte/bit structure in pulse sequence
     InvalidStructure,
     /// Packet could not be encoded to bytes
@@ -224,7 +253,7 @@ pub fn validate_packet_structure(pulses: &[PulseCode]) -> Result<(), ValidationE
 /// Panics if the stream is not a well-formed DCC packet or carries more than
 /// [`DCC_MAX_PACKET_BYTES`] bytes. Callers are tests, where a malformed stream
 /// is a bug to surface.
-pub(crate) fn decode_pulses(pulses: &[PulseCode]) -> heapless::Vec<u8, DCC_MAX_PACKET_BYTES> {
+pub fn decode_pulses(pulses: &[PulseCode]) -> heapless::Vec<u8, DCC_MAX_PACKET_BYTES> {
     let preamble_count = pulses.iter().take_while(|p| is_one_bit(**p)).count();
     assert!(
         preamble_count >= 14,
@@ -310,8 +339,7 @@ pub fn validate_full(pulses: &[PulseCode]) -> Result<(), ValidationError> {
 /// Returns [`ValidationError::EncodingError`] if the packet cannot be encoded,
 /// otherwise the first error raised by [`validate_full`].
 pub fn validate_complete(packet: DccPacket) -> Result<(), ValidationError> {
-    let pulses =
-        crate::dcc::encode_dcc_packet(&packet).map_err(|_| ValidationError::EncodingError)?;
+    let pulses = crate::encode_dcc_packet(&packet).map_err(|_| ValidationError::EncodingError)?;
     validate_full(&pulses)
 }
 

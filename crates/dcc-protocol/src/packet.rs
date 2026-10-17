@@ -5,8 +5,8 @@
 //! Address, speed, service-mode CV, POM CV, and binary-state address fields use
 //! validated newtypes so invalid ranges are rejected before packet construction.
 //!
-//! ```ignore
-//! use crate::dcc::{DccAddress, DccPacket, Direction};
+//! ```
+//! use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
 //!
 //! let addr = DccAddress::new_short(42).expect("42 is a valid short address");
 //! let packet = DccPacket::speed_128step(addr, 75, Direction::Forward).unwrap();
@@ -18,37 +18,37 @@
 //!
 //! - Short addresses: 1-127 (0 is broadcast only)
 //! - Long addresses: 128-10239 (11-bit field)
-//! - Speed28: 0-29 (0=stop, 1=e-stop, 2-29=speed)
-//! - Speed128: 0-126 (0=stop, 1-126=speed; wire value 1 reserved for e-stop)
+//! - Speed28: 0=stop, 1=e-stop, then the logical steps
+//!   `1..=`[`SpeedFormat::max_step`](crate::SpeedFormat::max_step) each one
+//!   above its number (see
+//!   [`NmraSpeed28`])
+//! - Speed128: 0=stop, then the logical steps; the encoder skips wire value 1,
+//!   which is the e-stop (see [`NmraSpeed128`])
 //! - Service Mode CV range: 1-256 (Direct Mode addressing)
 //! - POM CV range: 1-1024 (Long Form CV access)
 
 mod address;
-#[cfg(any(test, target_arch = "riscv32"))]
-mod packed;
 mod values;
 
 use heapless::Vec;
 
-use crate::dcc::function_groups::FunctionGroupKind;
-pub use crate::dcc::speed28::NmraSpeed28;
-use crate::dcc::speed28::encode_nmra_instruction_speed_bits;
+use crate::function_groups::FunctionGroupKind;
+pub use crate::speed28::NmraSpeed28;
+use crate::speed28::encode_nmra_instruction_speed_bits;
 
-pub(crate) use address::HighFragment;
+pub use address::HighFragment;
 pub use address::{DccAddress, DccAddressKind};
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) use packed::PackedAddressFlags;
-#[cfg(test)]
-pub(crate) use packed::PackedDccAddress;
 pub use values::{
     BinaryStateAddress, LogonGroup, LogonSessionId, NmraSpeed128, PomCv, ServiceModeCv,
 };
 
 /// Locomotive direction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Direction {
+    /// Forward: the direction bit set.
     Forward,
+    /// Reverse: the direction bit clear.
     Reverse,
 }
 
@@ -63,14 +63,20 @@ pub enum DccPacket {
     /// Per NMRA S-9.2, bit C is speed LSB (interleaved), NOT headlight.
     /// FL (headlight) travels in function group G1.
     Speed28 {
+        /// Decoder addressed.
         address: DccAddress,
+        /// Direction of travel.
         direction: Direction,
+        /// Packet speed value, emergency stop included.
         speed: NmraSpeed28,
     },
     /// 128-speed step format (advanced operations)
     Speed128 {
+        /// Decoder addressed.
         address: DccAddress,
+        /// Direction of travel.
         direction: Direction,
+        /// Speed step, 0 for stop.
         speed: NmraSpeed128,
     },
     /// Function group packet: the decoder's functions of one NMRA group.
@@ -79,14 +85,19 @@ pub enum DccPacket {
     /// [`FunctionGroupKind`]); bits outside the group's data mask are
     /// ignored when encoding. Build it with [`DccPacket::function_group`].
     FunctionGroup {
+        /// Decoder addressed.
         address: DccAddress,
+        /// Function group carried.
         kind: FunctionGroupKind,
+        /// The group's data bits.
         bits: u8,
     },
     /// Emergency stop for a specific decoder
     /// Encoding: address + 01DC0001 where C=0 (NMRA S-9.2 e-stop) + checksum
     EmergencyStop {
+        /// Decoder addressed.
         address: DccAddress,
+        /// Direction bit sent with the stop.
         direction: Direction,
     },
     /// Broadcast stop: stops all decoders' motors but preserves state
@@ -98,39 +109,65 @@ pub enum DccPacket {
     /// RailCom/DCC-A track search uses binary state address 2 with state=false
     /// to invite app:search feedback during the following cutout.
     BroadcastBinaryStateShort {
+        /// Binary state addressed.
         bin_addr: BinaryStateAddress,
+        /// State to set.
         state: bool,
     },
     /// RCN-218 automatic logon enable packet addressed to 254.
     ///
     /// `group` uses the RCN-218 two-bit value: 0=all, 1=loco, 2=accessory, 3=now.
     LogonEnable {
+        /// Decoders invited to log on.
         group: LogonGroup,
+        /// Identifier of this command station.
         command_station_id: u16,
+        /// Current logon session.
         session_id: LogonSessionId,
     },
     /// RCN-218 automatic logon select packet addressed to 254.
     LogonSelect {
+        /// Manufacturer of the decoder; the low 12 bits travel.
         manufacturer_id: u16,
+        /// Unique identifier of the decoder.
         decoder_id: u32,
+        /// RCN-218 select subcommand.
         subcommand: u8,
     },
     /// Service Mode: Verify Byte (instruction 0b0111_01AA)
     /// Tests if CV equals a specific value (decoder ACKs if match)
     /// CV range: 1-256 (Direct Mode, single-byte addressing)
-    ServiceModeVerifyByte { cv: ServiceModeCv, value: u8 },
+    ServiceModeVerifyByte {
+        /// CV to compare.
+        cv: ServiceModeCv,
+        /// Value the CV is compared against.
+        value: u8,
+    },
     /// Service Mode: Write Byte (instruction 0b0111_11AA)
     /// Sets CV to a specific value (decoder ACKs on success)
     /// CV range: 1-256 (Direct Mode, single-byte addressing)
-    ServiceModeWriteByte { cv: ServiceModeCv, value: u8 },
+    ServiceModeWriteByte {
+        /// CV to write.
+        cv: ServiceModeCv,
+        /// Value to write.
+        value: u8,
+    },
     /// Programming on the Main: Write Byte (Long Form CV Access).
     PomWriteByte {
+        /// Decoder addressed.
         address: DccAddress,
+        /// CV to write.
         cv: PomCv,
+        /// Value to write.
         value: u8,
     },
     /// Programming on the Main: Read Byte via Verify Byte + RailCom feedback.
-    PomReadByte { address: DccAddress, cv: PomCv },
+    PomReadByte {
+        /// Decoder addressed.
+        address: DccAddress,
+        /// CV to read.
+        cv: PomCv,
+    },
 }
 
 /// Maximum number of bytes in an encoded DCC packet, including its checksum.

@@ -3,18 +3,22 @@
 //! [`DccAddress`] holds a validated NMRA S-9.2 short (1-127) or long
 //! (128-10239) address; [`HighFragment`] reads the flag bits of the first
 //! byte of a two-byte address.
+//!
+//! `new_short`, `new_long`, `is_short` and `value` are `#[inline(always)]`:
+//! these helpers must inline into their callers, which may run from RAM and
+//! cannot afford a call into a separately placed function.
 
 use heapless::Vec;
 
 /// DCC decoder address (opaque type enforcing NMRA address validation)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DccAddress {
     kind: AddressKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum AddressKind {
     Short(u8),
     Long(u16),
@@ -26,9 +30,11 @@ enum AddressKind {
 /// representation (`Short(u8)` / `Long(u16)`) stays encapsulated while callers
 /// can still pattern-match on the addressing mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DccAddressKind {
+    /// One-byte short address.
     Short,
+    /// Two-byte long address.
     Long,
 }
 
@@ -43,6 +49,8 @@ impl DccAddress {
     /// Create a new short address (1-127)
     ///
     /// Returns `None` if address is 0 or > 127
+    // Forced inline: see the module documentation.
+    #[inline(always)]
     pub fn new_short(addr: u8) -> Option<Self> {
         if addr == 0 || u16::from(addr) > Self::SHORT_MAX {
             None
@@ -56,6 +64,8 @@ impl DccAddress {
     /// Create a new long address (128-10239)
     ///
     /// Returns `None` if address is < 128 or > 10239
+    // Forced inline: see the module documentation.
+    #[inline(always)]
     pub fn new_long(addr: u16) -> Option<Self> {
         if !(Self::LONG_MIN..=Self::LONG_MAX).contains(&addr) {
             None
@@ -72,7 +82,7 @@ impl DccAddress {
     ///
     /// Returns `None` for 0 or values above 10239.
     ///
-    /// This differs from the Z21 wire decoding in `wire.rs::parse_loco_address`,
+    /// This differs from the Z21 wire decoding in the `z21` crate's `parse_loco_address`,
     /// which reads a 2-byte on-wire field where the addressing mode is tagged by
     /// the top two bits of the high byte rather than inferred from magnitude:
     /// a wire long-address encoding could in principle carry a value that also
@@ -99,12 +109,12 @@ impl DccAddress {
     /// outside what this type can hold. Reading that last one as the short
     /// address of the same number would name a different decoder.
     ///
-    /// This is not the Z21 wire rule in `wire.rs::parse_loco_address`, which
+    /// This is not the Z21 wire rule in the `z21` crate's `parse_loco_address`, which
     /// reads the same two bytes for the host protocol: there any value below
     /// 128 is a short address whatever the flag bits say, because the Z21
     /// clients encode it that way.
     #[must_use]
-    pub(crate) fn from_address_fragments(high: u8, low: u8) -> Option<Self> {
+    pub fn from_address_fragments(high: u8, low: u8) -> Option<Self> {
         match HighFragment::read(high) {
             HighFragment::Long(value) => Self::new_long(HighFragment::compose(value, low)),
             HighFragment::Plain(value) => Self::from_magnitude(HighFragment::compose(value, low)),
@@ -113,6 +123,8 @@ impl DccAddress {
     }
 
     /// Returns `true` if this is a short address
+    // Forced inline: see the module documentation.
+    #[inline(always)]
     pub fn is_short(&self) -> bool {
         matches!(self.kind, AddressKind::Short(_))
     }
@@ -123,6 +135,7 @@ impl DccAddress {
     }
 
     /// Returns the addressing mode (short vs long) as a typed enum.
+    #[must_use]
     pub fn kind(&self) -> DccAddressKind {
         match self.kind {
             AddressKind::Short(_) => DccAddressKind::Short,
@@ -131,6 +144,8 @@ impl DccAddress {
     }
 
     /// Returns the numeric address value
+    // Forced inline: see the module documentation.
+    #[inline(always)]
     pub fn value(&self) -> u16 {
         match self.kind {
             AddressKind::Short(addr) => u16::from(addr),
@@ -161,7 +176,7 @@ impl DccAddress {
 /// together, because that is the pattern the standard defines and the only one
 /// this crate emits: a byte carrying just one of them belongs to neither form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HighFragment {
+pub enum HighFragment {
     /// Both flag bits set: the fragment states a long address.
     Long(u8),
     /// Neither flag bit set: six value bits and no statement about the mode.
@@ -176,7 +191,7 @@ impl HighFragment {
 
     /// Reads the flag bits of a high address byte and tells which form it has.
     #[must_use]
-    pub(crate) fn read(high: u8) -> Self {
+    pub fn read(high: u8) -> Self {
         match high & Self::FLAG_MASK {
             Self::FLAG_MASK => Self::Long(high & Self::VALUE_MASK),
             0 => Self::Plain(high & Self::VALUE_MASK),
@@ -186,7 +201,7 @@ impl HighFragment {
 
     /// The six value bits an address puts in its high fragment.
     #[must_use]
-    pub(crate) fn value_bits_of(address: DccAddress) -> u8 {
+    pub fn value_bits_of(address: DccAddress) -> u8 {
         ((address.value() >> 8) as u8) & Self::VALUE_MASK
     }
 
@@ -197,7 +212,7 @@ impl HighFragment {
     /// The address value this fragment carries together with `low`, or `None`
     /// when the fragment has no known form.
     #[must_use]
-    pub(crate) fn address_value(self, low: u8) -> Option<u16> {
+    pub fn address_value(self, low: u8) -> Option<u16> {
         match self {
             Self::Long(value) | Self::Plain(value) => Some(Self::compose(value, low)),
             Self::Malformed => None,

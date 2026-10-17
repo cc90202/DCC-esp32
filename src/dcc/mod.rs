@@ -2,11 +2,11 @@
 //!
 //! Based on NMRA Standards S-9.1 (Electrical) and S-9.2 (Communications)
 //!
-//! This module provides:
-//! - DCC packet encoding (`packet` module)
-//! - RMT pulse code generation (`encoder` module)
-//! - Async DCC engine task (`engine` module)
-//! - Timing constants (`timing` module)
+//! The HAL-free protocol modules `packet`, `encoder`, `function_groups` and
+//! `speed28` are re-exported from the `dcc_protocol` crate, and `timing` adds
+//! the RMT constants to the protocol timings it re-exports from there. This
+//! module adds what needs the hardware or the firmware's tasks: the slot
+//! scheduler, the POM actor and the channels between them.
 //!
 //! # Example
 //!
@@ -31,16 +31,19 @@
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod channels;
 pub(crate) mod cv;
-pub(crate) mod encoder;
-pub(crate) mod function_groups;
 #[cfg(test)]
 mod golden_tests;
-pub(crate) mod packet;
+#[cfg(any(test, target_arch = "riscv32"))]
+mod packed;
 pub(crate) mod scheduler;
-pub(crate) mod speed28;
+#[cfg(target_arch = "riscv32")]
 pub(crate) mod timing;
+
+// The HAL-free protocol modules live in `dcc_protocol`; mounted here under
+// their old names so `crate::dcc::<module>::` paths keep resolving.
 #[cfg(test)]
-pub(crate) mod validator;
+pub(crate) use dcc_protocol::validator;
+pub(crate) use dcc_protocol::{encoder, function_groups, packet, speed28};
 
 pub use crate::cutout::CutoutMode;
 
@@ -173,7 +176,7 @@ pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_
 #[doc(inline)]
 pub use function_groups::FunctionGroupKind;
 #[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) use packet::PackedAddressFlags;
+pub(crate) use packed::PackedAddressFlags;
 #[doc(inline)]
 pub use packet::{
     BinaryStateAddress, DCC_MAX_PACKET_BYTES, DccAddress, DccAddressKind, DccPacket, Direction,

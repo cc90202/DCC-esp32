@@ -4,7 +4,7 @@
 ///
 /// Parameters: polynomial `0x31` reflected as `0x8c`, initial value `0x00`,
 /// no final XOR.
-pub(crate) fn crc8_dallas_maxim(bytes: &[u8]) -> u8 {
+pub fn crc8_dallas_maxim(bytes: &[u8]) -> u8 {
     let mut crc = 0u8;
     for &byte in bytes {
         crc ^= byte;

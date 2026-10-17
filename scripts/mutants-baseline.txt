@@ -67,6 +67,38 @@ crates/dcc-ota/src/storage.rs:15:15: replace && with || in divides_word
 crates/dcc-ota/src/storage.rs:34:9: replace || with && in check_geometry
 crates/dcc-ota/src/storage.rs:35:9: replace || with && in check_geometry
 crates/dcc-ota/src/writer.rs:74:9: replace <impl core::error::Error for TransferError>::source -> Option<&(dyn core::error::Error +'static)> with None
+crates/dcc-protocol/src/function_groups.rs:118:38: replace | with ^ in group_bits
+crates/dcc-protocol/src/packet.rs:223:13: replace | with ^ in DccPacket::encode_speed28_instruction
+crates/dcc-protocol/src/packet.rs:224:13: replace | with ^ in DccPacket::encode_speed28_instruction
+crates/dcc-protocol/src/packet.rs:230:47: replace | with ^ in DccPacket::encode_speed128_data
+crates/dcc-protocol/src/packet.rs:235:21: replace | with ^ in DccPacket::encode_emergency_stop_instruction
+crates/dcc-protocol/src/packet.rs:242:33: replace | with ^ in DccPacket::encode_cv_addr
+crates/dcc-protocol/src/packet.rs:334:70: replace | with ^ in DccPacket::to_bytes
+crates/dcc-protocol/src/packet.rs:335:71: replace | with ^ in DccPacket::to_bytes
+crates/dcc-protocol/src/packet.rs:336:71: replace | with ^ in DccPacket::to_bytes
+crates/dcc-protocol/src/packet.rs:359:58: replace | with ^ in DccPacket::to_bytes
+crates/dcc-protocol/src/packet.rs:367:34: replace | with ^ in DccPacket::to_bytes
+crates/dcc-protocol/src/packet.rs:377:46: replace | with ^ in DccPacket::to_bytes
+crates/dcc-protocol/src/packet/address.rs:166:52: replace | with ^ in DccAddress::to_bytes
+crates/dcc-protocol/src/packet/address.rs:211:31: replace | with ^ in HighFragment::compose
+crates/dcc-protocol/src/speed28.rs:54:27: replace - with + in encode_nmra_instruction_speed_bits
+crates/dcc-protocol/src/speed28.rs:55:27: replace | with ^ in encode_nmra_instruction_speed_bits
+crates/z21/src/encoding.rs:48:22: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:56:24: replace & with | in encode_loco_info
+crates/z21/src/encoding.rs:57:24: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:57:36: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:57:48: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:57:60: replace | with ^ in encode_loco_info
+crates/z21/src/parsing.rs:247:55: replace | with ^ in parse_cv_pom_command
+crates/z21/src/parsing.rs:296:58: replace | with ^ in parse_xbus
+crates/z21/src/parsing.rs:92:29: replace == with != in frame_kind
+crates/z21/src/parsing.rs:92:44: replace && with || in frame_kind
+crates/z21/src/parsing.rs:92:57: replace >= with < in frame_kind
+crates/z21/src/wire.rs:145:25: replace | with ^ in write_loco_address_be
+crates/z21/src/wire.rs:216:23: replace || with && in z21_wire_to_logical
+crates/z21/src/wire.rs:226:20: replace > with == in z21_wire_to_logical
+crates/z21/src/wire.rs:226:20: replace > with >= in z21_wire_to_logical
+crates/z21/src/wire.rs:102:51: replace | with ^ in parse_loco_address
 src/boot.rs:113:5: replace spawn_critical -> Result<(), BootError> with Ok(())
 src/boot.rs:147:5: replace spawn_display -> Result<(), BootError> with Ok(())
 src/boot.rs:169:5: replace load_boot_wifi_decision -> Result<WifiBootDecision, BootError> with Ok(Default::default())
@@ -213,26 +245,12 @@ src/dcc/engine.rs:37:9: replace <impl core::fmt::Display for IdleWaveformBuildEr
 src/dcc/engine.rs:61:5: replace build_idle_rmt_buffer -> Result<IdleRmtBuffer, IdleWaveformBuildError> with Ok(Default::default())
 src/dcc/engine.rs:88:15: delete ! in dcc_engine_task
 src/dcc/engine.rs:90:26: replace != with == in dcc_engine_task
-src/dcc/function_groups.rs:123:38: replace | with ^ in group_bits
 src/dcc/mod.rs:112:9: replace DccFrame::fence -> Self with Default::default()
 src/dcc/mod.rs:123:9: replace DccFrame::fence_generation -> Option<PowerGeneration> with None
 src/dcc/mod.rs:71:9: replace PowerGeneration::get -> u32 with 0
 src/dcc/mod.rs:71:9: replace PowerGeneration::get -> u32 with 1
-src/dcc/packet.rs:229:13: replace | with ^ in DccPacket::encode_speed28_instruction
-src/dcc/packet.rs:230:13: replace | with ^ in DccPacket::encode_speed28_instruction
-src/dcc/packet.rs:236:47: replace | with ^ in DccPacket::encode_speed128_data
-src/dcc/packet.rs:241:21: replace | with ^ in DccPacket::encode_emergency_stop_instruction
-src/dcc/packet.rs:248:33: replace | with ^ in DccPacket::encode_cv_addr
-src/dcc/packet.rs:340:70: replace | with ^ in DccPacket::to_bytes
-src/dcc/packet.rs:341:71: replace | with ^ in DccPacket::to_bytes
-src/dcc/packet.rs:342:71: replace | with ^ in DccPacket::to_bytes
-src/dcc/packet.rs:365:58: replace | with ^ in DccPacket::to_bytes
-src/dcc/packet.rs:373:34: replace | with ^ in DccPacket::to_bytes
-src/dcc/packet.rs:383:46: replace | with ^ in DccPacket::to_bytes
-src/dcc/packet/address.rs:149:52: replace | with ^ in DccAddress::to_bytes
-src/dcc/packet/address.rs:194:31: replace | with ^ in HighFragment::compose
-src/dcc/packet/packed.rs:116:39: replace | with ^ in PackedAddressFlags::with_field
-src/dcc/packet/packed.rs:31:50: replace | with ^ in PackedDccAddress::from_address
+src/dcc/packed.rs:119:39: replace | with ^ in PackedAddressFlags::with_field
+src/dcc/packed.rs:34:50: replace | with ^ in PackedDccAddress::from_address
 src/dcc/rmt_driver.rs:112:9: replace SharedPacket::empty -> Self with Default::default()
 src/dcc/rmt_driver.rs:136:9: replace <impl core::fmt::Display for InitError>::fmt -> core::fmt::Result with Ok(Default::default())
 src/dcc/rmt_driver.rs:181:5: replace timing_stats -> RmtTimingStats with Default::default()
@@ -338,8 +356,6 @@ src/dcc/scheduler/slot_manager.rs:269:38: replace * with / in Slot::set_dirty_re
 src/dcc/scheduler/slot_manager.rs:272:50: replace | with ^ in Slot::set_dirty_retries
 src/dcc/scheduler/slot_manager/locomotives.rs:270:9: replace SlotManager::quiesce_for_power_on with ()
 src/dcc/scheduler/slot_manager/locomotives.rs:55:47: replace == with != in SlotManager::oldest_replaceable_stopped_slot_index
-src/dcc/speed28.rs:54:27: replace - with + in encode_nmra_instruction_speed_bits
-src/dcc/speed28.rs:55:27: replace | with ^ in encode_nmra_instruction_speed_bits
 src/display.rs:176:5: replace led_state_label -> &'static str with ""
 src/display.rs:176:5: replace led_state_label -> &'static str with "xyzzy"
 src/display.rs:187:5: replace fault_label -> &'static str with ""
@@ -994,19 +1010,3 @@ src/track_output/interlock.rs:19:5: replace inhibit_epoch -> u32 with 1
 src/track_output/interlock.rs:25:5: replace set_inhibited with ()
 src/track_safety.rs:18:5: replace disable_track_intentionally with ()
 src/track_safety.rs:19:8: delete ! in disable_track_intentionally
-src/z21/encoding.rs:48:22: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:56:24: replace & with | in encode_loco_info
-src/z21/encoding.rs:57:24: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:57:36: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:57:48: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:57:60: replace | with ^ in encode_loco_info
-src/z21/parsing.rs:247:55: replace | with ^ in parse_cv_pom_command
-src/z21/parsing.rs:296:58: replace | with ^ in parse_xbus
-src/z21/parsing.rs:92:29: replace == with != in frame_kind
-src/z21/parsing.rs:92:44: replace && with || in frame_kind
-src/z21/parsing.rs:92:57: replace >= with < in frame_kind
-src/z21/wire.rs:142:25: replace | with ^ in write_loco_address_be
-src/z21/wire.rs:213:23: replace || with && in z21_wire_to_logical
-src/z21/wire.rs:223:20: replace > with == in z21_wire_to_logical
-src/z21/wire.rs:223:20: replace > with >= in z21_wire_to_logical
-src/z21/wire.rs:99:51: replace | with ^ in parse_loco_address

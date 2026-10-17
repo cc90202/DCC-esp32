@@ -1,4 +1,4 @@
-use crate::dcc::{DccAddress, Direction, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, SpeedFormat};
 
 use super::wire::*;
 use super::{CentralState, LocoInfo};

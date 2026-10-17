@@ -1172,30 +1172,6 @@ fn function_refresh_budget_fits_the_refresh_deadline_at_every_slot_count() {
 }
 
 #[test]
-fn test_function_index_validation() {
-    assert!(FunctionIndex::new(0).is_some());
-    assert!(FunctionIndex::new(28).is_some());
-    assert!(FunctionIndex::new(29).is_none());
-    assert!(FunctionIndex::try_from(12).is_ok());
-    assert!(FunctionIndex::try_from(40).is_err());
-}
-
-#[test]
-fn function_state_rejects_reserved_bits_unless_truncation_is_explicit() {
-    const VALID_BITS: u32 = 0x1fff_ffff;
-
-    assert_eq!(
-        FunctionState::from_bits(VALID_BITS),
-        Some(FunctionState::from_bits_truncate(VALID_BITS))
-    );
-    assert_eq!(FunctionState::from_bits(1 << 29), None);
-    assert_eq!(
-        FunctionState::from_bits_truncate(VALID_BITS | (1 << 31)).bits(),
-        VALID_BITS
-    );
-}
-
-#[test]
 fn test_function_refresh_bound_under_12_slots() {
     let mut mgr = SlotManager::new();
     for i in 1..=12 {

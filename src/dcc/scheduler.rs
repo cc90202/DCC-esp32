@@ -51,150 +51,13 @@ pub use runtime::packet_scheduler_task;
 pub(crate) use slot_manager::PENDING_POM_CAPACITY;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub use slot_manager::SlotManager;
+// The speed and function types live in `dcc_protocol`; re-exported so the
+// `crate::dcc::scheduler::` and `super::` paths keep resolving.
+pub use dcc_protocol::function::{FunctionIndex, FunctionState, InvalidFunctionIndex};
+pub use dcc_protocol::speed::{LogicalSpeed, SpeedFormat};
 
 /// Maximum number of locomotive slots maintained by the command station.
 pub const LOCO_SLOT_CAPACITY: usize = 12;
-
-/// Speed format for a locomotive slot
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum SpeedFormat {
-    Speed28,
-    Speed128,
-}
-
-/// Validated logical (runtime) speed value for a locomotive slot.
-///
-/// "Logical" speed is the scheduler's internal protocol-agnostic representation:
-/// - `0` = stop
-/// - Speed28  → `1..=28`  = speed steps
-/// - Speed128 → `1..=126` = speed steps
-///
-/// The format is stored with the value so a speed validated for one format
-/// cannot later be paired with another format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct LogicalSpeed {
-    value: u8,
-    format: SpeedFormat,
-}
-
-impl LogicalSpeed {
-    /// Validate `value` as a logical speed for `format`.
-    #[must_use]
-    pub fn new(value: u8, format: SpeedFormat) -> Option<Self> {
-        let in_range = match format {
-            SpeedFormat::Speed28 => value <= 28,
-            SpeedFormat::Speed128 => value <= 126,
-        };
-        in_range.then_some(Self { value, format })
-    }
-
-    /// Build a stopped speed in the requested format.
-    #[must_use]
-    pub const fn zero(format: SpeedFormat) -> Self {
-        Self { value: 0, format }
-    }
-
-    /// Return the raw logical speed value.
-    #[must_use]
-    pub const fn value(self) -> u8 {
-        self.value
-    }
-
-    /// Return the format against which this speed was validated.
-    #[must_use]
-    pub const fn format(self) -> SpeedFormat {
-        self.format
-    }
-
-    #[must_use]
-    pub const fn is_zero(self) -> bool {
-        self.value == 0
-    }
-}
-
-/// Function index mapping:
-/// - 0 => FL
-/// - 1..=28 => F1..F28
-const MAX_FUNCTION_INDEX: u8 = 28;
-
-/// Validated function index (F0..F28).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct FunctionIndex(u8);
-
-/// Error returned when function index is out of range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidFunctionIndex;
-
-impl ::core::fmt::Display for InvalidFunctionIndex {
-    fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        formatter.write_str("function index must be in the F0..=F28 range")
-    }
-}
-
-impl ::core::error::Error for InvalidFunctionIndex {}
-
-impl FunctionIndex {
-    /// Create a validated function index in range 0..=28.
-    #[must_use]
-    pub fn new(value: u8) -> Option<Self> {
-        (value <= MAX_FUNCTION_INDEX).then_some(Self(value))
-    }
-
-    /// Return the raw function index value.
-    #[must_use]
-    pub const fn get(self) -> u8 {
-        self.0
-    }
-}
-
-/// State of locomotive functions F0 through F28.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-#[repr(transparent)]
-pub struct FunctionState(u32);
-
-impl FunctionState {
-    const VALID_BITS: u32 = 0x1fff_ffff;
-
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    /// Build a function state when no bits above F28 are set.
-    ///
-    /// Used by the tests only; production builds state through `FunctionChange`.
-    #[cfg(test)]
-    #[must_use]
-    pub const fn from_bits(bits: u32) -> Option<Self> {
-        if bits & !Self::VALID_BITS == 0 {
-            Some(Self(bits))
-        } else {
-            None
-        }
-    }
-
-    /// Build a function state while explicitly discarding bits above F28.
-    #[must_use]
-    pub const fn from_bits_truncate(bits: u32) -> Self {
-        Self(bits & Self::VALID_BITS)
-    }
-
-    #[must_use]
-    pub const fn bits(self) -> u32 {
-        self.0
-    }
-
-    /// Read only by the bench-diagnostic log line for function commands.
-    #[cfg(any(test, feature = "bench-diag"))]
-    #[must_use]
-    pub const fn is_enabled(self, function: FunctionIndex) -> bool {
-        self.0 & (1u32 << function.get()) != 0
-    }
-}
 
 /// Correlates one network locomotive request with its scheduler response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,14 +212,6 @@ pub enum LocoRequestResult {
 pub struct LocoResponse {
     pub request_id: LocoRequestId,
     pub result: LocoRequestResult,
-}
-
-impl TryFrom<u8> for FunctionIndex {
-    type Error = InvalidFunctionIndex;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Self::new(value).ok_or(InvalidFunctionIndex)
-    }
 }
 
 /// Command messages sent to the packet scheduler actor.

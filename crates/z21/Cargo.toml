@@ -1,0 +1,24 @@
+[package]
+edition.workspace      = true
+name                   = "z21"
+publish.workspace      = true
+rust-version.workspace = true
+version                = "0.1.0"
+description            = "Parsing and encoding of the Z21 LAN protocol frames of the DCC command station, free of any HAL."
+
+[lints]
+workspace = true
+
+[features]
+# `defmt::Format` for the protocol types, so the firmware can log them.
+defmt = ["dep:defmt", "dcc-protocol/defmt"]
+
+[dependencies]
+dcc-protocol = { workspace = true }
+defmt        = { workspace = true, optional = true }
+
+# The tests build frames into `heapless::Vec` and set function bits through the
+# test-only `FunctionState::from_bits`.
+[dev-dependencies]
+dcc-protocol = { workspace = true, features = ["test-support"] }
+heapless     = { workspace = true }

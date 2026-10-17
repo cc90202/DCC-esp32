@@ -6,7 +6,7 @@ rust-version.workspace = true
 version                = "0.1.0"
 
 [workspace]
-members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "tools/ota-pack"]
+members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "crates/dcc-protocol", "crates/z21", "tools/ota-pack"]
 default-members = ["."]
 resolver        = "3"
 
@@ -22,10 +22,13 @@ rust-version = "1.88"
 [workspace.dependencies]
 dcc-ota          = { path = "crates/dcc-ota" }
 dcc-ota-format   = { path = "crates/dcc-ota-format" }
+dcc-protocol     = { path = "crates/dcc-protocol" }
+defmt            = "1.0.1"
 ed25519-dalek    = { version = "2.2", default-features = false }
 embedded-storage = "0.3.1"
 heapless         = "0.9"
 sha2             = { version = "0.10", default-features = false }
+z21              = { path = "crates/z21" }
 
 # Warnings are errors for every member's own code, in every build and on every
 # target. Declared here rather than through RUSTFLAGS because the environment
@@ -94,8 +97,10 @@ path = "./src/bin/main.rs"
 # Platform-independent dependencies (available in tests)
 dcc-ota          = { workspace = true }
 dcc-ota-format   = { workspace = true }
+dcc-protocol     = { workspace = true }
 heapless         = { workspace = true }
 embedded-storage = { workspace = true }
+z21              = { workspace = true }
 smoltcp          = { version = "0.12.0", default-features = false, features = ["medium-ethernet", "proto-dhcpv4", "socket-dhcpv4"] }
 
 [target.'cfg(not(target_arch = "riscv32"))'.dependencies]
@@ -109,6 +114,8 @@ esp-hal = { version = "~1.0", features = ["defmt", "esp32c6", "unstable"] }
 ssd1306 = { version = "0.10", features = ["async"] }
 embedded-graphics = "0.8"
 heapless = { workspace = true, features = ["defmt"] }
+dcc-protocol = { workspace = true, features = ["defmt"] }
+z21 = { workspace = true, features = ["defmt"] }
 
 esp-rtos = { version = "0.2.0", features = [
   "defmt",
@@ -118,7 +125,7 @@ esp-rtos = { version = "0.2.0", features = [
   "esp32c6",
 ] }
 
-defmt                  = "1.0.1"
+defmt                  = { workspace = true }
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32c6"] }
 esp-storage = { version = "0.8.1", features = ["defmt", "esp32c6"] }
 
@@ -142,8 +149,10 @@ embedded-io-async = { version = "0.7.0",  features = ["defmt"] }
 # test targets for riscv32, and `std` does not exist on a bare-metal target.
 # The Embassy crates repeat the firmware's declarations with host features; the
 # two target sections cannot share one `workspace = true` entry. `heapless`
-# comes from the platform-independent dependencies above.
+# comes from the platform-independent dependencies above; `dcc-protocol` is
+# repeated to add its test-only validator and constructors.
 [target.'cfg(not(target_arch = "riscv32"))'.dev-dependencies]
+dcc-protocol = { workspace = true, features = ["test-support"] }
 embassy-futures = "0.1.2"
 embassy-sync = "0.7.2"
 embassy-time = { version = "0.5.0", features = ["std", "generic-queue-8"] }

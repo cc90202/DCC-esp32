@@ -122,8 +122,7 @@ impl Slot {
     }
 
     fn set_function(&mut self, function: FunctionIndex, enabled: bool) {
-        let function = function.get();
-        let bit = 1u32 << function;
+        let bit = 1u32 << function.get();
         if enabled {
             self.functions |= bit;
         } else {
@@ -156,7 +155,8 @@ impl Slot {
 
     fn function_packet_for_group(&self, group: u8) -> DccPacket {
         let kind = GROUP_LAYOUTS[usize::from(group)].kind;
-        DccPacket::function_group(self.address, kind, group_bits(self.functions, kind))
+        let functions = FunctionState::from_bits_truncate(self.functions);
+        DccPacket::function_group(self.address, kind, group_bits(functions, kind))
     }
 
     fn function_enabled(&self, function: u8) -> bool {
