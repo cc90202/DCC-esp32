@@ -1,5 +1,6 @@
 use dcc_protocol::{
-    DccAddress, NmraSpeed28, encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed,
+    DccAddress, NmraSpeed28, SpeedFormat, encode_nmra_instruction_speed_bits,
+    logical_to_nmra_packet_speed,
 };
 
 // Source: Z21 LAN Protocol Specification v1.13 (docs/specs/z21-lan-protokoll-en.pdf)
@@ -16,14 +17,15 @@ pub(super) const HEADER_GET_LOCOMODE: u16 = 0x0060;
 pub(super) const HEADER_SET_LOCOMODE: u16 = 0x0061;
 pub(super) const HEADER_RAILCOM_GETDATA: u16 = 0x0089;
 pub(super) const HEADER_LOCONET_DETECTOR: u16 = 0x00A4;
-/// Frame header (0x0040) of every XBus frame (`LAN_X_*`): request, reply
+/// Frame header of every XBus frame (`LAN_X_*`): request, reply
 /// and broadcast; the X-Header byte after it says which command it is.
 pub const HEADER_XBUS: u16 = 0x0040;
-/// Frame header (0x0085) of `LAN_SYSTEMSTATE_GETDATA`, the client's poll for
-/// the system state; the reply is `LAN_SYSTEMSTATE_DATACHANGED` (0x0084).
+/// Frame header of `LAN_SYSTEMSTATE_GETDATA`, the client's poll for the
+/// system state; the reply is `LAN_SYSTEMSTATE_DATACHANGED`
+/// (`RESP_SYSTEMSTATE`).
 pub const HEADER_SYSTEMSTATE_GETDATA: u16 = 0x0085;
 
-// XBus X-Header values (used inside header=0x0040 frames)
+// XBus X-Header values (used inside HEADER_XBUS frames)
 pub(super) const XHEADER_GET_VERSION: u8 = 0x21; // sub-commands dispatched by DB0 below
 pub(super) const XHEADER_TURNOUT_INFO: u8 = 0x43; // shared by LAN_X_GET_TURNOUT_INFO (request) and LAN_X_TURNOUT_INFO (response)
 pub(super) const XHEADER_SET_STOP: u8 = 0x80;
@@ -223,7 +225,8 @@ pub(super) const fn z21_wire_to_logical(raw_speed: u8) -> u8 {
         0
     } else {
         let logical = (v_low4 - 1) * 2 + v5 - 1;
-        if logical > 28 { 28 } else { logical }
+        let top = SpeedFormat::Speed28.max_step();
+        if logical > top { top } else { logical }
     }
 }
 

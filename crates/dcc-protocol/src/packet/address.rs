@@ -5,9 +5,8 @@
 //! byte of a two-byte address.
 //!
 //! `new_short`, `new_long`, `is_short` and `value` are `#[inline(always)]`:
-//! the firmware's RMT and cutout interrupt handlers reach them, and those
-//! handlers run from RAM, so the helpers must not land in flash as separate
-//! functions. `scripts/check-isr-ram.sh` checks the linked firmware for it.
+//! these helpers must inline into their callers, which may run from RAM and
+//! cannot afford a call into a separately placed function.
 
 use heapless::Vec;
 
@@ -33,7 +32,9 @@ enum AddressKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DccAddressKind {
+    /// One-byte short address.
     Short,
+    /// Two-byte long address.
     Long,
 }
 
@@ -48,8 +49,7 @@ impl DccAddress {
     /// Create a new short address (1-127)
     ///
     /// Returns `None` if address is 0 or > 127
-    // Forced inline: reached from the firmware's RMT and cutout handlers,
-    // which run from RAM, through its packed address helpers.
+    // Forced inline: see the module documentation.
     #[inline(always)]
     pub fn new_short(addr: u8) -> Option<Self> {
         if addr == 0 || u16::from(addr) > Self::SHORT_MAX {
@@ -64,8 +64,7 @@ impl DccAddress {
     /// Create a new long address (128-10239)
     ///
     /// Returns `None` if address is < 128 or > 10239
-    // Forced inline: reached from the firmware's RMT and cutout handlers,
-    // which run from RAM, through its packed address helpers.
+    // Forced inline: see the module documentation.
     #[inline(always)]
     pub fn new_long(addr: u16) -> Option<Self> {
         if !(Self::LONG_MIN..=Self::LONG_MAX).contains(&addr) {
@@ -124,8 +123,7 @@ impl DccAddress {
     }
 
     /// Returns `true` if this is a short address
-    // Forced inline: reached from the firmware's RMT and cutout handlers,
-    // which run from RAM, through its packed address helpers.
+    // Forced inline: see the module documentation.
     #[inline(always)]
     pub fn is_short(&self) -> bool {
         matches!(self.kind, AddressKind::Short(_))
@@ -137,6 +135,7 @@ impl DccAddress {
     }
 
     /// Returns the addressing mode (short vs long) as a typed enum.
+    #[must_use]
     pub fn kind(&self) -> DccAddressKind {
         match self.kind {
             AddressKind::Short(_) => DccAddressKind::Short,
@@ -145,8 +144,7 @@ impl DccAddress {
     }
 
     /// Returns the numeric address value
-    // Forced inline: reached from the firmware's RMT and cutout handlers,
-    // which run from RAM, through its packed address helpers.
+    // Forced inline: see the module documentation.
     #[inline(always)]
     pub fn value(&self) -> u16 {
         match self.kind {

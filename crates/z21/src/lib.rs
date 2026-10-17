@@ -44,17 +44,17 @@
 //! - `GetTurnoutInfo`: accessory decoder state, always answered as unknown
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
-use core::fmt;
-
-use dcc_protocol::{DccAddress, Direction, FunctionState, LogicalSpeed, SpeedFormat};
-
+mod command;
 mod encoding;
 mod parsing;
+mod state;
 #[cfg(test)]
 mod tests;
 mod wire;
 
+pub use command::{FrameKind, FunctionAction, ParseError, RailcomRequestType, Z21Command};
 pub use encoding::{
     encode_bc_stopped, encode_bc_track_power, encode_code, encode_cv_nack, encode_cv_result,
     encode_firmware_version, encode_hwinfo, encode_loco_info, encode_loco_mode,
@@ -62,165 +62,7 @@ pub use encoding::{
     encode_turnout_info, encode_unknown_command, encode_xbus_version,
 };
 pub use parsing::{FrameBoundaryError, FrameIter, frame_kind, iter_frames, parse_frame};
+pub use state::{CentralState, LocoInfo};
 // The firmware's datagram handling reads these two headers; it reads
 // `HEADER_SYSTEMSTATE_GETDATA` only in its bench diagnostics log.
 pub use wire::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
-
-/// Locomotive state required to encode a `LAN_X_LOCO_INFO` frame.
-///
-/// This wire-facing view keeps the protocol contract independent from the
-/// application's projection types. Network adapters are responsible for
-/// mapping their state into this representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct LocoInfo {
-    pub address: DccAddress,
-    pub speed: LogicalSpeed,
-    pub direction: Direction,
-    pub functions: FunctionState,
-}
-
-/// Command station state reported in the Z21 `CentralState` byte.
-///
-/// `LAN_X_STATUS_CHANGED` reports only `estop` and `track_on`;
-/// `LAN_SYSTEMSTATE_DATACHANGED` also reports `short_circuit`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct CentralState {
-    /// Track output is powered; `false` sets the track-voltage-off bit.
-    pub track_on: bool,
-    /// Emergency stop is active.
-    pub estop: bool,
-    /// The track output is in a short-circuit fault.
-    pub short_circuit: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct FrameKind {
-    pub header: u16,
-    pub xheader: u8,
-}
-
-/// Selector carried by `LAN_RAILCOM_GETDATA`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum RailcomRequestType {
-    Locomotive,
-    Unsupported(u8),
-}
-
-impl From<u8> for RailcomRequestType {
-    fn from(value: u8) -> Self {
-        match value {
-            0x01 => Self::Locomotive,
-            value => Self::Unsupported(value),
-        }
-    }
-}
-
-/// Parsed Z21 command from an incoming UDP frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum Z21Command {
-    GetSerialNumber,
-    GetCode,
-    GetHwInfo,
-    GetSystemState,
-    Logoff,
-    GetXBusVersion,
-    GetFirmwareVersion,
-    GetStatus,
-    /// Accept a `LAN_SET_BROADCASTFLAGS` subscription request.
-    ///
-    /// Broadcast delivery is currently unconditional, so the validated
-    /// payload is intentionally not retained.
-    SetBroadcastFlags,
-    SetTrackPowerOn,
-    SetTrackPowerOff,
-    SetStop,
-    SetLocoEstop {
-        address: DccAddress,
-    },
-    GetLocoMode {
-        address: DccAddress,
-    },
-    SetLocoMode {
-        address: DccAddress,
-        mode: u8,
-    },
-    GetLocoInfo {
-        address: DccAddress,
-    },
-    SetLocoDrive {
-        address: DccAddress,
-        speed: u8,
-        direction: Direction,
-        format: SpeedFormat,
-    },
-    SetLocoFunction {
-        address: DccAddress,
-        function: u8,
-        action: FunctionAction,
-    },
-    CvPomWriteByte {
-        address: DccAddress,
-        cv: u16,
-        value: u8,
-    },
-    CvPomReadByte {
-        address: DccAddress,
-        cv: u16,
-    },
-    /// LAN_X_GET_TURNOUT_INFO: accessory decoder state request.
-    /// We have no accessory decoder support; respond with state=0 (unknown).
-    GetTurnoutInfo {
-        address: DccAddress,
-    },
-    RailcomGetData {
-        request_type: RailcomRequestType,
-        address: Option<DccAddress>,
-    },
-    /// `LAN_LOCONET_DETECTOR`: LocoNet track occupancy detector query.
-    /// We have no LocoNet detector support; the parser only validates frame
-    /// length, so no fields are extracted (dispatch is a 0-byte no-op).
-    LoconetDetector,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum FunctionAction {
-    On,
-    Off,
-    Toggle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ParseError {
-    FrameTooShort,
-    LenMismatch,
-    BadXBusChecksum,
-    InvalidAddress,
-    InvalidFunction,
-    InvalidFunctionAction,
-    InvalidCvAddress,
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::FrameTooShort => "Z21 frame is too short",
-            Self::LenMismatch => "Z21 frame length does not match its header",
-            Self::BadXBusChecksum => "Z21 X-Bus checksum is invalid",
-            Self::InvalidAddress => "Z21 locomotive address is invalid",
-            Self::InvalidFunction => "Z21 locomotive function is invalid",
-            Self::InvalidFunctionAction => "Z21 function action is invalid",
-            Self::InvalidCvAddress => "Z21 CV address is invalid",
-        };
-        formatter.write_str(message)
-    }
-}
-
-impl core::error::Error for ParseError {}

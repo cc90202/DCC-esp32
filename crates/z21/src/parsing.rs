@@ -82,6 +82,8 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
     }
 }
 
+/// Read the header and X-Header of the frame at the start of `buf`, for
+/// logging; missing fields read as 0.
 #[must_use]
 pub fn frame_kind(buf: &[u8]) -> FrameKind {
     let header = if buf.len() >= 4 {
@@ -101,8 +103,19 @@ pub fn frame_kind(buf: &[u8]) -> FrameKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FrameBoundaryError {
-    TruncatedHeader { remaining: usize },
-    InvalidLength { declared: usize, remaining: usize },
+    /// Fewer bytes remain than a frame header needs.
+    TruncatedHeader {
+        /// Bytes left in the datagram.
+        remaining: usize,
+    },
+    /// The frame's `DataLen` is below the header size or beyond the
+    /// datagram.
+    InvalidLength {
+        /// `DataLen` of the frame.
+        declared: usize,
+        /// Bytes left in the datagram.
+        remaining: usize,
+    },
 }
 
 impl fmt::Display for FrameBoundaryError {

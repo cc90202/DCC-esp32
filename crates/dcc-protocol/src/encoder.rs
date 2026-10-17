@@ -1,15 +1,21 @@
-//! DCC packet to RMT PulseCode encoder
+//! DCC packet to pulse sequence encoder
 //!
-//! Converts logical DCC packets into RMT pulse sequences for transmission via ESP32 RMT peripheral.
-//! Each DCC bit becomes a pair of transitions (high→low) with NMRA-compliant timing.
+//! Converts logical DCC packets into pulse sequences for a waveform generator.
+//! Each DCC bit becomes one [`PulseCode`]: a high half followed by a low half,
+//! with NMRA-compliant timing.
 //!
 //! The encoder implements NMRA S-9.1 timing:
 //! - DCC "1" bit: 58μs ±3μs high, 58μs ±3μs low
 //! - DCC "0" bit: ≥100μs high, ≥100μs low
 //!
-//! Packets are prepended with a preamble of [`PREAMBLE_BITS`] "1" bits (20; NMRA S-9.1 asks
+//! Packets are prepended with a preamble of [`PREAMBLE_BITS`] "1" bits (NMRA S-9.1 asks
 //! for at least 14), followed by start bit (0), payload bytes, and end bit (1). All in
 //! MSB-first order.
+//!
+//! [`encode_dcc_packet`] returns the whole packet. [`encode_dcc_data_portion`]
+//! returns only the variable tail after the preamble, for a double-buffered
+//! waveform generator that keeps the fixed preamble in place and rewrites the
+//! tail of each packet.
 //!
 //! # Examples
 //!
@@ -21,10 +27,11 @@
 //! let addr = DccAddress::new_short(10).unwrap();
 //! let packet = DccPacket::speed_128step(addr, 100, Direction::Forward).unwrap();
 //!
-//! // Encode to RMT pulse sequence (Vec<PulseCode>)
+//! // Encode to a pulse sequence (Vec<PulseCode>)
 //! let pulses = encode_dcc_packet(&packet).expect("valid packet");
-//! // 20 (preamble) + 1 (start) + 32 (4 bytes × 8 bits) + 3 (separators) + 1 (end)
-//! assert_eq!(pulses.len(), 57);
+//! // Preamble, start bit, 8 bits per packet byte with a separator between
+//! // bytes, end bit; this packet has 4 bytes (address, 0x3F, speed, checksum).
+//! assert_eq!(pulses.len(), dcc_protocol::timing::PREAMBLE_BITS + 1 + 4 * 8 + 3 + 1);
 //! ```
 //!
 //! Convert a single bit:
@@ -84,9 +91,7 @@ impl fmt::Display for EncodeError {
 
 impl core::error::Error for EncodeError {}
 
-/// RMT pulse representation
-///
-/// Represents one DCC bit as two transitions (high→low)
+/// One DCC bit as two timed levels (high, then low).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PulseCode {
@@ -101,13 +106,17 @@ pub struct PulseCode {
 }
 
 /// Variable packet tail together with the duration of the full DCC packet.
+#[derive(Debug)]
 pub struct EncodedDccData {
+    /// The start bit, the data bytes with their separators, and the end bit.
     pub pulses: Vec<PulseCode, MAX_DATA_PULSES>,
+    /// Duration of the whole packet in microseconds, preamble included.
     pub dcc_duration_us: u32,
 }
 
 impl PulseCode {
-    /// Create a new pulse code
+    /// Create a pulse code from its two levels and their durations.
+    #[must_use]
     pub const fn new(level1: bool, length1: u16, level2: bool, length2: u16) -> Self {
         Self {
             level1,
@@ -118,7 +127,8 @@ impl PulseCode {
     }
 }
 
-/// Convert a DCC bit (true=1, false=0) to RMT pulse
+/// Convert a DCC bit (true=1, false=0) to its pulse.
+#[must_use]
 pub fn dcc_bit_to_pulse(bit: bool) -> PulseCode {
     if bit {
         // DCC "1": 58μs high, 58μs low
@@ -130,6 +140,7 @@ pub fn dcc_bit_to_pulse(bit: bool) -> PulseCode {
 }
 
 /// Encode a byte as 8 DCC bits (MSB first)
+#[must_use]
 pub fn encode_byte(byte: u8) -> [PulseCode; 8] {
     let mut pulses = [dcc_bit_to_pulse(false); 8];
 
@@ -141,14 +152,12 @@ pub fn encode_byte(byte: u8) -> [PulseCode; 8] {
     pulses
 }
 
-/// Encode a complete DCC packet to RMT pulse sequence.
+/// Encode a complete DCC packet to a pulse sequence.
 ///
 /// Format: \[preamble\]\[start_bit\]\[data_bytes\]\[end_bit\]
 ///
-/// Capacity: `DCC_MAX_PACKET_PULSES` pulses is sufficient for all standard DCC packets:
-/// - Idle packet: 42 pulses
-/// - Speed packet (long addr): ~60 pulses
-/// - Max realistic packet: < `DCC_MAX_PACKET_PULSES`
+/// [`DCC_MAX_PACKET_PULSES`] holds the longest packet; the timing module
+/// checks that at compile time.
 ///
 /// # Errors
 /// Returns [`EncodeError::PulseBufferOverflow`] if the pulse buffer overflows.
@@ -157,7 +166,7 @@ pub fn encode_dcc_packet(
 ) -> Result<Vec<PulseCode, DCC_MAX_PACKET_PULSES>, EncodeError> {
     let mut pulses = Vec::new();
 
-    // Preamble: 14+ "1" bits
+    // Preamble: PREAMBLE_BITS "1" bits
     for _ in 0..PREAMBLE_BITS {
         push_pulse(&mut pulses, dcc_bit_to_pulse(true))?;
     }
@@ -167,13 +176,13 @@ pub fn encode_dcc_packet(
     Ok(pulses)
 }
 
-/// Encode only the variable packet tail written by the ISR.
+/// Encode only the variable packet tail, for generators that keep the fixed
+/// preamble in place.
 ///
 /// Format: \[start_bit\]\[data_bytes\]\[end_bit\]
-#[allow(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "the waveform engine hands over the packet it borrows from its queue"
-)]
+///
+/// # Errors
+/// Returns [`EncodeError::PulseBufferOverflow`] if the pulse buffer overflows.
 pub fn encode_dcc_data_portion(packet: &DccPacket) -> Result<EncodedDccData, EncodeError> {
     let mut pulses = Vec::new();
     let mut dcc_duration_us = PREAMBLE_DURATION_US;
@@ -233,34 +242,6 @@ fn push_pulse<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    /// The module-level examples, as tests that actually run.
-    #[test]
-    fn a_speed128_packet_encodes_to_the_documented_pulse_count() {
-        let address = DccAddress::new_short(10).expect("10 is a valid short address");
-        let packet =
-            DccPacket::speed_128step(address, 100, Direction::Forward).expect("speed 100 is valid");
-
-        let pulses = encode_dcc_packet(&packet).expect("valid packet");
-
-        // 14 preamble + 1 start + 3 bytes x (8 bits + 1 separator) + end bit.
-        assert!(!pulses.is_empty());
-    }
-
-    #[test]
-    fn a_one_bit_and_a_zero_bit_carry_the_documented_durations() {
-        let one = dcc_bit_to_pulse(true);
-        assert_eq!(one.length1, 58);
-        assert_eq!(one.length2, 58);
-
-        let zero = dcc_bit_to_pulse(false);
-        assert_eq!(zero.length1, 100);
-    }
-
-    #[test]
-    fn a_byte_encodes_to_one_pulse_per_bit() {
-        assert_eq!(encode_byte(0x3F).len(), 8);
-    }
-
     use super::*;
     use crate::FunctionGroupKind;
     use crate::packet::*;
@@ -270,7 +251,19 @@ mod tests {
     }
 
     #[test]
-    fn test_dcc_bit_encoding() {
+    fn a_speed128_packet_encodes_to_the_documented_pulse_count() {
+        let address = DccAddress::new_short(10).expect("10 is a valid short address");
+        let packet =
+            DccPacket::speed_128step(address, 100, Direction::Forward).expect("speed 100 is valid");
+
+        let pulses = encode_dcc_packet(&packet).expect("valid packet");
+
+        // Preamble, start bit, 4 bytes of 8 bits with 3 separators, end bit.
+        assert_eq!(pulses.len(), PREAMBLE_BITS + 1 + 4 * 8 + 3 + 1);
+    }
+
+    #[test]
+    fn a_one_bit_and_a_zero_bit_carry_the_documented_durations() {
         let one = dcc_bit_to_pulse(true);
         assert!(one.level1);
         assert_eq!(one.length1, 58);
@@ -285,10 +278,10 @@ mod tests {
     }
 
     #[test]
-    fn test_byte_encoding() {
+    fn a_byte_encodes_to_one_pulse_per_bit() {
         let pulses = encode_byte(0b1010_1010);
 
-        // Should be 8 pulses: 1,0,1,0,1,0,1,0
+        // MSB first: 1,0,1,0,1,0,1,0
         assert_eq!(pulses.len(), 8);
         assert_eq!(pulses[0].length1, 58); // 1
         assert_eq!(pulses[1].length1, 100); // 0
@@ -301,10 +294,10 @@ mod tests {
         let packet = DccPacket::idle();
         let pulses = encode_dcc_packet(&packet).unwrap();
 
-        // Preamble (20) + start (1) + byte1 (8) + start (1) + byte2 (8) + start (1) + byte3 (8) + end (1) = 48
-        assert_eq!(pulses.len(), 48);
+        // Preamble, then a start bit before each of the 3 bytes, then the end bit.
+        assert_eq!(pulses.len(), PREAMBLE_BITS + 3 * (1 + 8) + 1);
 
-        // First 20 should be preamble "1"s
+        // The preamble is all "1"s
         for i in 0..PREAMBLE_BITS {
             assert_eq!(pulses[i].length1, 58);
         }
@@ -346,11 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_packet_types_fit_in_rmt_ram() {
-        // RMT channel memsize: 3 = 144 RAM slots. transmit_continuously requires
-        // all data in RAM at once. RMT buffer = encode output + 1 end marker.
-        const RMT_RAM_SLOTS: usize = 144;
-
+    fn every_packet_kind_encodes_to_one_pulse_per_bit() {
         let addr_short = DccAddress::new_short(3).unwrap();
         let addr_long = DccAddress::new_long(9999).unwrap();
 
@@ -372,16 +361,23 @@ mod tests {
                 address: addr_long,
                 direction: Direction::Forward,
             },
+            DccPacket::LogonSelect {
+                manufacturer_id: 0x0FFF,
+                decoder_id: u32::MAX,
+                subcommand: u8::MAX,
+            },
         ];
 
         for packet in &packets {
             let pulses = encode_dcc_packet(packet)
                 .unwrap_or_else(|e| panic!("encode failed for {packet:?}: {e:?}"));
-            // RMT conversion: 1 entry per pulse + 1 end marker
-            let rmt_entries = pulses.len() + 1;
-            assert!(
-                rmt_entries <= RMT_RAM_SLOTS,
-                "packet {packet:?} would produce {rmt_entries} RMT entries, exceeds {RMT_RAM_SLOTS} RAM slots",
+            // Preamble, start bit, 8 bits per byte, a separator between
+            // bytes, end bit.
+            let bytes = packet.to_bytes().len();
+            assert_eq!(
+                pulses.len(),
+                PREAMBLE_BITS + 1 + bytes * 8 + (bytes - 1) + 1,
+                "{packet:?}"
             );
         }
     }

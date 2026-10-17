@@ -1,6 +1,6 @@
 use super::wire::*;
 use super::*;
-use dcc_protocol::{FunctionState, LogicalSpeed};
+use dcc_protocol::{DccAddress, Direction, FunctionState, LogicalSpeed, SpeedFormat};
 
 fn cstate(track_on: bool, estop: bool, short_circuit: bool) -> CentralState {
     CentralState {

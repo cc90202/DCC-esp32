@@ -52,7 +52,6 @@ pub(crate) mod fault_manager;
 pub(crate) mod flash;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod liveness;
-pub(crate) use dcc_protocol::logon;
 mod macros;
 pub mod net;
 #[cfg(target_arch = "riscv32")]
@@ -61,7 +60,6 @@ pub mod railcom;
 #[cfg(target_arch = "riscv32")]
 #[path = "railcom/isr_capture.rs"]
 pub(crate) mod railcom_capture;
-use dcc_protocol::railcom_data;
 #[cfg(target_arch = "riscv32")]
 pub mod restart;
 #[cfg(target_arch = "riscv32")]
@@ -82,3 +80,9 @@ pub(crate) mod track_output;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod track_safety;
 pub mod z21;
+
+// Moved to `dcc_protocol`; mounted at their old crate-root paths so the
+// RailCom and POM code keeps naming them `crate::logon` and
+// `crate::railcom_data`.
+pub(crate) use dcc_protocol::logon;
+use dcc_protocol::railcom_data;

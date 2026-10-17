@@ -2,11 +2,11 @@
 //!
 //! Based on NMRA Standards S-9.1 (Electrical) and S-9.2 (Communications)
 //!
-//! This module provides:
-//! - DCC packet encoding (`packet` module)
-//! - RMT pulse code generation (`encoder` module)
-//! - Async DCC engine task (`engine` module)
-//! - Timing constants (`timing` module)
+//! The HAL-free protocol modules `packet`, `encoder`, `function_groups` and
+//! `speed28` are re-exported from the `dcc_protocol` crate, and `timing` adds
+//! the RMT constants to the protocol timings it re-exports from there. This
+//! module adds what needs the hardware or the firmware's tasks: the slot
+//! scheduler, the POM actor and the channels between them.
 //!
 //! # Example
 //!

@@ -49,17 +49,39 @@ enum DccBitKind {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ValidationError {
     /// Pulse timing outside NMRA acceptable range
-    TimingOutOfRange { expected_us: u16, actual_us: u16 },
+    TimingOutOfRange {
+        /// Nominal duration of the bit kind the high half was read as; 0
+        /// when it matches neither kind.
+        expected_us: u16,
+        /// Duration of the half that is out of range.
+        actual_us: u16,
+    },
     /// Preamble has fewer than 14 bits
-    InsufficientPreamble { found: usize },
+    InsufficientPreamble {
+        /// Preamble bits found.
+        found: usize,
+    },
     /// Packet checksum doesn't match
-    InvalidChecksum { expected: u8, actual: u8 },
+    InvalidChecksum {
+        /// XOR of the data bytes.
+        expected: u8,
+        /// Error detection byte found on the wire.
+        actual: u8,
+    },
     /// Missing start bit
     MissingStartBit,
     /// Packet too short
-    PacketTooShort { min: usize, actual: usize },
+    PacketTooShort {
+        /// Fewest pulses a packet needs.
+        min: usize,
+        /// Pulses found.
+        actual: usize,
+    },
     /// Packet carries more bytes than a DCC packet can hold
-    PacketTooLong { max_bytes: usize },
+    PacketTooLong {
+        /// Most bytes a packet may carry.
+        max_bytes: usize,
+    },
     /// Invalid byte/bit structure in pulse sequence
     InvalidStructure,
     /// Packet could not be encoded to bytes

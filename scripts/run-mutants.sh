@@ -8,9 +8,9 @@
 # feature reads.
 #
 # dcc-protocol and z21 are mutated together with the firmware and every mutant
-# runs the tests of all three packages: the golden corpus and the slot-manager
-# tests that kill many protocol mutants live in dcc-esp32, and so do the Z21
-# dispatch tests that drive the z21 encoders.
+# runs the tests of all three packages: the scheduler half of the golden
+# corpus and the slot-manager tests that kill many protocol mutants live in
+# dcc-esp32, and so do the Z21 dispatch tests that drive the z21 encoders.
 #
 # The test-support helpers of dcc-protocol (the validator module and
 # FunctionState::from_bits) are excluded: --all-features turns that feature

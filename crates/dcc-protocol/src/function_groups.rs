@@ -1,11 +1,14 @@
 //! Mapping from locomotive functions F0..=F28 to NMRA function groups.
 //!
-//! A locomotive's functions are held as one `u32` with bit `n` set when `Fn`
-//! is on. Each NMRA function group (S-9.2.1 Function Group One and Two, and
-//! the binary state control long forms 0xDE and 0xDF) carries a contiguous
-//! run of those bits in its data byte. [`GROUP_LAYOUTS`] is the one place
-//! that run is written down; the packet encoder and the firmware's slot
-//! scheduler both read it.
+//! A locomotive's functions are held as one [`FunctionState`] word, with bit
+//! `n` set when `Fn` is on. Each NMRA function group (S-9.2.1 Function Group
+//! One and Two, and the binary state control long forms 0xDE and 0xDF)
+//! carries a contiguous run of those bits in its data byte. [`GROUP_LAYOUTS`]
+//! is the one place that run is written down; the firmware's slot scheduler
+//! reads it to build function packets, and the validator tests check the
+//! encoded packets against it.
+
+use crate::function::{FunctionIndex, FunctionState};
 
 /// NMRA function group carried by one multi-function decoder packet.
 ///
@@ -44,9 +47,10 @@ impl FunctionGroupKind {
     }
 }
 
-/// Where one function group's functions sit in the `u32` function word.
+/// Where one function group's functions sit in the [`FunctionState`] word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupLayout {
+    /// The group this layout describes.
     pub kind: FunctionGroupKind,
     /// Function-word bits carried by this group.
     pub mask: u32,
@@ -86,16 +90,24 @@ pub const GROUP_LAYOUTS: [GroupLayout; 5] = [
     },
 ];
 
-/// Group that carries function `Fn`.
-///
-/// Callers pass a validated function number (0..=28); anything above F28 is
-/// folded into G4, which carries no bit for it.
+// The groups cover exactly the functions a `FunctionState` can hold.
+const _: () = {
+    let mut covered = 0u32;
+    let mut index = 0;
+    while index < GROUP_LAYOUTS.len() {
+        covered |= GROUP_LAYOUTS[index].mask;
+        index += 1;
+    }
+    assert!(
+        covered == FunctionState::from_bits_truncate(u32::MAX).bits(),
+        "the function group masks must cover F0..=F28 exactly"
+    );
+};
+
+/// Group that carries `function`.
 #[must_use]
-pub const fn group_of(function: u8) -> FunctionGroupKind {
-    let bit = match 1u32.checked_shl(function as u32) {
-        Some(bit) => bit,
-        None => 0,
-    };
+pub const fn group_of(function: FunctionIndex) -> FunctionGroupKind {
+    let bit = 1u32 << function.get();
     let mut index = 0;
     while index < GROUP_LAYOUTS.len() {
         if GROUP_LAYOUTS[index].mask & bit != 0 {
@@ -103,6 +115,7 @@ pub const fn group_of(function: u8) -> FunctionGroupKind {
         }
         index += 1;
     }
+    // Unreachable: the assertion above makes the masks cover every index.
     FunctionGroupKind::G4
 }
 
@@ -111,7 +124,8 @@ pub const fn group_of(function: u8) -> FunctionGroupKind {
 /// F0 lands in bit 4 of G1 (NMRA FL position); every other function lands at
 /// its offset from the group's first function.
 #[must_use]
-pub const fn group_bits(functions: u32, kind: FunctionGroupKind) -> u8 {
+pub const fn group_bits(functions: FunctionState, kind: FunctionGroupKind) -> u8 {
+    let functions = functions.bits();
     let layout = GROUP_LAYOUTS[kind.index() as usize];
     let run = ((functions & layout.mask) >> layout.shift) as u8;
     match kind {
@@ -136,9 +150,12 @@ mod tests {
     }
 
     #[test]
-    fn group_of_folds_functions_above_f28_into_g4() {
-        for function in [29, 31, 32, u8::MAX] {
-            assert_eq!(group_of(function), FunctionGroupKind::G4, "F{function}");
+    fn group_of_picks_the_group_whose_mask_holds_the_function() {
+        for function in 0..=28u8 {
+            let index = FunctionIndex::new(function).expect("F0..=F28 are valid");
+            let kind = group_of(index);
+            let layout = GROUP_LAYOUTS[usize::from(kind.index())];
+            assert_ne!(layout.mask & (1 << function), 0, "F{function} in {kind:?}");
         }
     }
 
@@ -146,10 +163,10 @@ mod tests {
     fn group_bits_ignores_functions_of_other_groups() {
         let all = (1u32 << 29) - 1;
         for layout in GROUP_LAYOUTS {
-            let others = all & !layout.mask;
+            let others = FunctionState::from_bits_truncate(all & !layout.mask);
             assert_eq!(group_bits(others, layout.kind), 0, "{:?}", layout.kind);
             assert_eq!(
-                group_bits(all, layout.kind),
+                group_bits(FunctionState::from_bits_truncate(all), layout.kind),
                 layout.kind.data_mask(),
                 "{:?}",
                 layout.kind
