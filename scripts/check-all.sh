@@ -21,7 +21,7 @@ gates=(
     "clippy-esp-lib|cargo clippy --lib --target riscv32imac-unknown-none-elf -- -D warnings"
     "clippy-esp|cargo clippy-esp -- -D warnings"
     "test-host|cargo test-host"
-    "doctests|cargo test --doc -p dcc-protocol --target x86_64-unknown-linux-gnu"
+    "doctests|cargo test --doc -p dcc-protocol -p z21 --target x86_64-unknown-linux-gnu"
     "docs-host|RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --target x86_64-unknown-linux-gnu"
     "docs-esp|RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --target riscv32imac-unknown-none-elf"
     "release-build|cargo build-esp-release"

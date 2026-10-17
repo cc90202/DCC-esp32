@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::dcc::{DccAddress, Direction, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, SpeedFormat};
 
 use super::wire::*;
 use super::{FrameKind, FunctionAction, ParseError, Z21Command};
@@ -99,7 +99,7 @@ pub fn frame_kind(buf: &[u8]) -> FrameKind {
 
 /// Why a concatenated Z21 datagram cannot be split at its next frame boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FrameBoundaryError {
     TruncatedHeader { remaining: usize },
     InvalidLength { declared: usize, remaining: usize },

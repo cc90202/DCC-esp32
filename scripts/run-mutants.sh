@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Mutation testing of the host-compiled code: the dcc-esp32 and dcc-protocol
-# library tests and the dcc-ota and dcc-ota-format tests, on x86_64. It takes minutes, so it is
-# not part of scripts/check-all.sh or CI.
+# Mutation testing of the host-compiled code: the dcc-esp32, dcc-protocol and
+# z21 library tests and the dcc-ota and dcc-ota-format tests, on x86_64. It
+# takes minutes, so it is not part of scripts/check-all.sh or CI.
 #
 # --all-features is required for dcc-esp32: without bench-diag a plain host
 # library build fails on two fields of src/railcom/pipeline.rs that only that
 # feature reads.
 #
-# dcc-protocol is mutated together with the firmware and every mutant runs the
-# tests of both packages: the golden corpus and the slot-manager tests that
-# kill many protocol mutants live in dcc-esp32.
+# dcc-protocol and z21 are mutated together with the firmware and every mutant
+# runs the tests of all three packages: the golden corpus and the slot-manager
+# tests that kill many protocol mutants live in dcc-esp32, and so do the Z21
+# dispatch tests that drive the z21 encoders.
 #
 # The test-support helpers of dcc-protocol (the validator module and
 # FunctionState::from_bits) are excluded: --all-features turns that feature
@@ -73,8 +74,8 @@ run() {
     (cd "$root" && cargo mutants --cargo-arg=--target=x86_64-unknown-linux-gnu \
         --output "$out/$name" "$@") 2>&1 | tee "$out/$name/mutants.log" || status=$?
 }
-run firmware --package dcc-esp32 --package dcc-protocol \
-    --test-package dcc-esp32 --test-package dcc-protocol \
+run firmware --package dcc-esp32 --package dcc-protocol --package z21 \
+    --test-package dcc-esp32 --test-package dcc-protocol --test-package z21 \
     --all-features --exclude crates/dcc-protocol/src/validator.rs \
     --exclude-re 'FunctionState::from_bits( |$)' "$@" -- --lib -- --test-threads=1
 run ota --package dcc-ota --package dcc-ota-format "$@"

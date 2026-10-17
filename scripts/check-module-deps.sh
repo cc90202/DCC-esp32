@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Module dependency rules for the firmware crate, checked on the module graph
 # of both targets (host and riscv32): much of the crate only exists on one.
-# The protocol crate (crates/dcc-protocol) is checked the same way, with all
-# its features on, and may have no cycle at all: the allowlist is the
-# firmware's.
+# The HAL-free crates it is built on (crates/dcc-protocol, crates/z21) are
+# checked the same way, with all their features on, and may have no cycle at
+# all: the allowlist is the firmware's.
 #
 # - Only module-to-module "uses" edges count. Any edge is lifted to the two
 #   sibling modules under the closest common ancestor, so a::x::y -> a::z
@@ -16,6 +16,13 @@
 # - Modules mounted with #[path] are renamed after the file they live in, so
 #   `dcc_runtime` (dcc/engine.rs) is checked as `dcc::engine`.
 # - A forbidden direction below fails the check.
+# - A forbidden crate below is checked on the source text instead: the
+#   `--no-externs` graph has no edge into another crate, and a path through
+#   the firmware's re-export shim (`crate::z21::X`) resolves to that crate too.
+#   Comments (nested block comments too) and string, raw-string and char
+#   literals are blanked first; then any line under src/<module>/ (or
+#   src/<module>.rs) naming the crate as a whole word (`z21::`, `::z21`,
+#   `use z21`, `{z21, ...}`) fails.
 # - A cycle fails the check, unless every edge of it is listed in
 #   scripts/module-cycles-allowlist.txt. That list only shrinks: a listed edge
 #   that is no longer part of a cycle fails, and so does a listed edge missing
@@ -25,7 +32,8 @@
 # Usage: scripts/check-module-deps.sh [--dot-dir DIR]
 #        scripts/check-module-deps.sh --self-test
 # --dot-dir reads host.dot and riscv32.dot from DIR instead of running
-# cargo-modules (and, when present, DIR/dcc-protocol/{host,riscv32}.dot); --self-test runs the rules on built-in graphs. Requires
+# cargo-modules (and, when present, DIR/<crate>/{host,riscv32}.dot for each
+# HAL-free crate); --self-test runs the rules on built-in graphs. Requires
 # cargo-modules (except with those options), git and python3.
 set -euo pipefail
 
@@ -39,7 +47,17 @@ forbidden=(
     "dcc -> application"
 )
 
+# "module -> crate": no file of the firmware module may name the workspace
+# crate. The modules of dcc-protocol cannot use z21 at all: Cargo rejects the
+# dependency cycle.
+forbidden_crates=(
+    "dcc -> z21"
+)
+
 targets=(x86_64-unknown-linux-gnu:host riscv32imac-unknown-none-elf:riscv32)
+
+# HAL-free workspace crates checked with an empty cycle list.
+crates=(dcc-protocol z21)
 
 base_ref="${CYCLE_BASE_REF:-origin/main}"
 
@@ -248,6 +266,102 @@ print(f"Module dependencies follow the {len(forbidden_rules)} direction rule(s);
       f"only the {len(allowed_cycle_edges)} listed cycle edge(s) form cycles.")
 PY
 
+# Arguments: source root, forbidden crate rules...
+read -r -d '' crate_checker <<'PY' || true
+import os
+import re
+import sys
+
+
+
+RAW_STRING = re.compile(r'(?:b|c)?r(#*)"')
+CHAR_LITERAL = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]*\}|.)|[^\\'])'", re.S)
+
+
+def strip_rust(text):
+    """Blanks comments and string, byte-string, raw-string and char literals.
+
+    Newlines are kept so line numbers stay valid; lifetimes are left alone.
+    """
+    out = []
+    i, n = 0, len(text)
+
+    def blank(chunk):
+        out.append("".join(c if c == "\n" else " " for c in chunk))
+
+    while i < n:
+        c = text[i]
+        prev = text[i - 1] if i else ""
+        ident_before = prev.isalnum() or prev == "_"
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            blank(text[i:end])
+            i = end
+        elif text.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(text[i:j])
+            i = j
+        elif not ident_before and (m := RAW_STRING.match(text, i)):
+            close = '"' + m.group(1)
+            end = text.find(close, m.end())
+            end = n if end < 0 else end + len(close)
+            blank(text[i:end])
+            i = end
+        elif c == '"' or (not ident_before and text.startswith(('b"', 'c"'), i)):
+            j = text.index('"', i) + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            blank(text[i:j + 1])
+            i = j + 1
+        elif c == "'" and (m := CHAR_LITERAL.match(text, i)):
+            blank(text[i:m.end()])
+            i = m.end()
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+src, *rules = sys.argv[1:]
+errors = []
+for rule in rules:
+    module, crate = (part.strip() for part in rule.split("->"))
+    pattern = re.compile(r"(?<![\w$])" + re.escape(crate) + r"(?!\w)")
+    files = []
+    single = os.path.join(src, module + ".rs")
+    if os.path.isfile(single):
+        files.append(single)
+    for directory, _, names in os.walk(os.path.join(src, module)):
+        files.extend(os.path.join(directory, name) for name in names if name.endswith(".rs"))
+    for path in sorted(files):
+        with open(path, encoding="utf-8") as handle:
+            code = strip_rust(handle.read())
+            for number, line in enumerate(code.split("\n"), 1):
+                if pattern.search(line):
+                    rel = os.path.relpath(path, os.path.dirname(src))
+                    errors.append(f"{rel}:{number}: names the crate '{crate}', "
+                                  f"which breaks the rule '{rule}'")
+if errors:
+    print("Crate dependency check failed:", file=sys.stderr)
+    for error in errors:
+        print(f"  {error}", file=sys.stderr)
+    sys.exit(1)
+print(f"No firmware module names a crate it may not use ({len(rules)} rule(s)).")
+PY
+
+# Runs the crate rules on a source root: SRC, then the rules.
+check_crates() {
+    python3 -c "$crate_checker" "$@"
+}
+
 # Runs the checker on: DOT directory, #[path] grep output, cycle list, base
 # cycle list or "", base name, then the forbidden rules.
 check() {
@@ -320,6 +434,55 @@ if ((self_test)); then
     expect "forbidden direction from a #[path] module" fail "dcc::engine -> net::wifi breaks the rule" \
         "$tmp/mounted" "$tmp/mounts-engine.txt" "$tmp/empty.txt" "$tmp/empty.txt" base "${forbidden[@]}"
 
+    # Writes FILE under DIR/src with the given lines.
+    source_file() {
+        local dir="$1" file="$2"
+        shift 2
+        mkdir -p "$(dirname "$dir/src/$file")"
+        printf '%s\n' "$@" >"$dir/src/$file"
+    }
+    # Case: name, expected outcome, output regex, source root, then rules.
+    expect_crates() {
+        local name="$1" outcome="$2" pattern="$3" output status=0
+        shift 3
+        output="$(check_crates "$@" 2>&1)" || status=$?
+        if { [[ "$outcome" == pass ]] && ((status != 0)); } ||
+            { [[ "$outcome" == fail ]] && ((status == 0)); } ||
+            ! grep -Eq -- "$pattern" <<<"$output"; then
+            printf 'self-test FAILED: %s (expected %s, exit %d, /%s/):\n%s\n' \
+                "$name" "$outcome" "$status" "$pattern" "$output" >&2
+            failures=$((failures + 1))
+        else
+            printf 'self-test ok: %s\n' "$name"
+        fi
+    }
+    source_file "$tmp/crate-direct" dcc/channels.rs "use z21::HEADER_XBUS;"
+    expect_crates "module using a forbidden crate" fail \
+        "dcc/channels.rs:1: names the crate 'z21', which breaks the rule 'dcc -> z21'" \
+        "$tmp/crate-direct/src" "${forbidden_crates[@]}"
+    source_file "$tmp/crate-shim" dcc/scheduler/runtime.rs "fn f() {}" "    let _ = crate::z21::HEADER_XBUS;"
+    expect_crates "forbidden crate through the firmware shim" fail "runtime.rs:2: names the crate 'z21'" \
+        "$tmp/crate-shim/src" "${forbidden_crates[@]}"
+    source_file "$tmp/crate-group" dcc.rs "use crate::{net, z21};"
+    expect_crates "forbidden crate in a grouped import of src/dcc.rs" fail "dcc.rs:1: names the crate 'z21'" \
+        "$tmp/crate-group/src" "${forbidden_crates[@]}"
+    source_file "$tmp/crate-clean" dcc/mod.rs "// z21::X is only named in a comment" "fn z21_ready() {}" \
+        "let lan_z21 = 1; // z21::Y"
+    source_file "$tmp/crate-clean" net/udp.rs "use z21::HEADER_XBUS;"
+    expect_crates "comments, longer names and other modules are accepted" pass '1 rule' \
+        "$tmp/crate-clean/src" "${forbidden_crates[@]}"
+    source_file "$tmp/crate-url" dcc/diag.rs 'let _ = ("udp://", z21::HEADER_XBUS);'
+    expect_crates "forbidden crate after a string holding //" fail "diag.rs:1: names the crate 'z21'" \
+        "$tmp/crate-url/src" "${forbidden_crates[@]}"
+    source_file "$tmp/crate-char" dcc/diag.rs "fn f<'a>(_: &'a u8) {}" "let _ = ('\"', z21::HEADER_XBUS);"
+    expect_crates "forbidden crate after a lifetime and a quote char literal" fail \
+        "diag.rs:2: names the crate 'z21'" "$tmp/crate-char/src" "${forbidden_crates[@]}"
+    source_file "$tmp/crate-literals" dcc/diag.rs 'let _ = "z21-udp";' '/* z21 */ fn f() {}' \
+        '/* outer /* z21 */ z21 */' 'let _ = r#"a " z21 "#;' 'let _ = b"z21";' 'let _ = "two' 'lines z21";' \
+        'let _ = ("//", 1); // z21::X' 'fn g() { z21_ready(); }'
+    expect_crates "strings, raw strings and nested block comments are accepted" pass '1 rule' \
+        "$tmp/crate-literals/src" "${forbidden_crates[@]}"
+
     graph "$tmp/protocol" "packet -> encoder" "encoder::tail -> packet"
     expect "protocol crate: any cycle fails against the empty list" fail 'cycle among encoder, packet' \
         "$tmp/protocol" "$tmp/mounts.txt" "$tmp/empty.txt" "$tmp/empty.txt" "(none)"
@@ -343,16 +506,21 @@ module_graphs() {
     done
 }
 
-protocol_dot_dir=""
+# Crates from `crates` that have graphs, each under DOT_DIR/<crate>.
+crate_dot_dirs=()
 if [[ -z "$dot_dir" ]]; then
     command -v cargo-modules >/dev/null ||
         { echo "check-module-deps: cargo-modules not found (cargo install cargo-modules)" >&2; exit 1; }
     dot_dir="$tmp"
     module_graphs dcc-esp32 "$dot_dir"
-    protocol_dot_dir="$tmp/dcc-protocol"
-    module_graphs dcc-protocol "$protocol_dot_dir" --all-features
-elif [[ -d "$dot_dir/dcc-protocol" ]]; then
-    protocol_dot_dir="$dot_dir/dcc-protocol"
+    for crate in "${crates[@]}"; do
+        module_graphs "$crate" "$tmp/$crate" --all-features
+        crate_dot_dirs+=("$crate")
+    done
+else
+    for crate in "${crates[@]}"; do
+        [[ ! -d "$dot_dir/$crate" ]] || crate_dot_dirs+=("$crate")
+    done
 fi
 
 # #[path] mounts, as grep output: the attribute line and the lines after it.
@@ -364,14 +532,15 @@ if git -C "$root" cat-file -e "$base_ref:scripts/module-cycles-allowlist.txt" 2>
     base_list="$tmp/base-cycles.txt"
 fi
 
-# The protocol crate: no #[path] mounts, no direction rules, and an empty cycle
-# list that is also its own base, so any cycle fails.
-if [[ -n "$protocol_dot_dir" ]]; then
-    echo "dcc-protocol:"
-    : >"$tmp/no-mounts.txt"
-    : >"$tmp/no-cycles.txt"
-    check "$protocol_dot_dir" "$tmp/no-mounts.txt" "$tmp/no-cycles.txt" "$tmp/no-cycles.txt" "(none)"
-fi
+# The HAL-free crates: no #[path] mounts, no direction rules, and an empty
+# cycle list that is also its own base, so any cycle fails.
+: >"$tmp/no-mounts.txt"
+: >"$tmp/no-cycles.txt"
+for crate in "${crate_dot_dirs[@]}"; do
+    echo "$crate:"
+    check "$dot_dir/$crate" "$tmp/no-mounts.txt" "$tmp/no-cycles.txt" "$tmp/no-cycles.txt" "(none)"
+done
 
-[[ -z "$protocol_dot_dir" ]] || echo "dcc-esp32:"
+((${#crate_dot_dirs[@]} == 0)) || echo "dcc-esp32:"
+check_crates "$root/src" "${forbidden_crates[@]}"
 check "$dot_dir" "$tmp/path-mounts.txt" "$cycles_allowlist" "$base_list" "$base_ref" "${forbidden[@]}"

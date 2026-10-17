@@ -1,6 +1,6 @@
 use super::wire::*;
 use super::*;
-use crate::dcc::{FunctionState, LogicalSpeed};
+use dcc_protocol::{FunctionState, LogicalSpeed};
 
 fn cstate(track_on: bool, estop: bool, short_circuit: bool) -> CentralState {
     CentralState {
@@ -68,6 +68,14 @@ fn test_parse_get_serial_number() {
 fn test_parse_get_hwinfo() {
     let frame = frame_header_only(HEADER_GET_HWINFO);
     assert_eq!(parse_frame(&frame), Ok(Z21Command::GetHwInfo));
+}
+
+#[test]
+fn test_parse_systemstate_getdata() {
+    // LAN_SYSTEMSTATE_GETDATA as the spec writes it: DataLen 0x0004, Header 0x0085.
+    let frame = [0x04, 0x00, 0x85, 0x00];
+    assert_eq!(frame, frame_header_only(HEADER_SYSTEMSTATE_GETDATA));
+    assert_eq!(parse_frame(&frame), Ok(Z21Command::GetSystemState));
 }
 
 #[test]

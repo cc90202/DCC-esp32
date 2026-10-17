@@ -83,6 +83,22 @@ crates/dcc-protocol/src/packet/address.rs:166:52: replace | with ^ in DccAddress
 crates/dcc-protocol/src/packet/address.rs:211:31: replace | with ^ in HighFragment::compose
 crates/dcc-protocol/src/speed28.rs:54:27: replace - with + in encode_nmra_instruction_speed_bits
 crates/dcc-protocol/src/speed28.rs:55:27: replace | with ^ in encode_nmra_instruction_speed_bits
+crates/z21/src/encoding.rs:48:22: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:56:24: replace & with | in encode_loco_info
+crates/z21/src/encoding.rs:57:24: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:57:36: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:57:48: replace | with ^ in encode_loco_info
+crates/z21/src/encoding.rs:57:60: replace | with ^ in encode_loco_info
+crates/z21/src/parsing.rs:247:55: replace | with ^ in parse_cv_pom_command
+crates/z21/src/parsing.rs:296:58: replace | with ^ in parse_xbus
+crates/z21/src/parsing.rs:92:29: replace == with != in frame_kind
+crates/z21/src/parsing.rs:92:44: replace && with || in frame_kind
+crates/z21/src/parsing.rs:92:57: replace >= with < in frame_kind
+crates/z21/src/wire.rs:145:25: replace | with ^ in write_loco_address_be
+crates/z21/src/wire.rs:216:23: replace || with && in z21_wire_to_logical
+crates/z21/src/wire.rs:226:20: replace > with == in z21_wire_to_logical
+crates/z21/src/wire.rs:226:20: replace > with >= in z21_wire_to_logical
+crates/z21/src/wire.rs:102:51: replace | with ^ in parse_loco_address
 src/boot.rs:113:5: replace spawn_critical -> Result<(), BootError> with Ok(())
 src/boot.rs:147:5: replace spawn_display -> Result<(), BootError> with Ok(())
 src/boot.rs:169:5: replace load_boot_wifi_decision -> Result<WifiBootDecision, BootError> with Ok(Default::default())
@@ -994,19 +1010,3 @@ src/track_output/interlock.rs:19:5: replace inhibit_epoch -> u32 with 1
 src/track_output/interlock.rs:25:5: replace set_inhibited with ()
 src/track_safety.rs:18:5: replace disable_track_intentionally with ()
 src/track_safety.rs:19:8: delete ! in disable_track_intentionally
-src/z21/encoding.rs:48:22: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:56:24: replace & with | in encode_loco_info
-src/z21/encoding.rs:57:24: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:57:36: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:57:48: replace | with ^ in encode_loco_info
-src/z21/encoding.rs:57:60: replace | with ^ in encode_loco_info
-src/z21/parsing.rs:247:55: replace | with ^ in parse_cv_pom_command
-src/z21/parsing.rs:296:58: replace | with ^ in parse_xbus
-src/z21/parsing.rs:92:29: replace == with != in frame_kind
-src/z21/parsing.rs:92:44: replace && with || in frame_kind
-src/z21/parsing.rs:92:57: replace >= with < in frame_kind
-src/z21/wire.rs:142:25: replace | with ^ in write_loco_address_be
-src/z21/wire.rs:213:23: replace || with && in z21_wire_to_logical
-src/z21/wire.rs:223:20: replace > with == in z21_wire_to_logical
-src/z21/wire.rs:223:20: replace > with >= in z21_wire_to_logical
-src/z21/wire.rs:99:51: replace | with ^ in parse_loco_address

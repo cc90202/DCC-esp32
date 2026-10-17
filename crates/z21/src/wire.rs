@@ -1,4 +1,4 @@
-use crate::dcc::{
+use dcc_protocol::{
     DccAddress, NmraSpeed28, encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed,
 };
 
@@ -16,9 +16,12 @@ pub(super) const HEADER_GET_LOCOMODE: u16 = 0x0060;
 pub(super) const HEADER_SET_LOCOMODE: u16 = 0x0061;
 pub(super) const HEADER_RAILCOM_GETDATA: u16 = 0x0089;
 pub(super) const HEADER_LOCONET_DETECTOR: u16 = 0x00A4;
-// Shared by every XBus request, reply and broadcast frame.
-pub(crate) const HEADER_XBUS: u16 = 0x0040;
-pub(crate) const HEADER_SYSTEMSTATE_GETDATA: u16 = 0x0085;
+/// Frame header (0x0040) of every XBus frame (`LAN_X_*`): request, reply
+/// and broadcast; the X-Header byte after it says which command it is.
+pub const HEADER_XBUS: u16 = 0x0040;
+/// Frame header (0x0085) of `LAN_SYSTEMSTATE_GETDATA`, the client's poll for
+/// the system state; the reply is `LAN_SYSTEMSTATE_DATACHANGED` (0x0084).
+pub const HEADER_SYSTEMSTATE_GETDATA: u16 = 0x0085;
 
 // XBus X-Header values (used inside header=0x0040 frames)
 pub(super) const XHEADER_GET_VERSION: u8 = 0x21; // sub-commands dispatched by DB0 below

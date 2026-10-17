@@ -8,8 +8,9 @@
 //! projections. [`dcc`] covers packet encoding, RMT pulse generation, the
 //! scheduler and CV programming (the packet types and their encoding come from
 //! the HAL-free `dcc_protocol` crate and are re-exported there), while
-//! [`z21`] is the pure protocol contract and [`net`] the adapters around it:
-//! Z21 wiring, WiFi and UDP transport.
+//! [`z21`] is the pure protocol contract (re-exported from the HAL-free `z21`
+//! crate) and [`net`] the adapters around it: Z21 wiring, WiFi and UDP
+//! transport.
 //! Runtime state lives in [`system_status`] and `fault_manager`, which react
 //! to boot, e-stop and fault events.
 //!

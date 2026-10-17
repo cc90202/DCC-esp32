@@ -8,6 +8,6 @@
 25 src/dcc/engine.rs::dcc_engine_task
 20 src/track_output.rs::cutout_timer_interrupt
 20 src/track_output.rs::cutout_timer_interrupt::<anonymous>
-20 src/z21/parsing.rs::parse_xbus
+20 crates/z21/src/parsing.rs::parse_xbus
 16 src/dcc/scheduler/slot_manager/locomotives.rs::SlotManager::handle_loco_request
 16 src/short_detector.rs::short_detector_task
