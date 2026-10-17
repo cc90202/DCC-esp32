@@ -1,6 +1,6 @@
-//! Request/response correlation shared by the loco and POM clients.
+//! Request/response correlation for the loco client.
 //!
-//! Both clients talk to a single-flight actor over a request channel and a
+//! The client talks to a single-flight actor over a request channel and a
 //! response channel. A reply can arrive after its request already timed out,
 //! so every request carries an id from a task-local counter and only the reply
 //! carrying that id is returned; anything else is discarded.
@@ -11,20 +11,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Duration, Instant, with_deadline};
 
-/// How [`correlated_request`] hands the request to the request channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SendMode {
-    /// Wait for room in the request channel, at most until the response
-    /// deadline.
-    Blocking,
-    /// Give up at once if the request channel is full.
-    TryOnce,
-}
-
 /// Sends one request and waits for the reply carrying its id.
 ///
 /// Drains stale replies, allocates the id, computes the response deadline,
-/// sends (bounded by the same deadline when `Blocking`), then waits for the
+/// sends (waiting for room at most until the same deadline), then waits for the
 /// reply carrying that id until the deadline. Replies carrying any other id
 /// are discarded. The counter advances once per call, also when the send
 /// fails, and wraps at `u32::MAX`.
@@ -34,10 +24,6 @@ pub(crate) enum SendMode {
 ///
 /// Returns `None` when the send fails or no matching reply arrives before
 /// `response_timeout` has elapsed.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one call site per client; bundling the channels and callbacks into a struct would only move the same list"
-)]
 pub(crate) async fn correlated_request<Req, Resp, Id, const N: usize>(
     sender: &Sender<'static, CriticalSectionRawMutex, Req, N>,
     receiver: &Receiver<'static, CriticalSectionRawMutex, Resp, N>,
@@ -45,7 +31,6 @@ pub(crate) async fn correlated_request<Req, Resp, Id, const N: usize>(
     make_id: fn(u32) -> Id,
     build: impl FnOnce(Id, Instant) -> Req,
     id_of: fn(&Resp) -> Id,
-    send: SendMode,
     response_timeout: Duration,
 ) -> Option<Resp>
 where
@@ -61,14 +46,9 @@ where
     let response_deadline = now + response_timeout;
     let request = build(request_id, now);
 
-    match send {
-        SendMode::Blocking => {
-            with_deadline(response_deadline, sender.send(request))
-                .await
-                .ok()?;
-        }
-        SendMode::TryOnce => sender.try_send(request).ok()?,
-    }
+    with_deadline(response_deadline, sender.send(request))
+        .await
+        .ok()?;
 
     loop {
         let response = with_deadline(response_deadline, receiver.receive())
@@ -145,7 +125,6 @@ mod tests {
         requests: &'static Requests,
         replies: &'static Replies,
         counter: &Cell<u32>,
-        send: SendMode,
     ) -> Option<TestReply> {
         block_on(correlated_request(
             &requests.sender(),
@@ -154,7 +133,6 @@ mod tests {
             TestId,
             |id, _now| id,
             reply_id,
-            send,
             TIMEOUT,
         ))
     }
@@ -178,7 +156,7 @@ mod tests {
             block_on(REPLIES.send(TestReply { id, tag: 2 }));
         });
 
-        let reply = request(&REQUESTS, &REPLIES, &Cell::new(7), SendMode::Blocking);
+        let reply = request(&REQUESTS, &REPLIES, &Cell::new(7));
 
         assert_eq!(
             reply,
@@ -196,7 +174,7 @@ mod tests {
         static REPLIES: Replies = Channel::new();
         let counter = Cell::new(40);
 
-        let first = request(&REQUESTS, &REPLIES, &counter, SendMode::Blocking);
+        let first = request(&REQUESTS, &REPLIES, &counter);
         assert_eq!(first, None);
 
         // The late reply to the first request lands between the two calls.
@@ -223,7 +201,7 @@ mod tests {
             }));
         });
 
-        let second = request(&REQUESTS, &REPLIES, &counter, SendMode::Blocking);
+        let second = request(&REQUESTS, &REPLIES, &counter);
 
         assert_eq!(
             second,
@@ -242,32 +220,11 @@ mod tests {
         static REPLIES: Replies = Channel::new();
         let started = StdInstant::now();
 
-        let reply = request(&REQUESTS, &REPLIES, &Cell::new(0), SendMode::TryOnce);
+        let reply = request(&REQUESTS, &REPLIES, &Cell::new(0));
 
         assert_eq!(reply, None);
         assert!(started.elapsed() >= TIMEOUT_STD);
         assert_eq!(REQUESTS.try_receive(), Ok(TestId(0)));
-    }
-
-    #[test]
-    fn try_once_on_full_channel_returns_none_without_waiting() {
-        static REQUESTS: Requests = Channel::new();
-        static REPLIES: Replies = Channel::new();
-        REQUESTS
-            .try_send(TestId(99))
-            .expect("request channel starts empty");
-        let counter = Cell::new(5);
-        let started = StdInstant::now();
-
-        let reply = request(&REQUESTS, &REPLIES, &counter, SendMode::TryOnce);
-
-        assert_eq!(reply, None);
-        // A blocking send would wait the whole timeout; the bound sits 150 ms
-        // from both outcomes.
-        assert!(started.elapsed() < TIMEOUT_STD / 2);
-        // The id is consumed even though the request never left.
-        assert_eq!(counter.get(), 6);
-        assert_eq!(REQUESTS.try_receive(), Ok(TestId(99)));
     }
 
     #[test]
@@ -290,7 +247,7 @@ mod tests {
             assert_eq!(REQUESTS.try_receive(), Ok(TestId(99)));
         });
 
-        let reply = request(&REQUESTS, &REPLIES, &Cell::new(0), SendMode::Blocking);
+        let reply = request(&REQUESTS, &REPLIES, &Cell::new(0));
         let elapsed = started.elapsed();
 
         consumer.join().expect("consumer thread must finish");
@@ -313,7 +270,7 @@ mod tests {
             .expect("request channel starts empty");
         let started = StdInstant::now();
 
-        let reply = request(&REQUESTS, &REPLIES, &Cell::new(0), SendMode::Blocking);
+        let reply = request(&REQUESTS, &REPLIES, &Cell::new(0));
         let elapsed = started.elapsed();
 
         assert_eq!(reply, None);

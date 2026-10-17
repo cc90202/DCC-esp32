@@ -6,9 +6,20 @@ use crate::system_status::{FaultEvent, SystemStatusEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrackPowerRequest {
-    Enable(LeasePermit),
+    Enable,
     Disable,
     EmergencyStop,
+}
+
+/// What the controller lease allows a power-on request to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeaseCheck {
+    /// The sender holds no lease.
+    None,
+    /// The sender holds a lease the authority no longer accepts.
+    Expired,
+    /// The sender holds a lease the authority accepts.
+    Valid(LeasePermit),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,24 +35,67 @@ pub(crate) struct TrackPowerDecision {
     pub(crate) feedback: TrackPowerFeedback,
 }
 
+/// Why a power-on request is turned down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefuseReason {
+    Inhibited,
+    NoLease,
+    ExpiredLease,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrackPowerVerdict {
+    Refuse(RefuseReason),
+    Apply(TrackPowerDecision),
+}
+
+/// Answer sent to the controller for a refused power-on request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusalReply {
+    Silent,
+    TrackPowerOff,
+}
+
+/// Judges a track-power request against every precondition.
+///
+/// Only power-on can be refused. A missing or expired lease is reported
+/// before the update inhibit, so a sender without authority learns nothing
+/// about the inhibit state.
 #[must_use]
-pub(crate) const fn decide_track_power(request: TrackPowerRequest) -> TrackPowerDecision {
+pub(crate) const fn judge_track_power(
+    request: TrackPowerRequest,
+    lease: LeaseCheck,
+    inhibited: bool,
+) -> TrackPowerVerdict {
     match request {
-        TrackPowerRequest::Enable(permit) => TrackPowerDecision {
-            disable_output_immediately: false,
-            fault_event: FaultEvent::NetworkResume(permit),
-            feedback: TrackPowerFeedback::None,
+        TrackPowerRequest::Enable => match lease {
+            LeaseCheck::None => TrackPowerVerdict::Refuse(RefuseReason::NoLease),
+            LeaseCheck::Expired => TrackPowerVerdict::Refuse(RefuseReason::ExpiredLease),
+            LeaseCheck::Valid(_) if inhibited => TrackPowerVerdict::Refuse(RefuseReason::Inhibited),
+            LeaseCheck::Valid(permit) => TrackPowerVerdict::Apply(TrackPowerDecision {
+                disable_output_immediately: false,
+                fault_event: FaultEvent::NetworkResume(permit),
+                feedback: TrackPowerFeedback::None,
+            }),
         },
-        TrackPowerRequest::Disable => TrackPowerDecision {
+        TrackPowerRequest::Disable => TrackPowerVerdict::Apply(TrackPowerDecision {
             disable_output_immediately: true,
             fault_event: FaultEvent::StopPressed,
             feedback: TrackPowerFeedback::None,
-        },
-        TrackPowerRequest::EmergencyStop => TrackPowerDecision {
+        }),
+        TrackPowerRequest::EmergencyStop => TrackPowerVerdict::Apply(TrackPowerDecision {
             disable_output_immediately: true,
             fault_event: FaultEvent::StopPressed,
             feedback: TrackPowerFeedback::Stopped,
-        },
+        }),
+    }
+}
+
+#[must_use]
+pub(crate) const fn refusal_reply(reason: RefuseReason) -> RefusalReply {
+    match reason {
+        RefuseReason::NoLease | RefuseReason::ExpiredLease => RefusalReply::Silent,
+        RefuseReason::Inhibited => RefusalReply::TrackPowerOff,
     }
 }
 
@@ -113,42 +167,101 @@ mod tests {
         short_circuit: false,
     };
 
+    const PERMIT: LeasePermit = LeasePermit::new(crate::authority::LeaseEpoch::new(1), u64::MAX);
+
+    fn applied(verdict: TrackPowerVerdict) -> TrackPowerDecision {
+        match verdict {
+            TrackPowerVerdict::Apply(decision) => decision,
+            TrackPowerVerdict::Refuse(reason) => panic!("unexpected refusal {reason:?}"),
+        }
+    }
+
     #[test]
-    fn enable_requests_resume_without_touching_output_directly() {
+    fn valid_lease_power_on_resumes_without_touching_output_directly() {
         assert_eq!(
-            decide_track_power(TrackPowerRequest::Enable(LeasePermit::new(
-                crate::authority::LeaseEpoch::new(1),
-                u64::MAX,
-            ))),
-            TrackPowerDecision {
+            judge_track_power(TrackPowerRequest::Enable, LeaseCheck::Valid(PERMIT), false),
+            TrackPowerVerdict::Apply(TrackPowerDecision {
                 disable_output_immediately: false,
-                fault_event: FaultEvent::NetworkResume(LeasePermit::new(
-                    crate::authority::LeaseEpoch::new(1),
-                    u64::MAX,
-                )),
+                fault_event: FaultEvent::NetworkResume(PERMIT),
                 feedback: TrackPowerFeedback::None,
-            }
+            })
         );
     }
 
     #[test]
-    fn disable_cuts_output_before_latching_stop() {
+    fn no_lease_beats_inhibited_and_replies_nothing() {
+        let verdict = judge_track_power(TrackPowerRequest::Enable, LeaseCheck::None, true);
+        assert_eq!(verdict, TrackPowerVerdict::Refuse(RefuseReason::NoLease));
+        assert_eq!(refusal_reply(RefuseReason::NoLease), RefusalReply::Silent);
+
+        let verdict = judge_track_power(TrackPowerRequest::Enable, LeaseCheck::Expired, true);
         assert_eq!(
-            decide_track_power(TrackPowerRequest::Disable),
-            TrackPowerDecision {
-                disable_output_immediately: true,
-                fault_event: FaultEvent::StopPressed,
-                feedback: TrackPowerFeedback::None,
-            }
+            verdict,
+            TrackPowerVerdict::Refuse(RefuseReason::ExpiredLease)
+        );
+        assert_eq!(
+            refusal_reply(RefuseReason::ExpiredLease),
+            RefusalReply::Silent
         );
     }
 
     #[test]
-    fn emergency_stop_adds_stopped_feedback() {
+    fn inhibited_power_on_is_refused_even_with_lease() {
+        let verdict = judge_track_power(TrackPowerRequest::Enable, LeaseCheck::Valid(PERMIT), true);
+        assert_eq!(verdict, TrackPowerVerdict::Refuse(RefuseReason::Inhibited));
         assert_eq!(
-            decide_track_power(TrackPowerRequest::EmergencyStop).feedback,
-            TrackPowerFeedback::Stopped
+            refusal_reply(RefuseReason::Inhibited),
+            RefusalReply::TrackPowerOff
         );
+    }
+
+    #[test]
+    fn power_on_without_lease_is_refused_even_when_not_inhibited() {
+        assert_eq!(
+            judge_track_power(TrackPowerRequest::Enable, LeaseCheck::None, false),
+            TrackPowerVerdict::Refuse(RefuseReason::NoLease)
+        );
+        assert_eq!(
+            judge_track_power(TrackPowerRequest::Enable, LeaseCheck::Expired, false),
+            TrackPowerVerdict::Refuse(RefuseReason::ExpiredLease)
+        );
+    }
+
+    #[test]
+    fn power_off_and_estop_are_never_refused() {
+        for request in [TrackPowerRequest::Disable, TrackPowerRequest::EmergencyStop] {
+            for lease in [LeaseCheck::None, LeaseCheck::Expired] {
+                assert!(matches!(
+                    judge_track_power(request, lease, true),
+                    TrackPowerVerdict::Apply(_)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn disable_and_estop_verdicts_request_immediate_output_disable() {
+        for request in [TrackPowerRequest::Disable, TrackPowerRequest::EmergencyStop] {
+            let decision = applied(judge_track_power(request, LeaseCheck::None, false));
+            assert!(decision.disable_output_immediately);
+            assert_eq!(decision.fault_event, FaultEvent::StopPressed);
+        }
+    }
+
+    #[test]
+    fn estop_keeps_the_stopped_feedback() {
+        let estop = applied(judge_track_power(
+            TrackPowerRequest::EmergencyStop,
+            LeaseCheck::None,
+            false,
+        ));
+        let off = applied(judge_track_power(
+            TrackPowerRequest::Disable,
+            LeaseCheck::None,
+            false,
+        ));
+        assert_eq!(estop.feedback, TrackPowerFeedback::Stopped);
+        assert_eq!(off.feedback, TrackPowerFeedback::None);
     }
 
     #[test]

@@ -331,6 +331,8 @@ pub struct SlotManager {
     active_pom: Option<ActivePomRequest>,
     pending_railcom_telemetry: Option<DccPacket>,
     next_index: usize,
+    /// Slot index where the next dirty-packet scan starts.
+    dirty_cursor: usize,
     mutation_sequence: u64,
     paused: bool,
     accepted_lease_epoch: Option<LeaseEpoch>,
@@ -401,6 +403,7 @@ impl SlotManager {
             active_pom: None,
             pending_railcom_telemetry: None,
             next_index: 0,
+            dirty_cursor: 0,
             mutation_sequence: 0,
             paused: false,
             accepted_lease_epoch: None,
