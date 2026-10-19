@@ -89,8 +89,8 @@ crates/z21/src/encoding.rs:57:24: replace | with ^ in encode_loco_info
 crates/z21/src/encoding.rs:57:36: replace | with ^ in encode_loco_info
 crates/z21/src/encoding.rs:57:48: replace | with ^ in encode_loco_info
 crates/z21/src/encoding.rs:57:60: replace | with ^ in encode_loco_info
-crates/z21/src/parsing.rs:247:55: replace | with ^ in parse_cv_pom_command
-crates/z21/src/parsing.rs:296:58: replace | with ^ in parse_xbus
+crates/z21/src/parsing.rs:244:55: replace | with ^ in parse_cv_pom_command
+crates/z21/src/parsing.rs:293:58: replace | with ^ in parse_xbus
 crates/z21/src/parsing.rs:92:29: replace == with != in frame_kind
 crates/z21/src/parsing.rs:92:44: replace && with || in frame_kind
 crates/z21/src/parsing.rs:92:57: replace >= with < in frame_kind
@@ -344,16 +344,13 @@ src/dcc/scheduler/runtime.rs:44:20: delete ! in packet_scheduler_task
 src/dcc/scheduler/runtime.rs:69:13: replace && with || in packet_scheduler_task
 src/dcc/scheduler/runtime.rs:77:16: delete ! in packet_scheduler_task
 src/dcc/scheduler/runtime.rs:90:23: replace != with == in packet_scheduler_task
-src/dcc/scheduler/slot_manager.rs:121:24: replace != with == in Slot::has_any_functions
-src/dcc/scheduler/slot_manager.rs:121:9: replace Slot::has_any_functions -> bool with true
-src/dcc/scheduler/slot_manager.rs:183:56: replace % with + in Slot::next_dirty_function_packet
-src/dcc/scheduler/slot_manager.rs:210:47: replace + with * in Slot::next_refresh_packet_with_budget
-src/dcc/scheduler/slot_manager.rs:248:56: replace % with + in Slot::next_active_function_packet
-src/dcc/scheduler/slot_manager.rs:259:44: replace | with & in Slot::active_function_group_mask
-src/dcc/scheduler/slot_manager.rs:259:44: replace | with ^ in Slot::active_function_group_mask
-src/dcc/scheduler/slot_manager.rs:259:49: replace << with >> in Slot::active_function_group_mask
-src/dcc/scheduler/slot_manager.rs:269:38: replace * with / in Slot::set_dirty_retries
-src/dcc/scheduler/slot_manager.rs:272:50: replace | with ^ in Slot::set_dirty_retries
+src/dcc/scheduler/slot_manager.rs:173:56: replace % with + in Slot::next_dirty_function_packet
+src/dcc/scheduler/slot_manager.rs:200:47: replace + with * in Slot::next_refresh_packet_with_budget
+src/dcc/scheduler/slot_manager.rs:238:56: replace % with + in Slot::next_active_function_packet
+src/dcc/scheduler/slot_manager.rs:249:44: replace | with & in Slot::active_function_group_mask
+src/dcc/scheduler/slot_manager.rs:249:44: replace | with ^ in Slot::active_function_group_mask
+src/dcc/scheduler/slot_manager.rs:249:49: replace << with >> in Slot::active_function_group_mask
+src/dcc/scheduler/slot_manager.rs:262:50: replace | with ^ in Slot::set_dirty_retries
 src/dcc/scheduler/slot_manager/locomotives.rs:270:9: replace SlotManager::quiesce_for_power_on with ()
 src/dcc/scheduler/slot_manager/locomotives.rs:55:47: replace == with != in SlotManager::oldest_replaceable_stopped_slot_index
 src/display.rs:176:5: replace led_state_label -> &'static str with ""
@@ -643,26 +640,26 @@ src/net/z21_dispatch/device.rs:31:5: replace encode_firmware_version -> usize wi
 src/net/z21_dispatch/device.rs:31:5: replace encode_firmware_version -> usize with 1
 src/net/z21_dispatch/device.rs:35:5: replace encode_unknown_turnout -> usize with 0
 src/net/z21_dispatch/device.rs:35:5: replace encode_unknown_turnout -> usize with 1
-src/net/z21_dispatch/locomotive.rs:103:5: replace emergency_stop -> usize with 0
-src/net/z21_dispatch/locomotive.rs:103:5: replace emergency_stop -> usize with 1
-src/net/z21_dispatch/locomotive.rs:119:5: replace set_drive -> usize with 0
-src/net/z21_dispatch/locomotive.rs:119:5: replace set_drive -> usize with 1
-src/net/z21_dispatch/locomotive.rs:162:5: replace set_function -> usize with 0
-src/net/z21_dispatch/locomotive.rs:162:5: replace set_function -> usize with 1
-src/net/z21_dispatch/locomotive.rs:203:5: replace report_request_error with ()
-src/net/z21_dispatch/locomotive.rs:228:5: replace encode_confirmed_feedback -> usize with 0
-src/net/z21_dispatch/locomotive.rs:228:5: replace encode_confirmed_feedback -> usize with 1
-src/net/z21_dispatch/locomotive.rs:234:5: replace loco_info -> z21_proto::LocoInfo with Default::default()
-src/net/z21_dispatch/locomotive.rs:248:5: replace apply_requested_change -> LocoCommandOutcome with Default::default()
-src/net/z21_dispatch/locomotive.rs:39:5: replace loco_command_rejected_count -> u32 with 0
-src/net/z21_dispatch/locomotive.rs:39:5: replace loco_command_rejected_count -> u32 with 1
-src/net/z21_dispatch/locomotive.rs:43:5: replace encode_mode -> usize with 0
-src/net/z21_dispatch/locomotive.rs:43:5: replace encode_mode -> usize with 1
-src/net/z21_dispatch/locomotive.rs:47:13: replace != with == in set_mode
-src/net/z21_dispatch/locomotive.rs:47:5: replace set_mode -> usize with 0
-src/net/z21_dispatch/locomotive.rs:47:5: replace set_mode -> usize with 1
-src/net/z21_dispatch/locomotive.rs:63:5: replace get_info -> usize with 0
-src/net/z21_dispatch/locomotive.rs:63:5: replace get_info -> usize with 1
+src/net/z21_dispatch/locomotive.rs:101:5: replace emergency_stop -> usize with 0
+src/net/z21_dispatch/locomotive.rs:101:5: replace emergency_stop -> usize with 1
+src/net/z21_dispatch/locomotive.rs:117:5: replace set_drive -> usize with 0
+src/net/z21_dispatch/locomotive.rs:117:5: replace set_drive -> usize with 1
+src/net/z21_dispatch/locomotive.rs:160:5: replace set_function -> usize with 0
+src/net/z21_dispatch/locomotive.rs:160:5: replace set_function -> usize with 1
+src/net/z21_dispatch/locomotive.rs:201:5: replace report_request_error with ()
+src/net/z21_dispatch/locomotive.rs:221:5: replace encode_confirmed_feedback -> usize with 0
+src/net/z21_dispatch/locomotive.rs:221:5: replace encode_confirmed_feedback -> usize with 1
+src/net/z21_dispatch/locomotive.rs:227:5: replace loco_info -> z21_proto::LocoInfo with Default::default()
+src/net/z21_dispatch/locomotive.rs:241:5: replace apply_requested_change -> LocoCommandOutcome with Default::default()
+src/net/z21_dispatch/locomotive.rs:37:5: replace loco_command_rejected_count -> u32 with 0
+src/net/z21_dispatch/locomotive.rs:37:5: replace loco_command_rejected_count -> u32 with 1
+src/net/z21_dispatch/locomotive.rs:41:5: replace encode_mode -> usize with 0
+src/net/z21_dispatch/locomotive.rs:41:5: replace encode_mode -> usize with 1
+src/net/z21_dispatch/locomotive.rs:45:13: replace != with == in set_mode
+src/net/z21_dispatch/locomotive.rs:45:5: replace set_mode -> usize with 0
+src/net/z21_dispatch/locomotive.rs:45:5: replace set_mode -> usize with 1
+src/net/z21_dispatch/locomotive.rs:61:5: replace get_info -> usize with 0
+src/net/z21_dispatch/locomotive.rs:61:5: replace get_info -> usize with 1
 src/net/z21_dispatch/railcom.rs:22:5: replace railcom_getdata_no_data_count -> u32 with 0
 src/net/z21_dispatch/railcom.rs:22:5: replace railcom_getdata_no_data_count -> u32 with 1
 src/net/z21_dispatch/railcom.rs:30:5: replace encode_getdata_response -> usize with 0

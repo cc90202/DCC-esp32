@@ -4,7 +4,7 @@ use heapless::Vec;
 
 use crate::cutout::RailcomChannel;
 use crate::dcc::DccAddress;
-use crate::railcom_data::{ExtPayload, RailcomDatagram, RailcomItem};
+use dcc_protocol::railcom_data::{ExtPayload, RailcomDatagram, RailcomItem};
 
 // Reverse-table sentinels. Every one must stay above 0x3f, the largest value
 // a six-bit data symbol can decode to, or it would be read back as data.
@@ -517,7 +517,7 @@ pub fn parse_logon_response_48(
         return Err(ParseError::UnsupportedDatagramId(id));
     }
 
-    let expected_crc = crate::logon::crc8_dallas_maxim(&bytes[..5]);
+    let expected_crc = dcc_protocol::logon::crc8_dallas_maxim(&bytes[..5]);
     let actual_crc = bytes[5];
     if expected_crc != actual_crc {
         return Err(ParseError::InvalidLogonCrc {

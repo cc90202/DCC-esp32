@@ -1,6 +1,6 @@
 use core::fmt;
 
-use dcc_protocol::{DccAddress, Direction, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, FunctionIndex, SpeedFormat};
 
 use super::wire::*;
 use super::{FrameKind, FunctionAction, ParseError, Z21Command};
@@ -215,10 +215,7 @@ fn parse_set_loco_function_command(payload: &[u8]) -> Result<Z21Command, ParseEr
     // payload: [0xE4, 0xF8, AddrH, AddrL, FuncByte, checksum]
     let addr = parse_loco_address(payload[2], payload[3]).ok_or(ParseError::InvalidAddress)?;
     let func_byte = payload[4];
-    let function = func_byte & 0x3F;
-    if function > 28 {
-        return Err(ParseError::InvalidFunction);
-    }
+    let function = FunctionIndex::new(func_byte & 0x3F).ok_or(ParseError::InvalidFunction)?;
     let action = match (func_byte >> 6) & 0x03 {
         0 => FunctionAction::Off,
         1 => FunctionAction::On,

@@ -17,8 +17,7 @@
 #   `dcc_runtime` (dcc/engine.rs) is checked as `dcc::engine`.
 # - A forbidden direction below fails the check.
 # - A forbidden crate below is checked on the source text instead: the
-#   `--no-externs` graph has no edge into another crate, and a path through
-#   the firmware's re-export shim (`crate::z21::X`) resolves to that crate too.
+#   `--no-externs` graph has no edge into another crate.
 #   Comments (nested block comments too) and string, raw-string and char
 #   literals are blanked first; then any line under src/<module>/ (or
 #   src/<module>.rs) naming the crate as a whole word (`z21::`, `::z21`,
@@ -43,7 +42,6 @@ cycles_allowlist="$root/scripts/module-cycles-allowlist.txt"
 # "from -> to": no module under `from` may use a module under `to`.
 forbidden=(
     "dcc -> net"
-    "dcc -> z21"
     "dcc -> application"
 )
 
@@ -460,9 +458,9 @@ if ((self_test)); then
     expect_crates "module using a forbidden crate" fail \
         "dcc/channels.rs:1: names the crate 'z21', which breaks the rule 'dcc -> z21'" \
         "$tmp/crate-direct/src" "${forbidden_crates[@]}"
-    source_file "$tmp/crate-shim" dcc/scheduler/runtime.rs "fn f() {}" "    let _ = crate::z21::HEADER_XBUS;"
-    expect_crates "forbidden crate through the firmware shim" fail "runtime.rs:2: names the crate 'z21'" \
-        "$tmp/crate-shim/src" "${forbidden_crates[@]}"
+    source_file "$tmp/crate-absolute" dcc/scheduler/runtime.rs "fn f() {}" "    let _ = ::z21::HEADER_XBUS;"
+    expect_crates "forbidden crate by absolute path" fail "runtime.rs:2: names the crate 'z21'" \
+        "$tmp/crate-absolute/src" "${forbidden_crates[@]}"
     source_file "$tmp/crate-group" dcc.rs "use crate::{net, z21};"
     expect_crates "forbidden crate in a grouped import of src/dcc.rs" fail "dcc.rs:1: names the crate 'z21'" \
         "$tmp/crate-group/src" "${forbidden_crates[@]}"

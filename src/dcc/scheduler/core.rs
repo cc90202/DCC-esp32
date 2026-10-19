@@ -8,7 +8,7 @@
 use crate::cutout::CutoutMode;
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::dcc::PomRequestId;
-use crate::dcc::packet::DccPacket;
+use dcc_protocol::packet::DccPacket;
 
 use super::railcom_policy::PacketClass;
 use super::slot_manager::{

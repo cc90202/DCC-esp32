@@ -1,8 +1,9 @@
 //! CV programming support.
 //!
 //! The production path is Programming on Main (POM) over the main DCC/RailCom
-//! runtime. Service-mode packet encoding remains in `dcc::packet`; a runtime
-//! programmer will be added only with a dedicated programming-track transport.
+//! runtime. Service-mode packet encoding remains in `dcc_protocol::packet`; a
+//! runtime programmer will be added only with a dedicated programming-track
+//! transport.
 
 mod pom;
 #[cfg(target_arch = "riscv32")]

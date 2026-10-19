@@ -246,7 +246,7 @@ fn test_parse_set_loco_function_on() {
         panic!("expected SetLocoFunction, got {:?}", parse_frame(&frame));
     };
     assert_eq!(address, addr_short(3));
-    assert_eq!(function, 5);
+    assert_eq!(function.get(), 5);
     assert_eq!(action, FunctionAction::On);
 }
 
@@ -260,7 +260,7 @@ fn test_parse_set_loco_function_off() {
     else {
         panic!("expected SetLocoFunction, got {:?}", parse_frame(&frame));
     };
-    assert_eq!(function, 0);
+    assert_eq!(function.get(), 0);
     assert_eq!(action, FunctionAction::Off);
 }
 
@@ -274,7 +274,7 @@ fn test_parse_set_loco_function_toggle() {
     else {
         panic!("expected SetLocoFunction, got {:?}", parse_frame(&frame));
     };
-    assert_eq!(function, 2);
+    assert_eq!(function.get(), 2);
     assert_eq!(action, FunctionAction::Toggle);
 }
 
@@ -287,7 +287,7 @@ fn test_parse_set_loco_function_rejects_out_of_range_index() {
     let frame = xbus_frame(0xE4, &[0xF8, 0x00, 0x03, 0x5C]);
     assert!(matches!(
         parse_frame(&frame),
-        Ok(Z21Command::SetLocoFunction { function: 28, .. })
+        Ok(Z21Command::SetLocoFunction { function, .. }) if function.get() == 28
     ));
 }
 

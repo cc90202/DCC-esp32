@@ -32,8 +32,9 @@ use static_cell::StaticCell;
 
 use crate::cutout::timing::{CUTOUT_CONTROL_END_US, PREAMBLE_STUB_US};
 use crate::cutout::{CutoutMode, PacketSequence};
-use crate::dcc::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US, PREAMBLE_RMT_OFFSET};
+use crate::dcc::timing::PREAMBLE_RMT_OFFSET;
 use crate::dcc::{DccAddress, PomRequestId};
+use dcc_protocol::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US};
 
 // ESP32-C6 RMT peripheral RAM base address (from TRM §29.5, APB address space).
 // This constant is only valid for ESP32-C6; the crate enables this backend only

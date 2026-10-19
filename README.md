@@ -179,7 +179,6 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 - `src/dcc/`: scheduling, the waveform driver and the CV/POM actors; re-exports the protocol types from `dcc-protocol`
 - `src/net/`: WiFi, provisioning, UDP transport, and Z21 interface adapters
 - `src/railcom.rs` and `src/railcom/`: RailCom capture, parsing, attribution, and runtime dispatch
-- `src/z21.rs`: re-exports the `z21` crate under its old module path
 - `src/fault_manager.rs` and `src/fault_manager/`: track-safety policy, power fence, and effect relay
 - `src/track_*.rs`: physical output, authorization, and safety boundaries
 - `src/ota/`: firmware side of the WiFi update: flash, watchdog, track interlock and display

@@ -1,18 +1,18 @@
 //! DCC timing constants per NMRA S-9.1, plus the RMT buffer sizes of this
 //! firmware.
 //!
-//! The protocol timings and pulse capacities live in `dcc_protocol::timing`
-//! and are re-exported here so existing `crate::dcc::timing::` paths keep
-//! resolving. The constants below describe the ESP32-C6 RMT peripheral and
-//! stay with the firmware.
+//! The protocol timings and pulse capacities live in `dcc_protocol::timing`.
+//! The constants here describe the ESP32-C6 RMT peripheral and stay with the
+//! firmware.
 //!
 //! The RMT channel RAM must hold the preamble ([`PREAMBLE_RMT_OFFSET`]
-//! entries), a packet tail of up to [`MAX_DATA_PULSES`] pulses and the end
-//! marker, because `transmit_continuously` needs all of it in RAM at once.
+//! entries), a packet tail of up to
+//! [`MAX_DATA_PULSES`](dcc_protocol::timing::MAX_DATA_PULSES) pulses and the
+//! end marker, because `transmit_continuously` needs all of it in RAM at once.
 //! `rmt_driver.rs` checks that at compile time against
 //! the channel RAM it configures.
 
-pub use dcc_protocol::timing::*;
+use dcc_protocol::timing::PREAMBLE_BITS;
 
 /// RMT clock frequency (1 MHz = 1μs resolution)
 pub const RMT_CLOCK_HZ: u32 = 1_000_000;

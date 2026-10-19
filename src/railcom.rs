@@ -19,7 +19,7 @@ pub(crate) mod runtime_dispatch;
 pub(crate) mod uart_reader;
 
 pub use crate::cutout::{PacketSequence, RailcomChannel};
-pub use crate::railcom_data::{RailcomDatagram, RailcomItem};
+pub use dcc_protocol::railcom_data::{RailcomDatagram, RailcomItem};
 
 use core::sync::atomic::{AtomicU32, Ordering};
 

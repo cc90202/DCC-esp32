@@ -5,9 +5,9 @@ use heapless::{Deque, Vec};
 use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::cutout::CutoutMode;
 use crate::dcc::PomRequestId;
-use crate::dcc::function_groups::{GROUP_LAYOUTS, group_bits, group_of};
-use crate::dcc::packet::{DccAddress, DccPacket, Direction};
-use crate::dcc::speed28::logical_to_nmra_packet_speed;
+use dcc_protocol::function_groups::{GROUP_LAYOUTS, group_bits, group_of};
+use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
+use dcc_protocol::speed28::logical_to_nmra_packet_speed;
 
 use super::railcom_policy::PacketClass;
 use super::{
@@ -59,8 +59,7 @@ struct Slot {
     /// `None` means that the locomotive is currently moving.
     stopped_since: Option<u64>,
     direction: Direction,
-    // Bit 0 = FL, bits 1..28 = F1..F28.
-    functions: u32,
+    functions: FunctionState,
     dirty_speed: bool,
     dirty_speed_retries: u8,
     // True once a SetLocoDrive command has been received for this slot.
@@ -89,7 +88,7 @@ impl Slot {
             speed,
             stopped_since: None,
             direction,
-            functions: 0,
+            functions: FunctionState::empty(),
             dirty_speed: true,
             dirty_speed_retries: speed_retry_count(speed),
             speed_commanded: true,
@@ -110,24 +109,21 @@ impl Slot {
             address: self.address,
             speed: self.speed,
             direction: self.direction,
-            // Slot mutations only accept FunctionIndex (F0-F28). Truncation is
-            // explicit here so a future internal representation change cannot
-            // leak reserved bits through the public snapshot.
-            functions: FunctionState::from_bits_truncate(self.functions),
+            functions: self.functions,
         }
     }
 
+    /// Whether any function group was ever addressed on this slot.
+    ///
+    /// `set_function` is the only writer of `functions` and it always records
+    /// the group in `known_groups`, so a non-empty `functions` implies a
+    /// non-zero `known_groups`; the groups alone decide.
     fn has_any_functions(&self) -> bool {
-        self.functions != 0 || self.known_groups != 0
+        self.known_groups != 0
     }
 
     fn set_function(&mut self, function: FunctionIndex, enabled: bool) {
-        let bit = 1u32 << function.get();
-        if enabled {
-            self.functions |= bit;
-        } else {
-            self.functions &= !bit;
-        }
+        self.functions = self.functions.with(function, enabled);
 
         let group = group_of(function).index();
         let group_bit = 1u8 << group;
@@ -155,13 +151,7 @@ impl Slot {
 
     fn function_packet_for_group(&self, group: u8) -> DccPacket {
         let kind = GROUP_LAYOUTS[usize::from(group)].kind;
-        let functions = FunctionState::from_bits_truncate(self.functions);
-        DccPacket::function_group(self.address, kind, group_bits(functions, kind))
-    }
-
-    fn function_enabled(&self, function: u8) -> bool {
-        let bit = 1u32 << function;
-        (self.functions & bit) != 0
+        DccPacket::function_group(self.address, kind, group_bits(self.functions, kind))
     }
 
     fn next_dirty_function_packet(&mut self) -> Option<DccPacket> {
@@ -255,7 +245,7 @@ impl Slot {
     fn active_function_group_mask(&self) -> u8 {
         let active = GROUP_LAYOUTS
             .iter()
-            .filter(|layout| self.functions & layout.mask != 0)
+            .filter(|layout| group_bits(self.functions, layout.kind) != 0)
             .fold(0u8, |mask, layout| mask | (1 << layout.kind.index()));
         active | self.known_groups
     }
@@ -292,7 +282,7 @@ mod invariant_recovery_tests {
             LogicalSpeed::zero(SpeedFormat::Speed128),
             Direction::Forward,
         );
-        slot.functions = 0;
+        slot.functions = FunctionState::empty();
         slot.known_groups = 0x80;
         slot
     }

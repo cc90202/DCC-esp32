@@ -8,9 +8,9 @@ use crate::cutout::PacketSequence;
 #[cfg(any(test, target_arch = "riscv32"))]
 use crate::dcc::PomRequestId;
 #[cfg(any(test, target_arch = "riscv32"))]
-use crate::dcc::packet::{DccAddress, DccPacket, PomCv};
+use dcc_protocol::packet::{DccAddress, DccPacket, PomCv};
 #[cfg(any(test, target_arch = "riscv32"))]
-use crate::railcom_data::{RailcomDatagram, RailcomItem};
+use dcc_protocol::railcom_data::{RailcomDatagram, RailcomItem};
 
 use crate::diagnostics::diagnostic_counters;
 

@@ -87,12 +87,6 @@ impl StatusModel {
         )
     }
 
-    /// Returns whether any fault is currently latched.
-    #[must_use]
-    pub const fn fault_active(self) -> bool {
-        matches!(self.safety_state, FaultManagerState::FaultLatched(_))
-    }
-
     /// Returns the currently latched fault cause, if any.
     #[must_use]
     pub const fn fault_cause(self) -> Option<FaultCause> {
@@ -266,14 +260,12 @@ mod tests {
     }
 
     #[test]
-    fn test_fault_active_and_cause_track_latched_fault() {
+    fn test_fault_cause_tracks_latched_fault() {
         let mut model = StatusModel::new();
         model.apply(SystemStatusEvent::BootCompleted);
-        assert!(!model.fault_active());
         assert_eq!(model.fault_cause(), None);
 
         model.apply(SystemStatusEvent::FaultLatched(FaultCause::Internal));
-        assert!(model.fault_active());
         assert_eq!(model.fault_cause(), Some(FaultCause::Internal));
     }
 

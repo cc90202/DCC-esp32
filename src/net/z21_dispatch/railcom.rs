@@ -7,7 +7,7 @@ use defmt::warn;
 use crate::dcc::DccAddress;
 use crate::net::railcom_lookup::{latest_railcom_sighting, railcom_sighting_for_address};
 use crate::railcom::loco_tracker::RailcomLocoSighting;
-use crate::z21::{self as z21_proto, RailcomRequestType};
+use z21::{self as z21_proto, RailcomRequestType};
 
 use super::encoded_len;
 

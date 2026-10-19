@@ -15,7 +15,7 @@ bit at 100μs or longer, and a preamble of at least 14 "1" bits. Track voltage i
 specified between 12V and 22V, which the firmware does not produce directly: it
 emits 3.3V logic and relies on the external H-bridge for the power stage.
 
-The timings live in `src/dcc/timing.rs`:
+The timings live in `crates/dcc-protocol/src/timing.rs`:
 
 ```rust
 pub const DCC_ONE_HIGH_US: u16 = 58;   // 55-61μs acceptable
@@ -45,7 +45,7 @@ short (1 to 127) or long (128 to 10239), speed comes in 14, 28 or 128 steps,
 direction travels in the instruction byte, and the checksum is the exclusive-or
 of the data bytes.
 
-The packet types are in `src/dcc/packet.rs`:
+The packet types are in `crates/dcc-protocol/src/packet.rs`:
 
 ```rust
 pub enum DccPacket {

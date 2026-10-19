@@ -11,13 +11,11 @@ use crate::application::locomotive::{
     prepare_drive_request, prepare_function_request, resolve_loco_command, resolve_loco_lookup,
 };
 use crate::application::{LocoSlots, LocoState};
-#[cfg(feature = "bench-diag")]
-use crate::dcc::FunctionIndex;
-use crate::dcc::{DccAddress, Direction, FunctionChange, LocoRequest, SpeedFormat};
+use crate::dcc::{DccAddress, Direction, FunctionChange, FunctionIndex, LocoRequest, SpeedFormat};
 use crate::macros::bench_diag;
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::Z21Ctx;
-use crate::z21::{self as z21_proto, FunctionAction};
+use z21::{self as z21_proto, FunctionAction};
 
 use super::encoded_len;
 
@@ -156,7 +154,7 @@ pub(super) async fn set_function(
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
     address: DccAddress,
-    function: u8,
+    function: FunctionIndex,
     action: FunctionAction,
 ) -> usize {
     let change = match action {
@@ -183,9 +181,9 @@ pub(super) async fn set_function(
             info!(
                 "loco fn addr={} f{} action={:?} enabled={} speed={} fmt={:?}",
                 address.value(),
-                function,
+                function.get(),
                 action,
-                FunctionIndex::new(function).is_some_and(|index| state.functions.is_enabled(index)),
+                state.functions.is_enabled(function),
                 state.speed.value(),
                 state.speed.format()
             );
@@ -214,11 +212,6 @@ fn report_request_error(
             address.value(),
             speed,
             format
-        ),
-        LocoRequestError::InvalidFunction { function } => warn!(
-            "loco function addr={} rejected: unsupported function index {}",
-            address.value(),
-            function
         ),
     }
     LOCO_COMMAND_REJECTED_COUNT.fetch_add(1, Ordering::Relaxed);

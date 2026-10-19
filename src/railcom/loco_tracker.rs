@@ -3,9 +3,9 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use crate::dcc::DccAddress;
-use crate::dcc::packet::HighFragment;
 use crate::railcom::PacketSequence;
-use crate::railcom_data::{RailcomDatagram, RailcomItem};
+use dcc_protocol::packet::HighFragment;
+use dcc_protocol::railcom_data::{RailcomDatagram, RailcomItem};
 
 // Fixed-size recent-activity cache used by diagnostics and Z21 RailCom lookup.
 // It is deliberately not a locomotive roster: retaining four addresses keeps

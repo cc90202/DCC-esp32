@@ -1,6 +1,6 @@
 //! Packet selection and emission-priority policy for scheduler slots.
 
-use crate::dcc::packet::{DccPacket, Direction};
+use dcc_protocol::packet::{DccPacket, Direction};
 
 #[cfg(test)]
 use super::allowed_slot_visits_without_function;
