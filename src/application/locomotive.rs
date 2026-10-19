@@ -18,7 +18,6 @@ use crate::dcc::{
 pub(crate) enum LocoRequestError {
     TrackPowerOff,
     InvalidSpeed { speed: u8, format: SpeedFormat },
-    InvalidFunction { function: u8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,14 +80,12 @@ pub(crate) fn prepare_drive_request(
 pub(crate) fn prepare_function_request(
     track_power_on: bool,
     address: DccAddress,
-    function: u8,
+    function: FunctionIndex,
     change: FunctionChange,
 ) -> Result<LocoRequest, LocoRequestError> {
     if !track_power_on {
         return Err(LocoRequestError::TrackPowerOff);
     }
-    let function =
-        FunctionIndex::new(function).ok_or(LocoRequestError::InvalidFunction { function })?;
     Ok(LocoRequest::SetFunction {
         address,
         function,
@@ -186,10 +183,24 @@ mod tests {
     }
 
     #[test]
-    fn invalid_function_is_rejected_before_building_scheduler_request() {
+    fn track_power_off_rejects_function_before_building_scheduler_request() {
+        let function = FunctionIndex::new(5).expect("F5 is valid");
         assert_eq!(
-            prepare_function_request(true, address(3), 29, FunctionChange::Enable,),
-            Err(LocoRequestError::InvalidFunction { function: 29 })
+            prepare_function_request(false, address(3), function, FunctionChange::Enable),
+            Err(LocoRequestError::TrackPowerOff)
+        );
+    }
+
+    #[test]
+    fn function_request_carries_the_index_and_change_unchanged() {
+        let function = FunctionIndex::new(28).expect("F28 is valid");
+        assert_eq!(
+            prepare_function_request(true, address(3), function, FunctionChange::Toggle),
+            Ok(LocoRequest::SetFunction {
+                address: address(3),
+                function,
+                change: FunctionChange::Toggle,
+            })
         );
     }
 

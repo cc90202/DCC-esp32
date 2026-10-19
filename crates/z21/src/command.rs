@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use dcc_protocol::{DccAddress, Direction, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, FunctionIndex, SpeedFormat};
 
 /// The header and X-Header of a frame, read without parsing the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,8 +101,8 @@ pub enum Z21Command {
     SetLocoFunction {
         /// Locomotive to change.
         address: DccAddress,
-        /// Function index, at most F28.
-        function: u8,
+        /// Function index, F0..=F28.
+        function: FunctionIndex,
         /// What to do with the function.
         action: FunctionAction,
     },

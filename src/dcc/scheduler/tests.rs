@@ -4,7 +4,8 @@ use super::railcom_policy::{
 };
 use super::slot_manager::{
     DIRTY_FUNCTION_RETRY_COUNT, DIRTY_STOP_RETRY_COUNT, MAX_FUNCTION_REFRESH_MS,
-    allowed_slot_visits_without_function, pom_cutout, scheduler_tick_ms_for_slot_count,
+    allowed_slot_visits_without_function, pom_cutout, scheduler_invariant_recovery_count,
+    scheduler_tick_ms_for_slot_count,
 };
 use super::*;
 use crate::dcc::CutoutMode;
@@ -290,6 +291,30 @@ fn loco_requests_return_authoritative_inserted_updated_and_found_snapshots() {
         LocoRequestResult::Found(LocoSnapshot { speed, functions, .. })
             if speed.value() == 12
                 && functions == FunctionState::from_bits(1 << function.get()).unwrap()
+    ));
+
+    // F28 is the highest function the slot stores; it must survive the snapshot
+    // next to F4, and clearing it must leave F4 alone.
+    let f28 = FunctionIndex::new(28).unwrap();
+    let with_f28 = manager.handle_loco_request(LocoRequest::SetFunction {
+        address,
+        function: f28,
+        change: FunctionChange::Enable,
+    });
+    let both = FunctionState::empty().with(function, true).with(f28, true);
+    assert!(matches!(
+        with_f28,
+        LocoRequestResult::Updated(LocoSnapshot { functions, .. }) if functions == both
+    ));
+    let without_f28 = manager.handle_loco_request(LocoRequest::SetFunction {
+        address,
+        function: f28,
+        change: FunctionChange::Disable,
+    });
+    assert!(matches!(
+        without_f28,
+        LocoRequestResult::Updated(LocoSnapshot { functions, .. })
+            if functions == FunctionState::empty().with(function, true)
     ));
 }
 
@@ -1659,6 +1684,27 @@ fn test_ensure_railcom_refresh_slot_does_not_modify_existing_slot() {
             && speed.value() == 42
             && direction == Direction::Reverse
     ));
+}
+
+#[test]
+fn speed_only_slot_refreshes_with_speed_packets_and_no_recovery() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    drain_pending_slot_transmissions(&mut mgr);
+
+    let before = scheduler_invariant_recovery_count();
+    for _ in 0..20 {
+        let packet = mgr.build_next_packet();
+        assert!(
+            matches!(packet, Some(DccPacket::Speed128 { .. })),
+            "a slot with no function group ever addressed refreshes speed only, got {packet:?}"
+        );
+    }
+    assert_eq!(
+        scheduler_invariant_recovery_count().wrapping_sub(before),
+        0,
+        "a speed-only slot must not be treated as having function groups"
+    );
 }
 
 #[test]

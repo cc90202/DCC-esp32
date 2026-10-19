@@ -174,7 +174,7 @@ impl SlotManager {
                     let enabled = match change {
                         FunctionChange::Enable => true,
                         FunctionChange::Disable => false,
-                        FunctionChange::Toggle => !slot.function_enabled(function.get()),
+                        FunctionChange::Toggle => !slot.functions.is_enabled(function),
                     };
                     slot.set_function(function, enabled);
                     return LocoRequestResult::Updated(slot.snapshot());

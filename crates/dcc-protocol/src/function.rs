@@ -73,7 +73,8 @@ impl FunctionState {
     /// Build a function state when no bits above F28 are set.
     ///
     /// Only for tests (here, and in other crates through the `test-support`
-    /// feature); production code builds the state with `from_bits_truncate`.
+    /// feature); production code starts from [`Self::empty`] and uses
+    /// [`Self::with`], or truncates a raw word with `from_bits_truncate`.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub const fn from_bits(bits: u32) -> Option<Self> {
@@ -100,6 +101,24 @@ impl FunctionState {
     #[must_use]
     pub const fn is_enabled(self, function: FunctionIndex) -> bool {
         self.0 & (1u32 << function.get()) != 0
+    }
+
+    /// Return this state with `function` switched on or off; the other
+    /// functions are unchanged.
+    #[must_use]
+    pub const fn with(self, function: FunctionIndex, enabled: bool) -> Self {
+        let bit = 1u32 << function.get();
+        if enabled {
+            Self(self.0 | bit)
+        } else {
+            Self(self.0 & !bit)
+        }
+    }
+
+    /// Whether every function is off.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -138,5 +157,39 @@ mod tests {
             FunctionState::from_bits_truncate(VALID_BITS | (1 << 31)).bits(),
             VALID_BITS
         );
+    }
+
+    #[test]
+    fn with_sets_and_clears_the_lowest_and_highest_function() {
+        for value in [0, 28] {
+            let function = FunctionIndex::new(value).expect("F0 and F28 are valid");
+            let on = FunctionState::empty().with(function, true);
+            assert!(on.is_enabled(function));
+            assert_eq!(on.bits(), 1 << value);
+            let off = on.with(function, false);
+            assert!(!off.is_enabled(function));
+            assert_eq!(off, FunctionState::empty());
+        }
+    }
+
+    #[test]
+    fn with_is_idempotent_and_leaves_other_functions_alone() {
+        let f1 = FunctionIndex::new(1).expect("F1 is valid");
+        let f5 = FunctionIndex::new(5).expect("F5 is valid");
+        let state = FunctionState::empty().with(f1, true);
+        assert_eq!(state.with(f1, true), state);
+        assert_eq!(state.with(f5, false), state);
+        let both = state.with(f5, true);
+        assert_eq!(both.bits(), (1 << 1) | (1 << 5));
+        assert_eq!(both.with(f5, false), state);
+    }
+
+    #[test]
+    fn is_empty_only_when_every_function_is_off() {
+        let f28 = FunctionIndex::new(28).expect("F28 is valid");
+        assert!(FunctionState::empty().is_empty());
+        let on = FunctionState::empty().with(f28, true);
+        assert!(!on.is_empty());
+        assert!(on.with(f28, false).is_empty());
     }
 }
