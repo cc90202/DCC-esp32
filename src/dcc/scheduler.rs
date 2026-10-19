@@ -226,17 +226,6 @@ pub enum SchedulerCommand {
     CloseProgramOnMain {
         request_id: PomRequestId,
     },
-    /// Stop startup RailCom discovery traffic before latency-sensitive POM.
-    ///
-    /// Discovery is useful while idle, but during POM reads CH2 must be left
-    /// free for app:pom instead of logon/search responses.
-    ///
-    /// TODO: nothing sends this today. The mechanism is complete down to
-    /// `RailcomDiscovery::suspend`, and only a sender is missing — the POM
-    /// actor, which already knows when a read burst starts and ends, is the
-    /// natural one. Decide whether to wire it or drop it: if POM reads prove
-    /// reliable without it, this and its outcome can go.
-    SuspendRailcomDiscovery,
     /// Start a fresh discovery window after track power is physically enabled.
     RestartRailcomDiscovery,
     /// Send one RailCom-related packet with a telemetry cutout.
