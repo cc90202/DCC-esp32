@@ -1,6 +1,6 @@
 use super::wire::*;
 use super::*;
-use dcc_protocol::{DccAddress, Direction, FunctionState, LogicalSpeed, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, FunctionState, LogicalSpeed, PomCv, SpeedFormat};
 
 fn cstate(track_on: bool, estop: bool, short_circuit: bool) -> CentralState {
     CentralState {
@@ -397,7 +397,7 @@ fn test_parse_cv_pom_write_byte() {
         panic!("expected CvPomWriteByte, got {:?}", parse_frame(&frame));
     };
     assert_eq!(address, addr_short(3));
-    assert_eq!(cv, 29);
+    assert_eq!(cv, PomCv::new(29).unwrap());
     assert_eq!(value, 6);
 }
 
@@ -408,7 +408,7 @@ fn test_parse_cv_pom_read_byte() {
         panic!("expected CvPomReadByte, got {:?}", parse_frame(&frame));
     };
     assert_eq!(address, addr_long(1000));
-    assert_eq!(cv, 1);
+    assert_eq!(cv, PomCv::new(1).unwrap());
 }
 
 #[test]
@@ -419,7 +419,7 @@ fn test_parse_cv_pom_reads_the_high_cv_bits_from_the_operation_byte() {
         parse_frame(&frame),
         Ok(Z21Command::CvPomReadByte {
             address: addr_short(3),
-            cv: 1024,
+            cv: PomCv::new(1024).unwrap(),
         })
     );
 }
@@ -503,7 +503,7 @@ fn test_encode_loco_info_function_layout() {
 #[test]
 fn test_encode_cv_result() {
     let mut buf = [0u8; 16];
-    let n = encode_cv_result(29, 6, &mut buf);
+    let n = encode_cv_result(PomCv::new(29).unwrap(), 6, &mut buf);
     assert_eq!(n, Some(10));
     assert_eq!(
         &buf[..9],
@@ -512,7 +512,7 @@ fn test_encode_cv_result() {
     assert_eq!(buf[9], 0x64 ^ 0x14 ^ 0x1C ^ 0x06);
 
     // CV 1024 is wire CV 0x3FF, split over DB1 and DB2.
-    encode_cv_result(1024, 6, &mut buf).expect("CV 1024 is in range");
+    encode_cv_result(PomCv::new(1024).unwrap(), 6, &mut buf).expect("CV 1024 fits");
     assert_eq!(&buf[6..8], &[0x03, 0xFF]);
 }
 
@@ -657,7 +657,10 @@ fn test_all_encoders_reject_short_output_buffers() {
     assert_eq!(encode_bc_track_power(true, &mut empty), None);
     assert_eq!(encode_bc_stopped(&mut empty), None);
     assert_eq!(encode_unknown_command(&mut empty), None);
-    assert_eq!(encode_cv_result(1, 0, &mut empty), None);
+    assert_eq!(
+        encode_cv_result(PomCv::new(1).unwrap(), 0, &mut empty),
+        None
+    );
     assert_eq!(encode_cv_nack(&mut empty), None);
     assert_eq!(encode_turnout_info(addr_short(3), &mut empty), None);
     assert_eq!(encode_serial_number(0, &mut empty), None);
@@ -672,14 +675,6 @@ fn test_all_encoders_reject_short_output_buffers() {
     );
     assert_eq!(encode_loco_mode(addr_short(3), &mut empty), None);
     assert_eq!(encode_railcom_data(addr_short(3), 0, 0, &mut empty), None);
-}
-
-#[test]
-fn test_encode_cv_result_rejects_out_of_range_cv() {
-    let mut buf = [0u8; 10];
-
-    assert_eq!(encode_cv_result(0, 0, &mut buf), None);
-    assert_eq!(encode_cv_result(1025, 0, &mut buf), None);
 }
 
 #[test]
