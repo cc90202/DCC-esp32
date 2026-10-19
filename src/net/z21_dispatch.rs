@@ -134,7 +134,6 @@ async fn route_command(
             address,
             speed,
             direction,
-            format,
         } => {
             locomotive::set_drive(
                 loco_slots,
@@ -144,7 +143,6 @@ async fn route_command(
                     address,
                     speed,
                     direction,
-                    format,
                 },
             )
             .await
