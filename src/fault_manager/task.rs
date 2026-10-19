@@ -100,18 +100,16 @@ fn publish_effects(
 fn log_decision(decision: &FaultDecision) {
     if decision.state != decision.previous_state {
         defmt::warn!(
-            "fault_manager: state {:?} -> {:?}, track_enabled={}, motion_enabled={}",
+            "fault_manager: state {:?} -> {:?}, track_enabled={}",
             decision.previous_state,
             decision.state,
-            decision.track_enabled,
-            decision.motion_enabled
+            decision.track_enabled
         );
     } else {
         defmt::info!(
-            "fault_manager: state unchanged {:?}, track_enabled={}, motion_enabled={}",
+            "fault_manager: state unchanged {:?}, track_enabled={}",
             decision.state,
-            decision.track_enabled,
-            decision.motion_enabled
+            decision.track_enabled
         );
     }
 }

@@ -34,7 +34,6 @@ pub(super) struct FaultDecision {
     pub(super) previous_state: FaultManagerState,
     pub(super) state: FaultManagerState,
     pub(super) track_enabled: bool,
-    pub(super) motion_enabled: bool,
     pub(super) scheduler_effects: [Option<SchedulerEffect>; MAX_SCHEDULER_EFFECTS],
     pub(super) status_effects: [Option<StatusEffect>; MAX_STATUS_EFFECTS],
 }
@@ -146,7 +145,6 @@ impl FaultPolicy {
             previous_state,
             state: self.state,
             track_enabled: self.track_enabled(),
-            motion_enabled: matches!(self.state, FaultManagerState::Normal),
             scheduler_effects,
             status_effects,
         }
@@ -189,7 +187,6 @@ mod tests {
 
         assert_eq!(decision.state, FaultManagerState::EstopLatched);
         assert!(!decision.track_enabled);
-        assert!(!decision.motion_enabled);
         assert_eq!(
             decision.scheduler_effects,
             [
