@@ -2,7 +2,7 @@
 
 use crate::application::StatusModel;
 use crate::authority::LeasePermit;
-use crate::system_status::{FaultEvent, SystemStatusEvent};
+use crate::station_status::{FaultEvent, SystemStatusEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrackPowerRequest {
@@ -159,7 +159,7 @@ pub(crate) const fn plan_status_broadcast(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system_status::FaultCause;
+    use crate::station_status::FaultCause;
 
     const RUNNING: TrackStatus = TrackStatus {
         power_on: true,

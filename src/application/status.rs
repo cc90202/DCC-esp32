@@ -1,6 +1,6 @@
 //! Framework-independent runtime status reducer.
 
-use crate::system_status::{FaultCause, FaultManagerState, LedState, SystemStatusEvent};
+use crate::station_status::{FaultCause, FaultManagerState, LedState, SystemStatusEvent};
 
 /// State reducer that maps runtime events to a single LED state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

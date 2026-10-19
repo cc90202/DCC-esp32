@@ -69,6 +69,7 @@ pub(crate) mod runtime_channels;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) mod seqlock;
 pub(crate) mod short_detector;
+pub mod station_status;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod status_led;
 pub mod system_status;

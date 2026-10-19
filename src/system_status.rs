@@ -54,53 +54,6 @@
 //! assert_eq!(model.led_state(), LedState::Running);
 //! ```
 
-/// Fault origin used for observability and future policy routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum FaultCause {
-    TrackShort,
-    Estop,
-    Internal,
-}
-
-/// Mutually exclusive safety state governing track power and motion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum FaultManagerState {
-    /// Track powered, motion commands accepted.
-    Normal,
-    /// Operator-initiated emergency stop; resume button clears.
-    EstopLatched,
-    /// Hardware/service fault; requires long-press or service clear.
-    FaultLatched(FaultCause),
-}
-
-/// Runtime status events emitted by tasks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum SystemStatusEvent {
-    BootStarted,
-    BootCompleted,
-    WifiConnecting,
-    WifiConnected,
-    WifiDisconnected,
-    EstopActive,
-    EstopCleared,
-    FaultLatched(FaultCause),
-    FaultCleared,
-}
-
-/// LED representation of the current system state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum LedState {
-    Booting,
-    WifiConnecting,
-    Running,
-    EstopActive,
-    FaultLatched,
-}
-
 // --- Boot lifecycle events ---
 //
 // Events emitted by tasks during boot to acknowledge readiness (or report a
@@ -235,37 +188,20 @@ impl core::error::Error for CriticalTask {}
 
 // --- Fault manager events ---
 //
-// `FaultEvent` lives here (rather than in `fault_manager.rs`) because it is
-// imported by task modules across the crate (dcc engine, boot, short
-// detector, control buttons, net) that must not depend on `fault_manager`
-// itself, which also depends on `dcc::SchedulerCommand`. Keeping the event
-// type in a hub that depends on nothing they do breaks that cycle.
+// `FaultEvent` and the status enums live in `station_status` (rather than in
+// `fault_manager.rs`) because they are imported by task modules across the
+// crate (dcc engine, boot, short detector, control buttons, net) that must
+// not depend on `fault_manager` itself, and by the application policies that
+// must not depend on this hub. They are re-exported here for the tasks.
 //
-// The hub is no longer dependency-free in the strict sense: the `channels`
+// This hub is not dependency-free in the strict sense: the `channels`
 // submodule below names Embassy types and `announce_ready` logs. Both are
 // gated to the target, and neither points back at a module that imports this
 // one, so the direction that matters is unchanged.
 
-use crate::authority::LeasePermit;
-
-/// External events consumed by the fault state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum FaultEvent {
-    /// Boot sequence has finished; track power may be enabled if state permits.
-    TrackPowerArmed,
-    /// Physical stop button pressed (GPIO22).
-    StopPressed,
-    /// Resume button short-press (<2 s): clears e-stop, ignored during fault.
-    ResumeShortPressed,
-    /// Resume button long-press (≥2 s): force-clears any latched state.
-    ResumeLongPressed,
-    /// Network power-on request carrying the lease that must still be current
-    /// when the physical output is enabled.
-    NetworkResume(LeasePermit),
-    /// Hardware or service fault detected (e.g. track short, CV error).
-    FaultLatched(FaultCause),
-}
+pub use crate::station_status::{
+    FaultCause, FaultEvent, FaultManagerState, LedState, SystemStatusEvent,
+};
 
 // --- Display events ---
 //
