@@ -1,6 +1,6 @@
 use core::fmt;
 
-use dcc_protocol::{DccAddress, Direction, FunctionIndex, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, FunctionIndex, LogicalSpeed, SpeedFormat};
 
 use super::wire::*;
 use super::{FrameKind, FunctionAction, ParseError, Z21Command};
@@ -197,17 +197,17 @@ fn parse_set_loco_drive_command(payload: &[u8], db0: u8) -> Result<Z21Command, P
         Direction::Reverse
     };
     let raw_speed = speed_byte & 0x7F;
-    let (speed, format) = if db0 == DB0_LOCO_SPEED28 {
-        (z21_wire_to_logical(raw_speed), SpeedFormat::Speed28)
+    let speed = if db0 == DB0_LOCO_SPEED28 {
+        LogicalSpeed::new(z21_wire_to_logical(raw_speed), SpeedFormat::Speed28)
     } else {
-        (speed128_wire_to_logical(raw_speed), SpeedFormat::Speed128)
-    };
+        LogicalSpeed::new(speed128_wire_to_logical(raw_speed), SpeedFormat::Speed128)
+    }
+    .ok_or(ParseError::InvalidSpeed)?;
 
     Ok(Z21Command::SetLocoDrive {
         address: addr,
         speed,
         direction,
-        format,
     })
 }
 

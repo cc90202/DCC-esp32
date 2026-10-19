@@ -154,15 +154,13 @@ fn test_parse_set_loco_drive_28_short_addr() {
         address,
         speed,
         direction,
-        format,
     }) = parse_frame(&frame)
     else {
         panic!("expected SetLocoDrive, got {:?}", parse_frame(&frame));
     };
     assert_eq!(address, addr_short(3));
     assert_eq!(direction, Direction::Forward);
-    assert_eq!(format, SpeedFormat::Speed28);
-    assert_eq!(speed, 14);
+    assert_eq!(speed, LogicalSpeed::new(14, SpeedFormat::Speed28).unwrap());
 }
 
 #[test]
@@ -202,15 +200,13 @@ fn test_parse_set_loco_drive_28_long_addr() {
         address,
         speed,
         direction,
-        format,
     }) = parse_frame(&frame)
     else {
         panic!("expected SetLocoDrive, got {:?}", parse_frame(&frame));
     };
     assert_eq!(address, addr_long(1000));
     assert_eq!(direction, Direction::Reverse);
-    assert_eq!(format, SpeedFormat::Speed28);
-    assert_eq!(speed, 5);
+    assert_eq!(speed, LogicalSpeed::new(5, SpeedFormat::Speed28).unwrap());
 }
 
 #[test]
@@ -222,15 +218,32 @@ fn test_parse_set_loco_drive_128() {
         address,
         speed,
         direction,
-        format,
     }) = parse_frame(&frame)
     else {
         panic!("expected SetLocoDrive, got {:?}", parse_frame(&frame));
     };
     assert_eq!(address, addr_short(5));
     assert_eq!(direction, Direction::Forward);
-    assert_eq!(format, SpeedFormat::Speed128);
-    assert_eq!(speed, 63);
+    assert_eq!(speed, LogicalSpeed::new(63, SpeedFormat::Speed128).unwrap());
+}
+
+#[test]
+fn every_wire_speed_byte_parses_as_a_valid_logical_speed() {
+    // The wire-to-logical mappings clamp to the top step of their format, so
+    // no speed byte reaches the scheduler out of range or as a parse error.
+    for (db0, format) in [(0x12, SpeedFormat::Speed28), (0x13, SpeedFormat::Speed128)] {
+        for speed_byte in 0..=0xFFu8 {
+            let frame = xbus_frame(0xE4, &[db0, 0x00, 0x03, speed_byte]);
+            let Ok(Z21Command::SetLocoDrive { speed, .. }) = parse_frame(&frame) else {
+                panic!(
+                    "byte {speed_byte:#04x} in {format:?}: {:?}",
+                    parse_frame(&frame)
+                );
+            };
+            assert_eq!(speed.format(), format);
+            assert!(speed.value() <= format.max_step());
+        }
+    }
 }
 
 #[test]

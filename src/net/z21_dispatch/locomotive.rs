@@ -11,7 +11,7 @@ use crate::application::locomotive::{
     prepare_drive_request, prepare_function_request, resolve_loco_command, resolve_loco_lookup,
 };
 use crate::application::{LocoSlots, LocoState};
-use crate::dcc::{DccAddress, Direction, FunctionChange, FunctionIndex, LocoRequest, SpeedFormat};
+use crate::dcc::{DccAddress, Direction, FunctionChange, FunctionIndex, LocoRequest, LogicalSpeed};
 use crate::macros::bench_diag;
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::Z21Ctx;
@@ -23,9 +23,8 @@ static LOCO_COMMAND_REJECTED_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub(super) struct DriveCommand {
     pub address: DccAddress,
-    pub speed: u8,
+    pub speed: LogicalSpeed,
     pub direction: Direction,
-    pub format: SpeedFormat,
 }
 
 #[cfg_attr(
@@ -118,21 +117,15 @@ pub(super) async fn set_drive(
         address,
         speed,
         direction,
-        format,
     } = command;
-    let request = match prepare_drive_request(
-        ctx.status_model.track_power_on(),
-        address,
-        speed,
-        direction,
-        format,
-    ) {
-        Ok(request) => request,
-        Err(error) => {
-            report_request_error(ctx, address, "drive", error);
-            return 0;
-        }
-    };
+    let request =
+        match prepare_drive_request(ctx.status_model.track_power_on(), address, speed, direction) {
+            Ok(request) => request,
+            Err(error) => {
+                report_request_error(ctx, address, "drive", error);
+                return 0;
+            }
+        };
 
     let outcome = apply_requested_change(loco_slots, ctx, request, "drive").await;
     bench_diag! {
@@ -140,9 +133,9 @@ pub(super) async fn set_drive(
             info!(
                 "loco drive addr={} fmt={:?} dir={:?} speed={}",
                 address.value(),
-                format,
+                speed.format(),
                 direction,
-                speed
+                speed.value()
             );
         }
     }
@@ -206,12 +199,6 @@ fn report_request_error(
             ctx.status_model.estop_active(),
             ctx.status_model.short_circuit(),
             ctx.status_model.track_power_on()
-        ),
-        LocoRequestError::InvalidSpeed { speed, format } => warn!(
-            "loco drive addr={} speed={} invalid for format={:?}, command dropped",
-            address.value(),
-            speed,
-            format
         ),
     }
     LOCO_COMMAND_REJECTED_COUNT.fetch_add(1, Ordering::Relaxed);

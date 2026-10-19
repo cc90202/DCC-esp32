@@ -10,14 +10,13 @@ use crate::application::loco_projection::{
 use crate::application::{LocoSlots, LocoState};
 use crate::dcc::{
     DccAddress, Direction, FunctionChange, FunctionIndex, LocoRequest, LocoRequestResult,
-    LogicalSpeed, SpeedFormat,
+    LogicalSpeed,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub(crate) enum LocoRequestError {
     TrackPowerOff,
-    InvalidSpeed { speed: u8, format: SpeedFormat },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,18 +60,15 @@ pub(crate) struct LocoLookupOutcome {
 pub(crate) fn prepare_drive_request(
     track_power_on: bool,
     address: DccAddress,
-    speed: u8,
+    speed: LogicalSpeed,
     direction: Direction,
-    format: SpeedFormat,
 ) -> Result<LocoRequest, LocoRequestError> {
     if !track_power_on {
         return Err(LocoRequestError::TrackPowerOff);
     }
-    let logical_speed =
-        LogicalSpeed::new(speed, format).ok_or(LocoRequestError::InvalidSpeed { speed, format })?;
     Ok(LocoRequest::SetSpeed {
         address,
-        speed: logical_speed,
+        speed,
         direction,
     })
 }
@@ -153,7 +149,7 @@ pub(crate) fn resolve_loco_lookup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dcc::{FunctionState, LocoSnapshot, LogicalSpeed};
+    use crate::dcc::{FunctionState, LocoSnapshot, LogicalSpeed, SpeedFormat};
 
     fn address(value: u8) -> DccAddress {
         DccAddress::new_short(value).unwrap()
@@ -174,11 +170,23 @@ mod tests {
             prepare_drive_request(
                 false,
                 address(3),
-                10,
+                LogicalSpeed::new(10, SpeedFormat::Speed128).unwrap(),
                 Direction::Forward,
-                SpeedFormat::Speed128,
             ),
             Err(LocoRequestError::TrackPowerOff)
+        );
+    }
+
+    #[test]
+    fn drive_request_carries_the_speed_and_direction_unchanged() {
+        let speed = LogicalSpeed::new(28, SpeedFormat::Speed28).unwrap();
+        assert_eq!(
+            prepare_drive_request(true, address(3), speed, Direction::Reverse),
+            Ok(LocoRequest::SetSpeed {
+                address: address(3),
+                speed,
+                direction: Direction::Reverse,
+            })
         );
     }
 

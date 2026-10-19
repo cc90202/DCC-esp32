@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use dcc_protocol::{DccAddress, Direction, FunctionIndex, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, FunctionIndex, LogicalSpeed};
 
 /// The header and X-Header of a frame, read without parsing the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,12 +90,11 @@ pub enum Z21Command {
     SetLocoDrive {
         /// Locomotive to drive.
         address: DccAddress,
-        /// Logical speed, 0 for stop; a wire emergency stop also reads as 0.
-        speed: u8,
+        /// Logical speed in the format the client used; stop and a wire
+        /// emergency stop both read as step 0.
+        speed: LogicalSpeed,
         /// Direction of travel.
         direction: Direction,
-        /// Speed steps the client used.
-        format: SpeedFormat,
     },
     /// `LAN_X_SET_LOCO_FUNCTION`.
     SetLocoFunction {
@@ -167,6 +166,8 @@ pub enum ParseError {
     BadXBusChecksum,
     /// The locomotive address is out of range.
     InvalidAddress,
+    /// The speed step is above the top step of its format.
+    InvalidSpeed,
     /// The function index is above F28.
     InvalidFunction,
     /// The function action bits name no action.
@@ -182,6 +183,7 @@ impl fmt::Display for ParseError {
             Self::LenMismatch => "Z21 frame length does not match its header",
             Self::BadXBusChecksum => "Z21 X-Bus checksum is invalid",
             Self::InvalidAddress => "Z21 locomotive address is invalid",
+            Self::InvalidSpeed => "Z21 locomotive speed is invalid",
             Self::InvalidFunction => "Z21 locomotive function is invalid",
             Self::InvalidFunctionAction => "Z21 function action is invalid",
             Self::InvalidCvAddress => "Z21 CV address is invalid",
