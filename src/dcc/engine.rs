@@ -115,9 +115,7 @@ pub async fn dcc_engine_task(
                 last_progress = Instant::now();
                 crate::liveness::beat(crate::liveness::Task::Dcc);
             } else if !rmt_driver::is_consumed() {
-                if crate::track_output::inhibited()
-                    && !crate::track_output::TrackOutput.is_track_enabled()
-                {
+                if crate::track_output::inhibited() && !crate::track_output::is_track_enabled() {
                     let now = Instant::now();
                     if last_ota_stall_log
                         .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(5))

@@ -155,9 +155,13 @@ struct TrackOutputHw {
 /// Handle used by normal runtime code.
 ///
 /// The actual hardware state lives in a singleton so tasks and ISRs reach the
-/// same physical owner without duplicating GPIO18/SLEEP control.
+/// same physical owner without duplicating GPIO18/SLEEP control. Only
+/// [`TrackOutput::new`] builds a handle, so the methods that switch the track
+/// are reachable from the one owner alone; readers use [`is_track_enabled`].
 #[derive(Debug)]
-pub struct TrackOutput;
+pub struct TrackOutput {
+    _private: (),
+}
 
 impl TrackOutput {
     /// Initialize the singleton track-output owner.
@@ -198,7 +202,7 @@ impl TrackOutput {
             .cutout_event_notify_fail_count
             .store(0, Ordering::Release);
 
-        Self
+        Self { _private: () }
     }
 
     /// Turns the track off; never refused, so the result is only checked
@@ -248,8 +252,14 @@ impl TrackOutput {
 
     #[must_use]
     pub fn is_track_enabled(&self) -> bool {
-        TRACK_ENABLED.load(Ordering::Acquire)
+        is_track_enabled()
     }
+}
+
+/// Whether the track output is currently enabled, for code without the handle.
+#[must_use]
+pub fn is_track_enabled() -> bool {
+    TRACK_ENABLED.load(Ordering::Acquire)
 }
 
 /// Immediately disables the track output before asynchronous fault handling.

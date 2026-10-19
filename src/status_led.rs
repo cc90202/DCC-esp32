@@ -67,7 +67,7 @@ fn shown(state: LedState) -> Shown {
         Shown::State(state)
     } else if crate::ota::on_trial() {
         Shown::Trial
-    } else if !crate::track_output::TrackOutput.is_track_enabled() {
+    } else if !crate::track_output::is_track_enabled() {
         Shown::TrackOff
     } else {
         Shown::State(state)
