@@ -37,10 +37,7 @@
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::gpio::{Input, InputConfig, Pull};
 
-use crate::control_logic::{
-    RESUME_PROVISIONING_PRESS_MS, ResumeButtonAction, ResumePress, classify_resume_press,
-    resume_action_for_press,
-};
+use crate::control_logic::{RESUME_PROVISIONING_PRESS_MS, ResumePress, classify_resume_press};
 use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
 use crate::system_status::announce_ready;
 use crate::system_status::channels::{BootReadySender, FaultEventSender};
@@ -133,7 +130,7 @@ async fn classify_resume_button_press(button: &mut Input<'static>) -> ResumePres
 }
 
 fn send_resume_action(
-    action: ResumeButtonAction,
+    press: ResumePress,
     fault_sender: FaultEventSender,
     provisioning_sender: ProvisioningRequestSender,
 ) {
@@ -142,14 +139,12 @@ fn send_resume_action(
         if crate::track_output::inhibited() {
             return Err(Refused::Inhibited);
         }
-        let queued = match action {
-            ResumeButtonAction::ResumeShortFault => fault_sender
+        let queued = match press {
+            ResumePress::Short => fault_sender
                 .try_send(FaultEvent::ResumeShortPressed)
                 .is_ok(),
-            ResumeButtonAction::ResumeLongFault => {
-                fault_sender.try_send(FaultEvent::ResumeLongPressed).is_ok()
-            }
-            ResumeButtonAction::RequestWifiProvisioning => provisioning_sender
+            ResumePress::Long => fault_sender.try_send(FaultEvent::ResumeLongPressed).is_ok(),
+            ResumePress::Provisioning => provisioning_sender
                 .try_send(ProvisioningRequest::Requested)
                 .is_ok(),
         };
@@ -221,11 +216,7 @@ pub async fn resume_button_task(
             ResumePress::Long => defmt::info!("RESUME long press"),
             ResumePress::Provisioning => defmt::info!("RESUME provisioning hold"),
         }
-        send_resume_action(
-            resume_action_for_press(press),
-            fault_sender,
-            provisioning_sender,
-        );
+        send_resume_action(press, fault_sender, provisioning_sender);
     }
 }
 
