@@ -2,11 +2,11 @@
 //!
 //! Based on NMRA Standards S-9.1 (Electrical) and S-9.2 (Communications)
 //!
-//! The HAL-free protocol modules `packet`, `encoder`, `function_groups` and
-//! `speed28` are re-exported from the `dcc_protocol` crate, and `timing` adds
-//! the RMT constants to the protocol timings it re-exports from there. This
-//! module adds what needs the hardware or the firmware's tasks: the slot
-//! scheduler, the POM actor and the channels between them.
+//! The HAL-free protocol code lives in the `dcc_protocol` crate; this module
+//! re-exports its packet types and encoders, and `timing` holds the RMT
+//! constants built on its protocol timings. This module adds what needs the
+//! hardware or the firmware's tasks: the slot scheduler, the POM actor and the
+//! channels between them.
 //!
 //! # Example
 //!
@@ -39,11 +39,8 @@ pub(crate) mod scheduler;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod timing;
 
-// The HAL-free protocol modules live in `dcc_protocol`; mounted here under
-// their old names so `crate::dcc::<module>::` paths keep resolving.
 #[cfg(test)]
 pub(crate) use dcc_protocol::validator;
-pub(crate) use dcc_protocol::{encoder, function_groups, packet, speed28};
 
 pub use crate::cutout::CutoutMode;
 
@@ -172,18 +169,21 @@ pub use cv::{
     pom_actor_task, pom_result_from_railcom_items, pom_runtime_stats,
 };
 #[doc(inline)]
-pub use encoder::{EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_dcc_packet};
+pub use dcc_protocol::encoder::{
+    EncodeError, PulseCode, dcc_bit_to_pulse, encode_byte, encode_dcc_packet,
+};
 #[doc(inline)]
-pub use function_groups::FunctionGroupKind;
-#[cfg(any(test, target_arch = "riscv32"))]
-pub(crate) use packed::PackedAddressFlags;
+pub use dcc_protocol::function_groups::FunctionGroupKind;
 #[doc(inline)]
-pub use packet::{
+pub use dcc_protocol::packet::{
     BinaryStateAddress, DCC_MAX_PACKET_BYTES, DccAddress, DccAddressKind, DccPacket, Direction,
     LogonGroup, LogonSessionId, NmraSpeed28, NmraSpeed128, PomCv, ServiceModeCv,
 };
-#[cfg(any(test, target_arch = "riscv32"))]
 #[doc(inline)]
+pub use dcc_protocol::speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};
+#[cfg(any(test, target_arch = "riscv32"))]
+pub(crate) use packed::PackedAddressFlags;
+#[cfg(test)]
 pub use scheduler::SlotManager;
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
@@ -194,8 +194,6 @@ pub use scheduler::{
     LocoRequest, LocoRequestDeadline, LocoRequestId, LocoRequestMessage, LocoRequestResult,
     LocoResponse, LocoSnapshot, LogicalSpeed, SchedulerCommand, SchedulerRequest, SpeedFormat,
 };
-#[doc(inline)]
-pub use speed28::{encode_nmra_instruction_speed_bits, logical_to_nmra_packet_speed};
 #[cfg(test)]
 mod frame_tests {
     use super::*;

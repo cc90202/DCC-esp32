@@ -8,8 +8,8 @@ use crate::dcc::channels::{
     PomRailcomResultReceiver, PomRequestReceiver, PomResponseSender, PomTxStartedReceiver,
     SchedulerCommandSender,
 };
-use crate::dcc::packet::DccPacket;
 use crate::dcc::scheduler::SchedulerCommand;
+use dcc_protocol::packet::DccPacket;
 
 use super::{POM, PomMismatch, PomOp, PomRequest, PomResponse, drain_channel, match_pom_result};
 

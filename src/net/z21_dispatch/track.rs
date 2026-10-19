@@ -6,7 +6,7 @@ use crate::application::track_control::{
     TrackPowerVerdict, TrackStatus, judge_track_power, refusal_reply,
 };
 use crate::net::z21_context::Z21Ctx;
-use crate::z21 as z21_proto;
+use z21 as z21_proto;
 
 use super::encoded_len;
 

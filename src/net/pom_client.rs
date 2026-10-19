@@ -23,7 +23,7 @@ use crate::dcc::{PomOp, PomRequest, PomResponse};
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
 use crate::net::z21_dispatch::encoded_len;
-use crate::z21 as z21_proto;
+use z21 as z21_proto;
 
 // Covers the single bounded POM actor attempt: TX-start waits + the
 // RailCom app:pom attribution window, with margin for task scheduling.

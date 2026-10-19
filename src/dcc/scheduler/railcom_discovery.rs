@@ -1,4 +1,4 @@
-use crate::dcc::packet::{BinaryStateAddress, DccPacket, LogonGroup, LogonSessionId};
+use dcc_protocol::packet::{BinaryStateAddress, DccPacket, LogonGroup, LogonSessionId};
 use embassy_time::{Duration, Instant};
 
 use super::railcom_policy::{record_track_logon_sent, record_track_search_sent};

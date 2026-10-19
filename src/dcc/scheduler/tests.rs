@@ -10,7 +10,7 @@ use super::slot_manager::{
 use super::*;
 use crate::dcc::CutoutMode;
 use crate::dcc::FunctionGroupKind;
-use crate::dcc::packet::PomCv;
+use dcc_protocol::packet::PomCv;
 
 fn addr(n: u8) -> DccAddress {
     DccAddress::new_short(n).unwrap()

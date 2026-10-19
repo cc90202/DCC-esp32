@@ -31,7 +31,7 @@
 
 use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::dcc::PomRequestId;
-use crate::dcc::packet::{DccAddress, DccPacket, Direction};
+use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
 
 #[cfg(any(test, target_arch = "riscv32"))]
 mod core;
@@ -49,7 +49,7 @@ pub use railcom_policy::{RailcomSchedulerStats, railcom_scheduler_stats};
 pub use runtime::packet_scheduler_task;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) use slot_manager::PENDING_POM_CAPACITY;
-#[cfg(any(test, target_arch = "riscv32"))]
+#[cfg(test)]
 pub use slot_manager::SlotManager;
 // The speed and function types live in `dcc_protocol`; re-exported so the
 // `crate::dcc::scheduler::` and `super::` paths keep resolving.

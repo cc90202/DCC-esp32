@@ -1,12 +1,13 @@
 //! DCC engine feeder for the ISR-driven RMT backend.
 
 use crate::dcc::channels::{DccFrameReceiver, PowerFenceAckSender};
-use crate::dcc::encoder::{EncodeError, PulseCode as DccPulseCode, encode_dcc_data_portion};
-use crate::dcc::timing::{IDLE_RMT_SIZE, MAX_DATA_PULSES, RMT_CLOCK_HZ};
+use crate::dcc::timing::{IDLE_RMT_SIZE, RMT_CLOCK_HZ};
 use crate::dcc::{DccPacket, encode_dcc_packet};
 use crate::rmt_dcc as rmt_driver;
 use crate::system_status::channels::FaultEventSender;
 use crate::system_status::{FaultCause, FaultEvent};
+use dcc_protocol::encoder::{EncodeError, PulseCode as DccPulseCode, encode_dcc_data_portion};
+use dcc_protocol::timing::MAX_DATA_PULSES;
 
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::gpio::Level;
@@ -216,7 +217,7 @@ fn convert_to_rmt(pulses: &[DccPulseCode]) -> Result<Vec<PulseCode, MAX_DATA_PUL
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dcc::timing::PREAMBLE_BITS;
+    use dcc_protocol::timing::PREAMBLE_BITS;
 
     #[test]
     fn test_idle_waveform_layout_matches_fixed_preamble_design() {

@@ -40,9 +40,9 @@ use crate::system_status::channels::{
     BootReadySender, DisplaySender, FaultEventSender, NetStatusReceiver, SystemStatusSender,
 };
 use crate::system_status::{BootReadyEvent, announce_ready};
-use crate::z21 as z21_proto;
+use z21 as z21_proto;
 #[cfg(feature = "bench-diag")]
-use crate::z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
+use z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 
 use super::reply::send_reply;
 use super::wifi::{NetInitError, start_network_stack};

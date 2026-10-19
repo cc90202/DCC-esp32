@@ -7,10 +7,9 @@
 //! [`application`] holds the framework-independent use cases and read
 //! projections. [`dcc`] covers packet encoding, RMT pulse generation, the
 //! scheduler and CV programming (the packet types and their encoding come from
-//! the HAL-free `dcc_protocol` crate and are re-exported there), while
-//! [`z21`] is the pure protocol contract (re-exported from the HAL-free `z21`
-//! crate) and [`net`] the adapters around it: Z21 wiring, WiFi and UDP
-//! transport.
+//! the HAL-free `dcc_protocol` crate and are re-exported there), while the
+//! HAL-free `z21` crate is the pure protocol contract and [`net`] the adapters
+//! around it: Z21 wiring, WiFi and UDP transport.
 //! Runtime state lives in [`system_status`] and `fault_manager`, which react
 //! to boot, e-stop and fault events.
 //!
@@ -79,10 +78,3 @@ pub(crate) mod track_authority;
 pub(crate) mod track_output;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod track_safety;
-pub mod z21;
-
-// Moved to `dcc_protocol`; mounted at their old crate-root paths so the
-// RailCom and POM code keeps naming them `crate::logon` and
-// `crate::railcom_data`.
-pub(crate) use dcc_protocol::logon;
-use dcc_protocol::railcom_data;

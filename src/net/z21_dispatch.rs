@@ -12,7 +12,7 @@ use crate::application::client_safety::LeaseActivity;
 use crate::application::track_control::TrackPowerRequest;
 use crate::macros::bench_diag;
 use crate::net::z21_context::{Z21Ctx, Z21PomSession};
-use crate::z21::{self as z21_proto, HEADER_XBUS, Z21Command};
+use z21::{self as z21_proto, HEADER_XBUS, Z21Command};
 
 use super::pom_client::{handle_cv_pom_read, handle_cv_pom_write};
 

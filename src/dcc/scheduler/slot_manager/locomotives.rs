@@ -1,10 +1,10 @@
 //! Locomotive slot admission, mutation, and emergency-stop policy.
 
 use crate::authority::LeasePermit;
-use crate::dcc::packet::{DccAddress, Direction};
 use crate::dcc::scheduler::{
     FunctionChange, LocoRequest, LocoRequestResult, LocoSnapshot, LogicalSpeed, SpeedFormat,
 };
+use dcc_protocol::packet::{DccAddress, Direction};
 
 use super::{DIRTY_STOP_RETRY_COUNT, Slot, SlotAdmission, SlotManager, speed_retry_count};
 

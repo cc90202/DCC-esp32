@@ -10,7 +10,7 @@ use crate::cutout::{PacketSequence, RailcomChannel};
 use crate::railcom::parser::{
     ParseError, RailcomParseResult, RailcomParseStatus, parse_channel1, parse_channel2,
 };
-use crate::railcom_data::{RailcomDatagram, RailcomItem};
+use dcc_protocol::railcom_data::{RailcomDatagram, RailcomItem};
 
 diagnostic_counters! {
     static RAILCOM_RX: RailcomRxCounters;

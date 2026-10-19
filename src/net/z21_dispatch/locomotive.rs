@@ -15,7 +15,7 @@ use crate::dcc::{DccAddress, Direction, FunctionChange, FunctionIndex, LocoReque
 use crate::macros::bench_diag;
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::Z21Ctx;
-use crate::z21::{self as z21_proto, FunctionAction};
+use z21::{self as z21_proto, FunctionAction};
 
 use super::encoded_len;
 

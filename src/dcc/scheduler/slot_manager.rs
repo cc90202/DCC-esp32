@@ -5,9 +5,9 @@ use heapless::{Deque, Vec};
 use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::cutout::CutoutMode;
 use crate::dcc::PomRequestId;
-use crate::dcc::function_groups::{GROUP_LAYOUTS, group_bits, group_of};
-use crate::dcc::packet::{DccAddress, DccPacket, Direction};
-use crate::dcc::speed28::logical_to_nmra_packet_speed;
+use dcc_protocol::function_groups::{GROUP_LAYOUTS, group_bits, group_of};
+use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
+use dcc_protocol::speed28::logical_to_nmra_packet_speed;
 
 use super::railcom_policy::PacketClass;
 use super::{
