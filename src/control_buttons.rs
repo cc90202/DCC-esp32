@@ -39,9 +39,10 @@ use esp_hal::gpio::{Input, InputConfig, Pull};
 
 use crate::control_logic::{RESUME_PROVISIONING_PRESS_MS, ResumePress, classify_resume_press};
 use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
+use crate::station_status::FaultEvent;
+use crate::system_status::BootReadyEvent;
 use crate::system_status::announce_ready;
 use crate::system_status::channels::{BootReadySender, FaultEventSender};
-use crate::system_status::{BootReadyEvent, FaultEvent};
 
 const DEBOUNCE_MS: u64 = 30;
 

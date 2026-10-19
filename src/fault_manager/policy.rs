@@ -3,9 +3,9 @@
 //! This module owns the safety state machine and describes its required effects
 //! without depending on Embassy channels, the scheduler actor, or GPIO drivers.
 
-use crate::system_status::FaultCause;
-use crate::system_status::FaultEvent;
-use crate::system_status::FaultManagerState;
+use crate::station_status::FaultCause;
+use crate::station_status::FaultEvent;
+use crate::station_status::FaultManagerState;
 
 const MAX_SCHEDULER_EFFECTS: usize = 2;
 const MAX_STATUS_EFFECTS: usize = 2;
@@ -41,7 +41,7 @@ pub(super) struct FaultDecision {
 /// Stateful application policy for track faults and emergency stop.
 ///
 /// Track output remains disabled until
-/// [`FaultEvent::TrackPowerArmed`](crate::system_status::FaultEvent::TrackPowerArmed)
+/// [`FaultEvent::TrackPowerArmed`](crate::station_status::FaultEvent::TrackPowerArmed)
 /// is received, even though the logical initial state is [`FaultManagerState::Normal`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FaultPolicy {

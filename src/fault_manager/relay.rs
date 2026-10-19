@@ -6,12 +6,13 @@ use embassy_sync::signal::Signal;
 #[cfg(target_arch = "riscv32")]
 use crate::{
     dcc::{SchedulerCommand, channels::SchedulerCommandSender},
+    station_status::{FaultCause, SystemStatusEvent},
+    system_status::DisplayEvent,
     system_status::channels::{DisplaySender, NetStatusSender, SystemStatusSender},
-    system_status::{DisplayEvent, FaultCause, SystemStatusEvent},
 };
 
 use super::policy::{FaultDecision, SchedulerEffect, StatusEffect};
-use crate::system_status::FaultManagerState;
+use crate::station_status::FaultManagerState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SchedulerMode {
@@ -202,7 +203,7 @@ pub(crate) async fn fault_effects_task(context: FaultEffectsTaskContext) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system_status::{FaultCause, FaultEvent};
+    use crate::station_status::{FaultCause, FaultEvent};
 
     use super::super::policy::FaultPolicy;
 

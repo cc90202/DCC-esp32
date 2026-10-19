@@ -9,11 +9,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Instant, Timer};
 
-use crate::application::client_safety::{
-    ClientSafetyPolicy, LeaseDecision, LeaseRequest, TripReason,
-};
+use crate::authority::policy::{ClientSafetyPolicy, LeaseDecision, LeaseRequest, TripReason};
+use crate::station_status::FaultEvent;
 use crate::system_status::channels::{BootReadySender, FaultEventSender};
-use crate::system_status::{BootReadyEvent, FaultEvent, announce_ready};
+use crate::system_status::{BootReadyEvent, announce_ready};
 
 const Z21_KEEPALIVE_TIMEOUT_MS: u64 = 30_000;
 

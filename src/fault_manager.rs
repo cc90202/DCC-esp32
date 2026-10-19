@@ -18,7 +18,7 @@
 //! a fault is latched is deliberately ignored, so an operator cannot clear a
 //! hardware fault by reflex.
 //!
-//! The runtime state is exposed as [`crate::system_status::FaultManagerState`]
+//! The runtime state is exposed as [`crate::station_status::FaultManagerState`]
 //! for observers. State transitions and their required effects remain private
 //! to the pure policy so callers cannot bypass the fault manager's application
 //! rules.

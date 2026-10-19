@@ -19,9 +19,9 @@ use static_cell::StaticCell;
 
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
-use crate::application::client_safety::{LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::application::pom::PomCompletion;
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::authority::policy::{LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
 };
@@ -282,7 +282,7 @@ async fn send_unknown_command_response(
 
 async fn broadcast_status(
     socket: &UdpSocket<'_>,
-    event: crate::system_status::SystemStatusEvent,
+    event: crate::station_status::SystemStatusEvent,
     send_buf: &mut [u8],
     state: &mut Z21LoopState,
 ) {

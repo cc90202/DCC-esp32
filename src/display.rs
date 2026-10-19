@@ -1,6 +1,8 @@
 //! OLED display event types and async task.
 
-use crate::system_status::{BootStep, DisplayEvent, FaultCause, LedState};
+use crate::system_status::{BootStep, DisplayEvent, ProvisioningSsid};
+
+use crate::station_status::{FaultCause, LedState};
 
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::channels::{BootReadySender, DisplayReceiver};
@@ -92,7 +94,7 @@ pub type RowText = heapless::String<ROW_COLUMNS>;
 pub struct DisplayModel {
     boot_step: BootStep,
     ip: Option<[u8; 4]>,
-    provisioning_ssid: Option<heapless::String<14>>,
+    provisioning_ssid: Option<ProvisioningSsid>,
     provisioning_setup_url: Option<&'static str>,
     state: LedState,
     loco_count: u8,
@@ -440,7 +442,7 @@ mod tests {
         model.apply(DisplayEvent::IpAssigned([192, 168, 4, 1]));
         assert_eq!(model.ip, Some([192, 168, 4, 1]));
 
-        let mut ssid: heapless::String<14> = heapless::String::new();
+        let mut ssid = ProvisioningSsid::new();
         ssid.push_str("DCC-Setup-ABCD")
             .expect("fits in 14-byte buffer");
         model.apply(DisplayEvent::ProvisioningMode {

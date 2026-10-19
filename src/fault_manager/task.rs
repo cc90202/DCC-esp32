@@ -10,8 +10,9 @@ use super::step::{FaultLoop, TrackInputs};
 use super::{INTERLOCK_STOP_DONE, TRACK_POWER_ARMED};
 use crate::dcc::PowerGeneration;
 use crate::dcc::channels::{PowerFenceAckReceiver, PowerQuiesceSender};
+use crate::station_status::{FaultEvent, FaultManagerState};
 use crate::system_status::channels::{BootReadySender, FaultEventReceiver, FaultStateSender};
-use crate::system_status::{BootReadyEvent, FaultEvent, FaultManagerState, announce_ready};
+use crate::system_status::{BootReadyEvent, announce_ready};
 use crate::track_output::TrackOutput;
 
 /// Channels, output and signals the fault-manager task owns for its lifetime.

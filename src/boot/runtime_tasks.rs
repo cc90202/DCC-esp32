@@ -65,8 +65,8 @@ pub(super) async fn net_task_wrapper(context: NetTaskWrapperContext) {
             crate::track_safety::disable_track_intentionally();
             defmt::error!("boot: network task exited unexpectedly; track output disabled");
             if runtime_fault_sender
-                .try_send(crate::system_status::FaultEvent::FaultLatched(
-                    crate::system_status::FaultCause::Internal,
+                .try_send(crate::station_status::FaultEvent::FaultLatched(
+                    crate::station_status::FaultCause::Internal,
                 ))
                 .is_err()
             {

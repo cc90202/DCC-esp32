@@ -31,7 +31,7 @@
 mod qualifier;
 
 #[cfg(target_arch = "riscv32")]
-use crate::system_status::FaultManagerState;
+use crate::station_status::FaultManagerState;
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::channels::{BootReadySender, FaultEventSender, FaultStateReceiver};
 #[cfg(target_arch = "riscv32")]
@@ -117,8 +117,8 @@ async fn report_track_short(fault_sender: &FaultEventSender) {
     }
     defmt::warn!("Short circuit detected on GPIO3!");
     fault_sender
-        .send(crate::system_status::FaultEvent::FaultLatched(
-            crate::system_status::FaultCause::TrackShort,
+        .send(crate::station_status::FaultEvent::FaultLatched(
+            crate::station_status::FaultCause::TrackShort,
         ))
         .await;
 }
