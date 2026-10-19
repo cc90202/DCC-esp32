@@ -21,7 +21,7 @@ use crate::{
     clock::{ticks, timed},
     flash::{self, Flash},
     liveness,
-    track_output::{TrackOutput, set_inhibited},
+    track_output::{self, set_inhibited},
 };
 
 /// Version of this build, checked at compile time.
@@ -91,7 +91,7 @@ impl Clock for Esp {
 
 impl Track for Esp {
     fn is_on(&self) -> bool {
-        TrackOutput.is_track_enabled()
+        track_output::is_track_enabled()
     }
 
     fn inhibit(&self, inhibited: bool) {
