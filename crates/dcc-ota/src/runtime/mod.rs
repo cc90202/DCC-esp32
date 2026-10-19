@@ -49,8 +49,11 @@ use crate::{
     uptime::Uptime,
 };
 
-/// Pause between two hashed or verified sectors, so other tasks run.
-const SECTOR_YIELD: Duration = Duration::from_millis(1);
+/// Pause between two hashed or verified sectors, so other tasks run. It
+/// only has to hand the executor over: a boot hashes the whole running image,
+/// about two hundred sectors, and a millisecond here added a quarter of a
+/// second to every power-up.
+const SECTOR_YIELD: Duration = Duration::from_micros(100);
 
 /// Time since boot, and waiting.
 #[expect(async_fn_in_trait, reason = "single-threaded executor; no Send bound")]
