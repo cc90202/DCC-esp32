@@ -22,7 +22,6 @@ use super::{
 pub(super) enum CommandOutcome {
     Applied,
     Rejected,
-    SuspendRailcomDiscovery,
     RestartRailcomDiscovery,
 }
 
@@ -74,7 +73,6 @@ impl SchedulerCore {
     /// Apply a command or describe the runtime discovery action it requires.
     pub(super) fn handle_command(&mut self, command: SchedulerCommand) -> CommandOutcome {
         match command {
-            SchedulerCommand::SuspendRailcomDiscovery => CommandOutcome::SuspendRailcomDiscovery,
             SchedulerCommand::RestartRailcomDiscovery => CommandOutcome::RestartRailcomDiscovery,
             _ if self.slots.apply_command(command) => CommandOutcome::Applied,
             _ => CommandOutcome::Rejected,
@@ -227,10 +225,6 @@ mod tests {
     fn discovery_commands_become_runtime_outcomes_without_touching_slots() {
         let mut core = SchedulerCore::new();
 
-        assert_eq!(
-            core.handle_command(SchedulerCommand::SuspendRailcomDiscovery),
-            CommandOutcome::SuspendRailcomDiscovery
-        );
         assert_eq!(
             core.handle_command(SchedulerCommand::RestartRailcomDiscovery),
             CommandOutcome::RestartRailcomDiscovery

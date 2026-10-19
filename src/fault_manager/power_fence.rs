@@ -5,7 +5,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
 
 use crate::dcc::PowerGeneration;
-use crate::system_status::FaultEvent;
+use crate::station_status::FaultEvent;
 
 /// The caller bounds the entire exchange with one timeout. Old acknowledgements
 /// are drained without completing or restarting it. Events have priority even
@@ -38,7 +38,7 @@ pub(super) async fn request_and_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system_status::FaultCause;
+    use crate::station_status::FaultCause;
     use core::future::Future;
     use core::pin::pin;
     use core::task::{Context, Poll, Waker};

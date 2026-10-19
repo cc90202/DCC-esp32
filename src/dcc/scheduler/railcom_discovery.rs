@@ -43,12 +43,6 @@ impl RailcomDiscovery {
         self.logon_enable_remaining = RAILCOM_LOGON_ENABLE_STARTUP_REPEATS;
     }
 
-    pub(super) fn suspend(&mut self, now: Instant) {
-        self.active_until = now;
-        self.next_due = now;
-        self.logon_enable_remaining = 0;
-    }
-
     pub(super) fn is_due(&self, now: Instant) -> bool {
         now < self.active_until && now >= self.next_due
     }

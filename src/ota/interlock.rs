@@ -9,7 +9,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use crate::{
     clock::timed,
     fault_manager::{INTERLOCK_STOP_DONE, TRACK_POWER_ARMED},
-    system_status::FaultEvent,
+    station_status::FaultEvent,
     system_status::channels::FaultEventSender,
 };
 

@@ -3,9 +3,9 @@
 //! This module owns the safety state machine and describes its required effects
 //! without depending on Embassy channels, the scheduler actor, or GPIO drivers.
 
-use crate::system_status::FaultCause;
-use crate::system_status::FaultEvent;
-use crate::system_status::FaultManagerState;
+use crate::station_status::FaultCause;
+use crate::station_status::FaultEvent;
+use crate::station_status::FaultManagerState;
 
 const MAX_SCHEDULER_EFFECTS: usize = 2;
 const MAX_STATUS_EFFECTS: usize = 2;
@@ -34,7 +34,6 @@ pub(super) struct FaultDecision {
     pub(super) previous_state: FaultManagerState,
     pub(super) state: FaultManagerState,
     pub(super) track_enabled: bool,
-    pub(super) motion_enabled: bool,
     pub(super) scheduler_effects: [Option<SchedulerEffect>; MAX_SCHEDULER_EFFECTS],
     pub(super) status_effects: [Option<StatusEffect>; MAX_STATUS_EFFECTS],
 }
@@ -42,7 +41,7 @@ pub(super) struct FaultDecision {
 /// Stateful application policy for track faults and emergency stop.
 ///
 /// Track output remains disabled until
-/// [`FaultEvent::TrackPowerArmed`](crate::system_status::FaultEvent::TrackPowerArmed)
+/// [`FaultEvent::TrackPowerArmed`](crate::station_status::FaultEvent::TrackPowerArmed)
 /// is received, even though the logical initial state is [`FaultManagerState::Normal`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FaultPolicy {
@@ -146,7 +145,6 @@ impl FaultPolicy {
             previous_state,
             state: self.state,
             track_enabled: self.track_enabled(),
-            motion_enabled: matches!(self.state, FaultManagerState::Normal),
             scheduler_effects,
             status_effects,
         }
@@ -189,7 +187,6 @@ mod tests {
 
         assert_eq!(decision.state, FaultManagerState::EstopLatched);
         assert!(!decision.track_enabled);
-        assert!(!decision.motion_enabled);
         assert_eq!(
             decision.scheduler_effects,
             [

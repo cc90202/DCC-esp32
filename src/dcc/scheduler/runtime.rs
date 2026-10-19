@@ -49,9 +49,6 @@ pub async fn packet_scheduler_task(
             match core.handle_command(command) {
                 CommandOutcome::Applied => {}
                 CommandOutcome::Rejected => defmt::warn!("scheduler command rejected"),
-                CommandOutcome::SuspendRailcomDiscovery => {
-                    discovery.suspend(Instant::now());
-                }
                 CommandOutcome::RestartRailcomDiscovery => {
                     discovery.restart(Instant::now());
                     defmt::info!("railcom discovery: restarted after track enable");

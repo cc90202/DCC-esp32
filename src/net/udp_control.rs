@@ -17,12 +17,11 @@ use embassy_net::{IpEndpoint, Stack};
 use embassy_time::{Duration, with_timeout};
 use static_cell::StaticCell;
 
-use crate::application::LeasePermit;
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
-use crate::application::client_safety::{LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::application::pom::PomCompletion;
 use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::authority::policy::{LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
 };
@@ -207,16 +206,16 @@ async fn handle_udp_datagram(
         )
         .await;
         let lease_permit = match authorization {
-            CommandAuthorization::ExecuteWithoutLeaseUpdate => None,
-            CommandAuthorization::ExecuteForOwner { owner, permit } => {
-                state.lease_owner = Some(owner);
+            LeaseVerdict::ExecuteWithoutLeaseUpdate => None,
+            LeaseVerdict::ExecuteForOwner { permit } => {
+                state.lease_owner = Some(endpoint);
                 permit
             }
-            CommandAuthorization::Reject => {
+            LeaseVerdict::Reject => {
                 warn!("Z21 command rejected by controller lease");
                 continue;
             }
-            CommandAuthorization::Trip => {
+            LeaseVerdict::Trip => {
                 state.lease_owner = None;
                 warn!("Z21 command rejected by controller lease");
                 continue;
@@ -283,7 +282,7 @@ async fn send_unknown_command_response(
 
 async fn broadcast_status(
     socket: &UdpSocket<'_>,
-    event: crate::system_status::SystemStatusEvent,
+    event: crate::station_status::SystemStatusEvent,
     send_buf: &mut [u8],
     state: &mut Z21LoopState,
 ) {
@@ -491,26 +490,15 @@ pub(crate) async fn net_task(
     .await
 }
 
-#[derive(Debug, Clone, Copy)]
-enum CommandAuthorization {
-    ExecuteWithoutLeaseUpdate,
-    ExecuteForOwner {
-        owner: IpEndpoint,
-        permit: Option<LeasePermit>,
-    },
-    Reject,
-    Trip,
-}
-
 async fn authorize_command(
     classification: LeaseClassification,
     endpoint: IpEndpoint,
     observed_at_ms: u64,
     request_sender: &LeaseRequestSender,
     response_receiver: &LeaseResponseReceiver,
-) -> CommandAuthorization {
+) -> LeaseVerdict {
     let LeaseClassification::Activity(activity) = classification else {
-        return CommandAuthorization::ExecuteWithoutLeaseUpdate;
+        return LeaseVerdict::ExecuteWithoutLeaseUpdate;
     };
     request_sender
         .send(LeaseRequest {
@@ -524,13 +512,5 @@ async fn authorize_command(
         .await;
     let decision = response_receiver.receive().await;
     LEASE_ROUND_TRIP_COUNT.fetch_add(1, Ordering::Relaxed);
-    match lease_verdict(&decision, activity) {
-        LeaseVerdict::ExecuteWithoutLeaseUpdate => CommandAuthorization::ExecuteWithoutLeaseUpdate,
-        LeaseVerdict::ExecuteForOwner { permit } => CommandAuthorization::ExecuteForOwner {
-            owner: endpoint,
-            permit,
-        },
-        LeaseVerdict::Reject => CommandAuthorization::Reject,
-        LeaseVerdict::Trip => CommandAuthorization::Trip,
-    }
+    lease_verdict(&decision, activity)
 }

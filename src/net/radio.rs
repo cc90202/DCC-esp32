@@ -17,11 +17,7 @@ pub struct RadioInitError(esp_radio::InitializationError);
 #[cfg(target_arch = "riscv32")]
 impl defmt::Format for RadioInitError {
     fn format(&self, formatter: defmt::Formatter) {
-        defmt::write!(
-            formatter,
-            "esp-radio initialization failed: {:?}",
-            defmt::Debug2Format(&self.0)
-        );
+        defmt::write!(formatter, "{}", defmt::Display2Format(self));
     }
 }
 
@@ -55,24 +51,7 @@ pub enum WifiBringupError {
 #[cfg(target_arch = "riscv32")]
 impl defmt::Format for WifiBringupError {
     fn format(&self, formatter: defmt::Formatter) {
-        match self {
-            Self::EspRadioInit(error) => defmt::write!(formatter, "{:?}", error),
-            Self::WifiInit(error) => defmt::write!(
-                formatter,
-                "WiFi init failed: {:?}",
-                defmt::Debug2Format(error)
-            ),
-            Self::WifiSetConfig(error) => defmt::write!(
-                formatter,
-                "WiFi set_config failed: {:?}",
-                defmt::Debug2Format(error)
-            ),
-            Self::WifiStart(error) => defmt::write!(
-                formatter,
-                "WiFi start failed: {:?}",
-                defmt::Debug2Format(error)
-            ),
-        }
+        defmt::write!(formatter, "{}", defmt::Display2Format(self));
     }
 }
 

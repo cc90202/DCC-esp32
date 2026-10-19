@@ -18,6 +18,7 @@ use crate::application::pom::{
     PomStart, PomSubmission, prepare_read, prepare_write,
 };
 use crate::application::{LeasePermit, LocoSlots};
+use crate::dcc::PomCv;
 use crate::dcc::channels::PomRequestSender;
 use crate::dcc::{PomOp, PomRequest, PomResponse};
 use crate::net::loco_client::request_loco;
@@ -41,7 +42,7 @@ pub(super) async fn handle_cv_pom_write(
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
-    cv: u16,
+    cv: PomCv,
     value: u8,
 ) -> usize {
     let plan = match prepare_write(ctx.status_model.pom_allowed(), address, cv, value) {
@@ -64,7 +65,7 @@ pub(super) async fn handle_cv_pom_read(
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
-    cv: u16,
+    cv: PomCv,
 ) -> usize {
     let plan = match prepare_read(loco_slots, ctx.status_model.pom_allowed(), address, cv) {
         Ok(plan) => plan,
@@ -225,14 +226,13 @@ pub(super) fn encode_delivery(
 ) -> usize {
     match (delivery.job.plan, delivery.outcome) {
         (PomPlan::Read(plan), PomOutcome::Value(value)) => {
-            let cv = plan.cv.value();
             info!(
                 "POM read addr={} cv={} value={}",
                 plan.address.value(),
-                cv,
+                plan.cv.value(),
                 value
             );
-            encoded_len(z21_proto::encode_cv_result(cv, value, out))
+            encoded_len(z21_proto::encode_cv_result(plan.cv, value, out))
         }
         (PomPlan::Read(plan), PomOutcome::Ack | PomOutcome::Nack | PomOutcome::Unavailable) => {
             warn!(
@@ -242,11 +242,9 @@ pub(super) fn encode_delivery(
             );
             encode_nack(out)
         }
-        (PomPlan::Write(plan), PomOutcome::Ack) => encoded_len(z21_proto::encode_cv_result(
-            plan.cv.value(),
-            plan.value,
-            out,
-        )),
+        (PomPlan::Write(plan), PomOutcome::Ack) => {
+            encoded_len(z21_proto::encode_cv_result(plan.cv, plan.value, out))
+        }
         (PomPlan::Write(_), PomOutcome::Nack) | (_, PomOutcome::Refused) => encode_nack(out),
         (PomPlan::Write(plan), PomOutcome::Value(_) | PomOutcome::Unavailable) => {
             warn!(
@@ -267,24 +265,16 @@ fn reject_admission(
     out: &mut [u8],
     ctx: &Z21Ctx<'_>,
     address: crate::dcc::DccAddress,
-    cv: u16,
+    cv: PomCv,
     operation: PomOperation,
     error: PomAdmissionError,
 ) -> usize {
     match error {
-        PomAdmissionError::InvalidCv(_) => {
-            warn!(
-                "POM {:?} addr={} invalid cv={}",
-                operation,
-                address.value(),
-                cv
-            );
-        }
         PomAdmissionError::TrackPowerOff => warn!(
             "POM {:?} addr={} cv={} rejected (track_on={} estop={} fault={:?})",
             operation,
             address.value(),
-            cv,
+            cv.value(),
             ctx.status_model.track_power_on(),
             ctx.status_model.estop_active(),
             ctx.status_model.fault_cause()

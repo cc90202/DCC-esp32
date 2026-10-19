@@ -68,14 +68,13 @@ use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
 use crate::railcom::uart_reader::RailcomUartRuntimeResultChannel;
 use crate::short_detector::{new_short_detect_input, short_detector_task};
+use crate::station_status::{FaultManagerState, SystemStatusEvent};
 use crate::status_led::{new_led_output, provisioning_led_task, status_led_task};
 use crate::system_status::channels::{
     BootReadyChannel, DisplayChannel, FaultEventChannel, FaultStateWatch, NetStatusChannel,
     SystemStatusChannel,
 };
-use crate::system_status::{
-    BootStep, CriticalTask, DisplayEvent, FaultManagerState, SystemStatusEvent,
-};
+use crate::system_status::{BootStep, CriticalTask, DisplayEvent};
 use crate::track_output::TrackOutput;
 
 // Static channels/signals shared across Embassy tasks.

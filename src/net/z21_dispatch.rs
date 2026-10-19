@@ -8,8 +8,8 @@ use defmt::info;
 use defmt::warn;
 
 use crate::application::LocoSlots;
-use crate::application::client_safety::LeaseActivity;
 use crate::application::track_control::TrackPowerRequest;
+use crate::authority::policy::LeaseActivity;
 use crate::macros::bench_diag;
 use crate::net::z21_context::{Z21Ctx, Z21PomSession};
 use z21::{self as z21_proto, HEADER_XBUS, Z21Command};

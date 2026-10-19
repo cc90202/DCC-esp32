@@ -9,7 +9,7 @@
 
 use super::policy::{FaultDecision, FaultPolicy};
 use crate::dcc::PowerGeneration;
-use crate::system_status::{FaultEvent, FaultManagerState};
+use crate::station_status::{FaultEvent, FaultManagerState};
 
 /// Loop state carried between fault events.
 #[derive(Debug)]
@@ -119,7 +119,7 @@ impl FaultLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system_status::FaultCause;
+    use crate::station_status::FaultCause;
 
     const TRACK_OFF: TrackInputs = TrackInputs {
         output_enabled: false,

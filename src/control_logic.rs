@@ -11,14 +11,6 @@ pub enum ResumePress {
     Provisioning,
 }
 
-/// Domain action produced by a classified Resume button press.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResumeButtonAction {
-    ResumeShortFault,
-    ResumeLongFault,
-    RequestWifiProvisioning,
-}
-
 /// Existing long-resume threshold for the blue Resume button.
 pub const RESUME_LONG_PRESS_MS: u64 = 2_000;
 
@@ -38,16 +30,6 @@ pub const fn classify_resume_press(duration_ms: u64) -> ResumePress {
         0..=RESUME_SHORT_MAX_MS => ResumePress::Short,
         RESUME_LONG_PRESS_MS..=RESUME_LONG_MAX_MS => ResumePress::Long,
         RESUME_PROVISIONING_PRESS_MS.. => ResumePress::Provisioning,
-    }
-}
-
-/// Convert a classified Resume press into the single action it is allowed to emit.
-#[must_use]
-pub const fn resume_action_for_press(press: ResumePress) -> ResumeButtonAction {
-    match press {
-        ResumePress::Short => ResumeButtonAction::ResumeShortFault,
-        ResumePress::Long => ResumeButtonAction::ResumeLongFault,
-        ResumePress::Provisioning => ResumeButtonAction::RequestWifiProvisioning,
     }
 }
 
@@ -78,21 +60,5 @@ mod tests {
     #[test]
     fn test_resume_press_provisioning_after_ten_seconds() {
         assert_eq!(classify_resume_press(10_001), ResumePress::Provisioning);
-    }
-
-    #[test]
-    fn test_resume_provisioning_action_does_not_emit_long_resume_fault() {
-        assert_eq!(
-            resume_action_for_press(ResumePress::Provisioning),
-            ResumeButtonAction::RequestWifiProvisioning
-        );
-    }
-
-    #[test]
-    fn test_resume_long_action_still_emits_long_fault() {
-        assert_eq!(
-            resume_action_for_press(ResumePress::Long),
-            ResumeButtonAction::ResumeLongFault
-        );
     }
 }

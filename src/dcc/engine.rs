@@ -4,8 +4,8 @@ use crate::dcc::channels::{DccFrameReceiver, PowerFenceAckSender};
 use crate::dcc::timing::{IDLE_RMT_SIZE, RMT_CLOCK_HZ};
 use crate::dcc::{DccPacket, encode_dcc_packet};
 use crate::rmt_dcc as rmt_driver;
+use crate::station_status::{FaultCause, FaultEvent};
 use crate::system_status::channels::FaultEventSender;
-use crate::system_status::{FaultCause, FaultEvent};
 use dcc_protocol::encoder::{EncodeError, PulseCode as DccPulseCode, encode_dcc_data_portion};
 use dcc_protocol::timing::MAX_DATA_PULSES;
 

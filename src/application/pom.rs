@@ -7,7 +7,6 @@ use crate::dcc::{DccAddress, LocoRequest, PomCv, PomRequestId, SpeedFormat};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub(crate) enum PomAdmissionError {
-    InvalidCv(u16),
     TrackPowerOff,
 }
 
@@ -29,9 +28,8 @@ pub(crate) fn prepare_read(
     slots: &LocoSlots,
     pom_allowed: bool,
     address: DccAddress,
-    raw_cv: u16,
+    cv: PomCv,
 ) -> Result<PomReadPlan, PomAdmissionError> {
-    let cv = PomCv::new(raw_cv).ok_or(PomAdmissionError::InvalidCv(raw_cv))?;
     if !pom_allowed {
         return Err(PomAdmissionError::TrackPowerOff);
     }
@@ -46,10 +44,9 @@ pub(crate) fn prepare_read(
 pub(crate) fn prepare_write(
     pom_allowed: bool,
     address: DccAddress,
-    raw_cv: u16,
+    cv: PomCv,
     value: u8,
 ) -> Result<PomWritePlan, PomAdmissionError> {
-    let cv = PomCv::new(raw_cv).ok_or(PomAdmissionError::InvalidCv(raw_cv))?;
     if !pom_allowed {
         return Err(PomAdmissionError::TrackPowerOff);
     }
@@ -283,18 +280,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_cv_is_rejected_before_track_power_policy() {
-        assert_eq!(
-            prepare_write(false, address(), 0, 7),
-            Err(PomAdmissionError::InvalidCv(0))
-        );
-    }
-
-    #[test]
     fn write_is_admitted_only_while_pom_is_allowed() {
         let cv = PomCv::new(29).unwrap();
         assert_eq!(
-            prepare_write(true, address(), 29, 7),
+            prepare_write(true, address(), cv, 7),
             Ok(PomWritePlan {
                 address: address(),
                 cv,
@@ -302,7 +291,7 @@ mod tests {
             })
         );
         assert_eq!(
-            prepare_write(false, address(), 29, 7),
+            prepare_write(false, address(), PomCv::new(29).unwrap(), 7),
             Err(PomAdmissionError::TrackPowerOff)
         );
     }
@@ -312,7 +301,7 @@ mod tests {
         let mut slots = [None; 12];
         slots[0] = Some(state(SpeedFormat::Speed28));
 
-        let plan = prepare_read(&slots, true, address(), 17).unwrap();
+        let plan = prepare_read(&slots, true, address(), PomCv::new(17).unwrap()).unwrap();
 
         assert_eq!(
             plan.refresh_request,
@@ -331,14 +320,18 @@ mod tests {
     fn read(cv: u16) -> PomJob {
         PomJob {
             permit: LeasePermit::new(LeaseEpoch::new(1), u64::MAX),
-            plan: PomPlan::Read(prepare_read(&[None; 12], true, address(), cv).unwrap()),
+            plan: PomPlan::Read(
+                prepare_read(&[None; 12], true, address(), PomCv::new(cv).unwrap()).unwrap(),
+            ),
         }
     }
 
     fn write(cv: u16, value: u8) -> PomJob {
         PomJob {
             permit: LeasePermit::new(LeaseEpoch::new(1), u64::MAX),
-            plan: PomPlan::Write(prepare_write(true, address(), cv, value).unwrap()),
+            plan: PomPlan::Write(
+                prepare_write(true, address(), PomCv::new(cv).unwrap(), value).unwrap(),
+            ),
         }
     }
 
@@ -499,7 +492,7 @@ mod tests {
 
     #[test]
     fn unknown_loco_defaults_read_refresh_to_speed128() {
-        let plan = prepare_read(&[None; 12], true, address(), 17).unwrap();
+        let plan = prepare_read(&[None; 12], true, address(), PomCv::new(17).unwrap()).unwrap();
         assert_eq!(
             plan.refresh_request,
             LocoRequest::EnsureRefresh {

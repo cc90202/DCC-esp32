@@ -490,8 +490,7 @@ impl SlotManager {
             SchedulerCommand::CloseProgramOnMain { request_id } => {
                 self.close_program_on_main(request_id)
             }
-            SchedulerCommand::SuspendRailcomDiscovery
-            | SchedulerCommand::RestartRailcomDiscovery => true,
+            SchedulerCommand::RestartRailcomDiscovery => true,
             SchedulerCommand::RailcomTelemetry { packet } => self.railcom_telemetry_packet(packet),
             SchedulerCommand::Pause => {
                 self.pause();

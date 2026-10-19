@@ -18,7 +18,7 @@
 //!
 //! ```ignore
 //! use crate::application::StatusModel;
-//! use crate::system_status::{LedState, SystemStatusEvent};
+//! use crate::station_status::{LedState, SystemStatusEvent};
 //!
 //! let mut model = StatusModel::new();
 //! assert_eq!(model.led_state(), LedState::Booting);
@@ -40,7 +40,7 @@
 //!
 //! ```ignore
 //! use crate::application::StatusModel;
-//! use crate::system_status::{FaultCause, LedState, SystemStatusEvent};
+//! use crate::station_status::{FaultCause, LedState, SystemStatusEvent};
 //!
 //! let mut model = StatusModel::new();
 //! model.apply(SystemStatusEvent::BootCompleted);
@@ -103,79 +103,91 @@ pub enum BootReadyEvent {
     LeaseWatchdog,
 }
 
-/// Defines [`CriticalTask`] from one `Variant => "task_name"` row per task,
-/// so the spawn-failure message is built from the same literal as the name.
-macro_rules! critical_tasks {
-    ($( $(#[$meta:meta])* $variant:ident => $name:literal, )+) => {
-        /// Runtime task whose spawn operation failed.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-        pub enum CriticalTask {
-            $( $(#[$meta])* $variant, )+
-        }
+/// Runtime task whose spawn operation failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub enum CriticalTask {
+    /// Display rendering task.
+    Display,
 
-        impl CriticalTask {
-            /// Every critical task, in declaration order.
-            #[cfg(test)]
-            const ALL: [Self; [$(Self::$variant),+].len()] = [$(Self::$variant),+];
+    /// DCC waveform engine task.
+    DccEngine,
 
-            /// Name of the Embassy task function spawned for this task.
-            #[cfg(test)]
-            #[must_use]
-            const fn name(self) -> &'static str {
-                match self {
-                    $( Self::$variant => $name, )+
-                }
-            }
+    /// Status LED task.
+    StatusLed,
 
-            /// Diagnostic reported when spawning this task fails.
-            #[must_use]
-            pub const fn spawn_failure_message(self) -> &'static str {
-                match self {
-                    $( Self::$variant => concat!("failed to spawn ", $name), )+
-                }
-            }
-        }
-    };
+    /// DCC packet scheduler task.
+    Scheduler,
+
+    /// RailCom diagnostics task.
+    RailcomDiag,
+
+    /// Programming-on-main actor task.
+    PomActor,
+
+    /// Programming-on-main cutout monitor task.
+    PomCutoutMonitor,
+
+    /// RailCom ISR capture task.
+    RailcomIsrCapture,
+
+    /// RailCom UART dispatch task.
+    RailcomUartDispatch,
+
+    /// Network task.
+    Net,
+
+    /// Fault side-effects task.
+    FaultEffects,
+
+    /// Fault manager task.
+    FaultManager,
+
+    /// Runtime provisioning request task.
+    ProvisioningRequest,
+
+    /// Provisioning status LED task.
+    ProvisioningLed,
+
+    /// Emergency-stop button task.
+    StopButton,
+
+    /// Resume button task.
+    ResumeButton,
+
+    /// Track short-circuit detector task.
+    ShortDetector,
+
+    /// Controller lease watchdog task.
+    LeaseWatchdog,
 }
 
-critical_tasks! {
-    /// Display rendering task.
-    Display => "display_task",
-    /// DCC waveform engine task.
-    DccEngine => "dcc_engine_task",
-    /// Status LED task.
-    StatusLed => "status_led_task",
-    /// DCC packet scheduler task.
-    Scheduler => "scheduler_task",
-    /// RailCom diagnostics task.
-    RailcomDiag => "railcom_diag_task",
-    /// Programming-on-main actor task.
-    PomActor => "pom_actor_task",
-    /// Programming-on-main cutout monitor task.
-    PomCutoutMonitor => "pom_cutout_monitor_task",
-    /// RailCom ISR capture task.
-    RailcomIsrCapture => "railcom_isr_capture_task",
-    /// RailCom UART dispatch task.
-    RailcomUartDispatch => "railcom_uart_runtime_dispatch_task",
-    /// Network task.
-    Net => "net_task",
-    /// Fault side-effects task.
-    FaultEffects => "fault_effects_task",
-    /// Fault manager task.
-    FaultManager => "fault_manager_task",
-    /// Runtime provisioning request task.
-    ProvisioningRequest => "provisioning_request_task",
-    /// Provisioning status LED task.
-    ProvisioningLed => "provisioning_led_task",
-    /// Emergency-stop button task.
-    StopButton => "stop_button_task",
-    /// Resume button task.
-    ResumeButton => "resume_button_task",
-    /// Track short-circuit detector task.
-    ShortDetector => "short_detector_task",
-    /// Controller lease watchdog task.
-    LeaseWatchdog => "client_watchdog_task",
+impl CriticalTask {
+    /// Diagnostic reported when spawning this task fails, naming the Embassy
+    /// task function.
+    #[must_use]
+    pub const fn spawn_failure_message(self) -> &'static str {
+        match self {
+            Self::Display => "failed to spawn display_task",
+            Self::DccEngine => "failed to spawn dcc_engine_task",
+            Self::StatusLed => "failed to spawn status_led_task",
+            Self::Scheduler => "failed to spawn scheduler_task",
+            Self::RailcomDiag => "failed to spawn railcom_diag_task",
+            Self::PomActor => "failed to spawn pom_actor_task",
+            Self::PomCutoutMonitor => "failed to spawn pom_cutout_monitor_task",
+            Self::RailcomIsrCapture => "failed to spawn railcom_isr_capture_task",
+            Self::RailcomUartDispatch => "failed to spawn railcom_uart_runtime_dispatch_task",
+            Self::Net => "failed to spawn net_task",
+            Self::FaultEffects => "failed to spawn fault_effects_task",
+            Self::FaultManager => "failed to spawn fault_manager_task",
+            Self::ProvisioningRequest => "failed to spawn provisioning_request_task",
+            Self::ProvisioningLed => "failed to spawn provisioning_led_task",
+            Self::StopButton => "failed to spawn stop_button_task",
+            Self::ResumeButton => "failed to spawn resume_button_task",
+            Self::ShortDetector => "failed to spawn short_detector_task",
+            Self::LeaseWatchdog => "failed to spawn client_watchdog_task",
+        }
+    }
 }
 
 impl core::fmt::Display for CriticalTask {
@@ -199,9 +211,14 @@ impl core::error::Error for CriticalTask {}
 // gated to the target, and neither points back at a module that imports this
 // one, so the direction that matters is unchanged.
 
-pub use crate::station_status::{
-    FaultCause, FaultEvent, FaultManagerState, LedState, SystemStatusEvent,
-};
+use crate::station_status::{FaultCause, LedState};
+
+/// Name of the provisioning access point: a fixed prefix and four hex digits
+/// of the MAC address; `net::provisioning::ap` checks the prefix length.
+pub const PROVISIONING_SSID_LEN: usize = 14;
+
+/// Bounded text of the provisioning access point name.
+pub type ProvisioningSsid = heapless::String<PROVISIONING_SSID_LEN>;
 
 // --- Display events ---
 //
@@ -231,7 +248,7 @@ pub enum DisplayEvent {
     BootProgress(BootStep),
     IpAssigned([u8; 4]),
     ProvisioningMode {
-        ssid: heapless::String<14>,
+        ssid: ProvisioningSsid,
         setup_url: &'static str,
     },
     SystemState(LedState),
@@ -252,8 +269,9 @@ pub enum DisplayEvent {
 pub(crate) mod channels {
     use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch};
 
-    use super::{BootReadyEvent, DisplayEvent, FaultEvent, FaultManagerState, SystemStatusEvent};
+    use super::{BootReadyEvent, DisplayEvent};
     use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
+    use crate::station_status::{FaultEvent, FaultManagerState, SystemStatusEvent};
 
     /// Status events fanned out to the display, the LED and the network task.
     const STATUS_DEPTH: usize = 16;
@@ -313,8 +331,8 @@ pub(crate) async fn announce_ready(sender: channels::BootReadySender, event: Boo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::application::StatusModel;
+    use crate::station_status::{FaultCause, LedState, SystemStatusEvent};
 
     /// The first module-level example, as a test that actually runs.
     #[test]
@@ -343,15 +361,5 @@ mod tests {
 
         model.apply(SystemStatusEvent::FaultCleared);
         assert_eq!(model.led_state(), LedState::Running);
-    }
-
-    #[test]
-    fn every_critical_task_has_a_distinct_name() {
-        for (index, task) in CriticalTask::ALL.iter().enumerate() {
-            for other in &CriticalTask::ALL[index + 1..] {
-                assert_ne!(task.name(), other.name(), "{task:?} and {other:?}");
-            }
-            assert!(task.spawn_failure_message().ends_with(task.name()));
-        }
     }
 }

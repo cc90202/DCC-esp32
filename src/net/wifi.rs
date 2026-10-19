@@ -18,8 +18,9 @@ use static_cell::StaticCell;
 
 use super::radio::{self, WifiBringupError};
 use crate::net::wifi_config::WifiCredentials;
+use crate::station_status::SystemStatusEvent;
+use crate::system_status::DisplayEvent;
 use crate::system_status::channels::{DisplaySender, SystemStatusSender};
-use crate::system_status::{DisplayEvent, SystemStatusEvent};
 
 static NET_RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
 
@@ -49,7 +50,7 @@ impl core::error::Error for UdpBindError {}
 
 impl defmt::Format for UdpBindError {
     fn format(&self, formatter: defmt::Formatter) {
-        defmt::write!(formatter, "{:?}", defmt::Debug2Format(&self.0));
+        defmt::write!(formatter, "{}", defmt::Display2Format(self));
     }
 }
 
@@ -64,13 +65,7 @@ pub enum NetInitError {
 
 impl defmt::Format for NetInitError {
     fn format(&self, formatter: defmt::Formatter) {
-        match self {
-            Self::WifiBringup(error) => defmt::write!(formatter, "{:?}", error),
-            Self::WifiRunnerSpawn => defmt::write!(formatter, "wifi runner spawn failed"),
-            Self::ConnectionSpawn => defmt::write!(formatter, "WiFi connection spawn failed"),
-            Self::HttpSpawn => defmt::write!(formatter, "OTA HTTP spawn failed"),
-            Self::UdpBind(error) => defmt::write!(formatter, "UDP bind failed: {:?}", error),
-        }
+        defmt::write!(formatter, "{}", defmt::Display2Format(self));
     }
 }
 

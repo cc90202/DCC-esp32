@@ -1,5 +1,5 @@
 use dcc_protocol::{
-    DccAddress, NmraSpeed28, SpeedFormat, encode_nmra_instruction_speed_bits,
+    DccAddress, NmraSpeed28, PomCv, SpeedFormat, encode_nmra_instruction_speed_bits,
     logical_to_nmra_packet_speed,
 };
 
@@ -152,22 +152,16 @@ pub(super) fn write_loco_address_be(address: DccAddress, out: &mut [u8], pos: us
     }
 }
 
-/// Convert a public 1-based CV number into its 10-bit wire representation.
+/// The 10-bit wire form of a CV: its number minus one.
 #[must_use]
-pub(super) const fn cv_to_wire(cv: u16) -> Option<u16> {
-    match cv {
-        1..=1024 => Some(cv - 1),
-        _ => None,
-    }
+pub(super) const fn cv_to_wire(cv: PomCv) -> u16 {
+    cv.value() - 1
 }
 
-/// Convert a 10-bit wire CV value into its public 1-based representation.
+/// The CV a 10-bit wire value names; `None` above wire CV 1023.
 #[must_use]
-pub(super) const fn cv_from_wire(wire_cv: u16) -> Option<u16> {
-    match wire_cv {
-        0..=1023 => Some(wire_cv + 1),
-        _ => None,
-    }
+pub(super) const fn cv_from_wire(wire_cv: u16) -> Option<PomCv> {
+    PomCv::new(wire_cv.saturating_add(1))
 }
 
 /// Convert a logical runtime speed (0..=28) into the Z21 wire representation.
@@ -277,12 +271,10 @@ mod tests {
 
     #[test]
     fn test_cv_wire_conversion_is_checked_and_reversible() {
-        assert_eq!(cv_to_wire(0), None);
-        assert_eq!(cv_to_wire(1), Some(0));
-        assert_eq!(cv_to_wire(1024), Some(1023));
-        assert_eq!(cv_to_wire(1025), None);
-        assert_eq!(cv_from_wire(0), Some(1));
-        assert_eq!(cv_from_wire(1023), Some(1024));
+        assert_eq!(cv_to_wire(PomCv::new(1).unwrap()), 0);
+        assert_eq!(cv_to_wire(PomCv::new(1024).unwrap()), 1023);
+        assert_eq!(cv_from_wire(0), PomCv::new(1));
+        assert_eq!(cv_from_wire(1023), PomCv::new(1024));
         assert_eq!(cv_from_wire(1024), None);
     }
 }

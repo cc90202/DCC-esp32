@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use dcc_protocol::{DccAddress, Direction, FunctionIndex, LogicalSpeed};
+use dcc_protocol::{DccAddress, Direction, FunctionIndex, LogicalSpeed, PomCv};
 
 /// The header and X-Header of a frame, read without parsing the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,8 +109,8 @@ pub enum Z21Command {
     CvPomWriteByte {
         /// Locomotive to program.
         address: DccAddress,
-        /// 1-based CV number.
-        cv: u16,
+        /// CV to write.
+        cv: PomCv,
         /// Value to write.
         value: u8,
     },
@@ -118,8 +118,8 @@ pub enum Z21Command {
     CvPomReadByte {
         /// Locomotive to read from.
         address: DccAddress,
-        /// 1-based CV number.
-        cv: u16,
+        /// CV to read.
+        cv: PomCv,
     },
     /// LAN_X_GET_TURNOUT_INFO: accessory decoder state request.
     /// We have no accessory decoder support; respond with state=0 (unknown).

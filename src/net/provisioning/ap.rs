@@ -17,13 +17,15 @@ use static_cell::StaticCell;
 use crate::net::radio::{self, WifiBringupError};
 use crate::net::wifi::wifi_runner_task;
 use crate::net::wifi_config::{CredentialError, WifiCredentials, WifiCredentialsStore};
-use crate::system_status::DisplayEvent;
+use crate::system_status::{DisplayEvent, PROVISIONING_SSID_LEN, ProvisioningSsid};
 
 use super::dhcp_server::run_dhcp_server;
 use super::http_server::run_http_server;
 use super::net_config::{PREFIX_LEN, SERVER_IP, SETUP_URL};
 
 const AP_SSID_PREFIX: &str = "DCC-Setup-";
+// The name is the prefix plus four hex digits of the MAC address.
+const _: () = assert!(AP_SSID_PREFIX.len() + 4 == PROVISIONING_SSID_LEN);
 const AP_PASSWORD: &str = "dcc-setup";
 
 static PROVISIONING_NET_RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
@@ -64,7 +66,7 @@ impl core::error::Error for ProvisioningApError {
     }
 }
 
-fn provisioning_ssid() -> Result<String<14>, ProvisioningApError> {
+fn provisioning_ssid() -> Result<ProvisioningSsid, ProvisioningApError> {
     let mac = esp_radio::wifi::ap_mac();
     let mut ssid = String::new();
     write!(&mut ssid, "{}{:02X}{:02X}", AP_SSID_PREFIX, mac[4], mac[5])

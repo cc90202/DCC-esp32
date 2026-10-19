@@ -1,4 +1,4 @@
-use dcc_protocol::{DccAddress, Direction, SpeedFormat};
+use dcc_protocol::{DccAddress, Direction, PomCv, SpeedFormat};
 
 use super::wire::*;
 use super::{CentralState, LocoInfo};
@@ -114,10 +114,10 @@ pub fn encode_unknown_command(out: &mut [u8]) -> Option<usize> {
 
 /// Encode `LAN_X_CV_RESULT` into `out`.
 ///
-/// Returns `None` if `out` is too short or `cv` is outside `1..=1024`.
-pub fn encode_cv_result(cv: u16, value: u8, out: &mut [u8]) -> Option<usize> {
+/// Returns `None` if `out` is too short.
+pub fn encode_cv_result(cv: PomCv, value: u8, out: &mut [u8]) -> Option<usize> {
     const LEN: usize = 10;
-    let wire_cv = cv_to_wire(cv)?;
+    let wire_cv = cv_to_wire(cv);
     let out = output_with_capacity::<LEN>(out)?;
 
     write_frame_header(out, LEN as u16, HEADER_XBUS);
