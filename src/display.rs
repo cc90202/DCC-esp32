@@ -41,6 +41,15 @@ const THROBBER_FRAMES: [u8; 10] = [
 #[cfg(target_arch = "riscv32")]
 const THROBBER_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Top-left corner of the throbber, next to the state label.
+#[cfg(target_arch = "riscv32")]
+const THROBBER_ORIGIN: Point = Point::new(96, 18);
+
+/// Area the throbber covers: two 2-pixel columns at X offsets 0 and 3, three
+/// 2-pixel rows at Y offsets 0, 3 and 6.
+#[cfg(target_arch = "riscv32")]
+const THROBBER_SIZE: Size = Size::new(6, 8);
+
 /// Draw braille-style dot spinner at the given top-left position.
 /// Each dot is a 2x2 filled rectangle in a 2-column x 3-row grid.
 #[cfg(target_arch = "riscv32")]
@@ -308,11 +317,7 @@ async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
 
     // Animated throbber next to state label when running.
     if model.state == LedState::Running {
-        draw_throbber(
-            display,
-            Point::new(96, 18),
-            THROBBER_FRAMES[throbber_frame as usize % THROBBER_FRAMES.len()],
-        );
+        draw_throbber(display, THROBBER_ORIGIN, throbber_mask(throbber_frame));
     }
 
     let _ = Text::new(model.footer(), Point::new(0, 63), style).draw(display);
@@ -320,7 +325,28 @@ async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
     let _ = display.flush().await;
 }
 
-/// Embassy task: receives display events, updates local state, redraws the OLED.
+/// Redraw only the throbber area and flush that window.
+///
+/// The buffered mode sends just the pixels touched since the last flush, so
+/// a throbber tick costs a few bytes on the I2C bus instead of the whole
+/// frame buffer that [`render`] sends.
+#[cfg(target_arch = "riscv32")]
+async fn render_throbber(display: &mut Oled, throbber_frame: u8) {
+    let _ = Rectangle::new(THROBBER_ORIGIN, THROBBER_SIZE)
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+        .draw(display);
+    draw_throbber(display, THROBBER_ORIGIN, throbber_mask(throbber_frame));
+    let _ = display.flush().await;
+}
+
+#[cfg(target_arch = "riscv32")]
+fn throbber_mask(throbber_frame: u8) -> u8 {
+    THROBBER_FRAMES[usize::from(throbber_frame) % THROBBER_FRAMES.len()]
+}
+
+/// Embassy task: receives display events, updates local state, redraws the
+/// OLED. A model change redraws the whole frame; a throbber tick redraws the
+/// throbber alone.
 #[cfg(target_arch = "riscv32")]
 pub async fn display_task(
     i2c: Option<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
@@ -357,32 +383,31 @@ pub async fn display_task(
     render(&mut display, &model, throbber_frame).await;
 
     loop {
-        if model.state == LedState::Running {
-            let mut next_throbber_tick = Instant::now() + THROBBER_INTERVAL;
-            loop {
-                let now = Instant::now();
-                if now >= next_throbber_tick {
-                    advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
-                    break;
-                }
-
-                let wait = next_throbber_tick - now;
-                let Ok(event) = with_timeout(wait, receiver.receive()).await else {
-                    advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
-                    break;
-                };
-                model.apply(event);
-                if model.state != LedState::Running {
-                    throbber_frame = 0;
-                    break;
-                }
-            }
-        } else {
+        if model.state != LedState::Running {
             throbber_frame = 0;
             let event = receiver.receive().await;
             model.apply(event);
+            render(&mut display, &model, throbber_frame).await;
+            continue;
         }
-        render(&mut display, &model, throbber_frame).await;
+
+        let mut next_throbber_tick = Instant::now() + THROBBER_INTERVAL;
+        while model.state == LedState::Running {
+            let now = Instant::now();
+            if now >= next_throbber_tick {
+                advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
+                render_throbber(&mut display, throbber_frame).await;
+                continue;
+            }
+
+            if let Ok(event) = with_timeout(next_throbber_tick - now, receiver.receive()).await {
+                model.apply(event);
+                render(&mut display, &model, throbber_frame).await;
+            } else {
+                advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
+                render_throbber(&mut display, throbber_frame).await;
+            }
+        }
     }
 }
 
