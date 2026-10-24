@@ -323,7 +323,7 @@ fn cutout_off_fast(hw: &mut TrackOutputHw) {
 #[inline(always)]
 fn schedule_timer_us_fast(hw: &mut TrackOutputHw, delay_us: u32) -> bool {
     hw.cutout_timer
-        .schedule(esp_hal::time::Duration::from_micros(delay_us as u64))
+        .schedule(esp_hal::time::Duration::from_micros(u64::from(delay_us)))
         .is_ok()
 }
 

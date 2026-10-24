@@ -41,7 +41,8 @@ warnings = "deny"
 # Lints beyond the default set; `warnings = "deny"` above makes each an error.
 # Unwrap, expect and panic stay allowed in test code (see clippy.toml).
 [workspace.lints.clippy]
-# Panics and unchecked arithmetic outside tests.
+# Panics, unchecked arithmetic and casts outside tests.
+cast_lossless               = "warn"
 expect_used                 = "warn"
 panic                       = "warn"
 unchecked_time_subtraction  = "warn"
