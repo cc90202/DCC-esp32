@@ -91,7 +91,7 @@ fn uart1_rx_fifo_count() -> Option<u16> {
     // and (in `uart1_reset_rx_fifo`) the `conf0.rxfifo_rst` control bit that
     // resets that same FIFO; no other UART1 register is written.
     let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
-    Some(regs.status().read().rxfifo_cnt().bits() as u16)
+    Some(u16::from(regs.status().read().rxfifo_cnt().bits()))
 }
 
 #[inline(always)]

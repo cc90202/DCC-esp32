@@ -10,9 +10,9 @@
 //! Monitors GPIO3 for track short-circuit detection.
 //! The signal is active-low: GPIO3=LOW means short detected. A falling-edge interrupt opens a
 //! qualification window: the pin is sampled every millisecond and the fault latches only when
-//! the line stays LOW for most of the window (15 of 20 samples), mirroring commercial command
-//! stations that require an overcurrent to persist for tens of milliseconds. Motor inrush and
-//! wheel micro-shorts on turnouts produce sub-millisecond pulses and are ignored; the DRV8874's
+//! the line stays LOW for most of the window (75 of 100 samples), the tolerance DCC-EX gives its
+//! fault pin. Motor inrush, the charging of a decoder's keep-alive capacitor and wheel
+//! micro-shorts on turnouts end sooner and are ignored; the DRV8874's
 //! hardware current limit protects the output during qualification. A confirmed short emits
 //! `FaultEvent::FaultLatched(TrackShort)` to the fault manager.
 //!
@@ -20,7 +20,7 @@
 //! the power-up transient trips the detector often enough that acting on it
 //! would be useless. After that, falling edges are qualified as described
 //! above, and a confirmed short disables the track output through GPIO18 before
-//! the fault event is even sent, which takes about 20ms in the worst case.
+//! the fault event is even sent, which takes about 100 ms in the worst case.
 //!
 //! When the short clears and GPIO3 goes HIGH again, the fault stays latched.
 //! Recovery is deliberately manual, through the long-resume button or a service
