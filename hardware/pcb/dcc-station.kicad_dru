@@ -1,0 +1,28 @@
+(version 1)
+(rule "mains L to N"
+  (condition "A.hasNetclass('MAINS') && B.hasNetclass('MAINS')")
+  (constraint clearance (min 2.5mm)))
+(rule "mains to everything else"
+  (condition "A.hasNetclass('MAINS') && !B.hasNetclass('MAINS')")
+  (constraint clearance (min 6.4mm)))
+(rule "mains creepage"
+  (condition "A.hasNetclass('MAINS') && !B.hasNetclass('MAINS')")
+  (constraint creepage (min 6.4mm)))
+(rule "mains to holes"
+  (condition "A.hasNetclass('MAINS') && B.Pad_Type == 'NPTH, mechanical'")
+  (constraint hole_clearance (min 8.4mm)))
+(rule "mains to board edge and slot"
+  (condition "A.hasNetclass('MAINS')")
+  (constraint edge_clearance (min 6.4mm)))
+(rule "no low-voltage track in the primary area"
+  (condition "A.intersectsArea('MAINS_AREA') && !A.hasNetclass('MAINS')")
+  (constraint disallow track))
+(rule "no via in the primary area"
+  (condition "A.intersectsArea('MAINS_AREA') && A.Type == 'Via'")
+  (constraint disallow via))
+(rule "power track width"
+  (condition "A.hasNetclass('POWER')")
+  (constraint track_width (min 0.5mm)))
+(rule "supply track width"
+  (condition "A.hasNetclass('SUPPLY')")
+  (constraint track_width (min 0.5mm)))

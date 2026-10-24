@@ -1,0 +1,13 @@
+(footprint "Polyfuse_Radial_P5.08mm_W14.5mm"
+  (version 20241229) (generator "gen_footprints") (generator_version "9.0")
+  (layer "F.Cu")
+  (descr "Bourns MF-R400 radial PTC resettable fuse, leads 5.1 +/- 0.7 mm in line (oblong slots), body 14.4 x 3.0 mm, 24.8 mm tall (MF-R datasheet; LCSC C208488)")
+  (attr through_hole)
+  (property "Reference" "REF**" (at 2.54 -2.62 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+  (property "Value" "Polyfuse_Radial_P5.08mm_W14.5mm" (at 2.54 2.7 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+  (fp_rect (start -4.66 -1.5) (end 9.74 1.5) (stroke (width 0.1) (type default)) (fill no) (layer "F.Fab"))
+  (fp_rect (start -4.78 -1.62) (end 9.86 1.62) (stroke (width 0.12) (type default)) (fill no) (layer "F.SilkS"))
+  (fp_rect (start -4.96 -2) (end 10.04 2) (stroke (width 0.05) (type default)) (fill no) (layer "F.CrtYd"))
+  (pad "1" thru_hole oval (at 0 0) (size 3.2 2) (drill oval 2.2 1.1) (layers "*.Cu" "*.Mask") (remove_unused_layers no))
+  (pad "2" thru_hole oval (at 5.08 0) (size 3.2 2) (drill oval 2.2 1.1) (layers "*.Cu" "*.Mask") (remove_unused_layers no))
+)
