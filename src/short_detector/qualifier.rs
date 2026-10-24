@@ -21,16 +21,19 @@ impl ShortSuppression {
 }
 
 /// Total pin samples taken after a falling edge before declaring the window
-/// inconclusive. With 1 ms sampling this gives a 20 ms qualification window,
-/// in line with commercial DCC command stations that require an overcurrent
-/// to persist for tens of milliseconds before cutting track power.
-pub(super) const SHORT_CONFIRM_SAMPLES: u16 = 20;
+/// inconclusive. With 1 ms sampling this gives a 100 ms qualification window,
+/// the same tolerance DCC-EX gives its fault pin when no overcurrent is
+/// measured. A decoder with a large keep-alive capacitor set on a live track
+/// holds FAULT low through the DRV8874's retry cycles for tens of
+/// milliseconds while the capacitor charges; a 20 ms window latched that as a
+/// short.
+pub(super) const SHORT_CONFIRM_SAMPLES: u16 = 100;
 
 /// Minimum LOW samples within the window required to latch a short (75%).
-/// Motor inrush and wheel micro-shorts on turnouts produce sub-millisecond
-/// fault pulses that never accumulate this many LOW samples; a dead short
-/// keeps the line LOW and confirms after 15 ms.
-pub(super) const SHORT_CONFIRM_MIN_LOW_SAMPLES: u16 = 15;
+/// Motor inrush, capacitor charging and wheel micro-shorts on turnouts end
+/// before accumulating this many LOW samples; a dead short keeps the line LOW
+/// and confirms after 75 ms.
+pub(super) const SHORT_CONFIRM_MIN_LOW_SAMPLES: u16 = 75;
 
 /// Integrating qualifier for the short signal: counts LOW samples after a
 /// falling edge and decides as early as possible.
@@ -116,6 +119,21 @@ mod tests {
         }
         // One more HIGH makes reaching the LOW threshold impossible.
         assert_eq!(q.record(false), Some(false));
+    }
+
+    #[test]
+    fn keep_alive_capacitor_charge_is_rejected() {
+        // A Roco decoder set on a live track held FAULT low for tens of
+        // milliseconds while its capacitor charged, then released it.
+        let mut q = ShortQualifier::new();
+        for _ in 0..50 {
+            assert_eq!(q.record(true), None);
+        }
+        let mut verdict = None;
+        while verdict.is_none() {
+            verdict = q.record(false);
+        }
+        assert_eq!(verdict, Some(false));
     }
 
     #[test]
