@@ -22,6 +22,8 @@
 
 # DCC-esp32
 
+A complete DCC command station with RailCom, written in Rust for the ESP32, together with the design files of its printed board ([`hardware/pcb/`](hardware/pcb/)).
+
 `no_std` Rust firmware for a DCC command station built on the ESP32-C6, using
 `esp-hal`, Embassy async tasks and `esp-radio`. Together with its companion
 hardware it drives up to 12 locomotives at once, controlled from the Roco Z21
@@ -56,6 +58,7 @@ on its own.
 
 Read this before wiring or powering anything:
 
+- [Command-station board](hardware/pcb/) — KiCad project and fabrication files of the printed board (rev A)
 - [Breadboard wiring](docs/hardware/wiring.md) — what is connected to what, and why
 - [Components inventory](docs/hardware/components-inventory.md) — mounted, in the drawer, left the design, to buy
 
@@ -188,6 +191,7 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 - `crates/dcc-ota-format/`: signed package and firmware image formats
 - `docs/specs/`: protocol and standards references
 - `docs/hardware/`: the breadboard as it is wired today, inventory and assembly notes
+- `hardware/pcb/`: the printed board, KiCad project and fabrication files
 
 ## Safety notes
 
@@ -200,8 +204,8 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 - [ ] Service-mode programming on a separate track. The packet encoder already
       builds the verify and write packets; what is missing is hardware.
 - [ ] Z21 multi-client support (multiple apps controlling the same station)
-- [ ] PCB for a standalone command station board (in progress)
-- [x] Firmware updates over WiFi
+- [ ] 3D-printed box for the board
+- [ ] LocoNet integration
 
 ## License
 
