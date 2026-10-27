@@ -108,7 +108,17 @@ async fn submit(
                 .delivery
                 .map_or(0, |delivery| encode_delivery(delivery, out))
         }
-        PomSubmission::Queued => 0,
+        PomSubmission::Queued {
+            superseded,
+            displaced,
+        } => {
+            // Both replies go to the sender of this datagram, as one datagram.
+            let mut len = 0;
+            for delivery in [superseded, displaced].into_iter().flatten() {
+                len += encode_delivery(delivery, &mut out[len..]);
+            }
+            len
+        }
         PomSubmission::Busy => {
             let (operation, address, cv) = match job.plan {
                 PomPlan::Read(plan) => (PomOperation::Read, plan.address, plan.cv),
@@ -245,7 +255,10 @@ pub(super) fn encode_delivery(
         (PomPlan::Write(plan), PomOutcome::Ack) => {
             encoded_len(z21_proto::encode_cv_result(plan.cv, plan.value, out))
         }
-        (PomPlan::Write(_), PomOutcome::Nack) | (_, PomOutcome::Refused) => encode_nack(out),
+        (PomPlan::Write(_), PomOutcome::Nack)
+        | (_, PomOutcome::Refused | PomOutcome::Displaced | PomOutcome::Superseded) => {
+            encode_nack(out)
+        }
         (PomPlan::Write(plan), PomOutcome::Value(_) | PomOutcome::Unavailable) => {
             warn!(
                 "POM write addr={} cv={} completed without ACK",
