@@ -13,6 +13,15 @@ pub fn array_at<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
     array
 }
 
+/// Reads the little-endian `u16` at `at`.
+///
+/// # Panics
+/// As [`array_at`].
+#[must_use]
+pub fn le_u16(bytes: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes(array_at(bytes, at))
+}
+
 /// Reads the little-endian `u32` at `at`.
 ///
 /// # Panics

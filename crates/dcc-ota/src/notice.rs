@@ -44,8 +44,9 @@ impl Tenths {
 pub enum Notice {
     /// The upload has reached this progress.
     Receiving(Tenths),
-    /// The package passed the pre-upload check; the track waits for the
-    /// operator, as the check stopped it.
+    /// The package passed the pre-upload check and the upload may follow.
+    /// It does not invite to power the track: a powered track refuses the
+    /// upload. The notice stays until the track is powered again.
     Checked,
     /// The image is in flash and being verified.
     Verifying,
@@ -71,7 +72,7 @@ pub enum Notice {
     TrackOff,
 }
 
-const CHECKED: &str = "Valid: enable Z21";
+const CHECKED: &str = "Valid: ready, upload";
 const VERIFYING: &str = "OTA: verifying";
 const RESTARTING: &str = "OTA: restarting...";
 const RESTARTING_BACK: &str = "OTA FAIL: restarting";

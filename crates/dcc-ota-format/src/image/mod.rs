@@ -9,6 +9,8 @@
 //! | 1        | segment count, 1 to 16                                 |
 //! | 3        | flash size in the high nibble, `3` for 8 MB            |
 //! | 12..14   | chip id, 13 (ESP32-C6)                                 |
+//! | 15..17   | lowest chip revision, major × 100 + minor              |
+//! | 17..19   | highest chip revision, major × 100 + minor             |
 //! | 23       | 1 when a SHA-256 follows the checksum                  |
 //! | 24..32   | first segment header: load address, length             |
 //! | 32..36   | application descriptor magic `0xABCD5432`              |
@@ -41,6 +43,9 @@ pub enum ImageError {
     /// The build record is missing, repeated or invalid, or names a signing
     /// policy the device refuses.
     BadBuild,
+    /// The header excludes the revision of this chip, so the bootloader
+    /// would refuse to start the image.
+    WrongChipRevision,
 }
 
 impl ImageError {
@@ -50,6 +55,7 @@ impl ImageError {
         match self {
             Self::Malformed | Self::BadBuild => "bad_image",
             Self::DigestMismatch => "digest_mismatch",
+            Self::WrongChipRevision => "wrong_chip_revision",
         }
     }
 }

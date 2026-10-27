@@ -106,6 +106,16 @@ const DATA_PHY: u8 = 1;
 const DATA_NVS: u8 = 2;
 const DATA_UNDEFINED: u8 = 6;
 
+/// The Wi-Fi configuration partition, also opened by the firmware's
+/// configuration store.
+pub const DCC_CFG: Partition = Partition {
+    name: "dcc_cfg",
+    kind: DATA,
+    subtype: DATA_NVS,
+    offset: 0x61_0000,
+    size: 0x3000,
+};
+
 /// The exact partition table the firmware must find before it trusts flash.
 pub const PARTITIONS: [Partition; 7] = [
     Partition {
@@ -143,13 +153,7 @@ pub const PARTITIONS: [Partition; 7] = [
         offset: Slot::B.offset(),
         size: SLOT_SIZE,
     },
-    Partition {
-        name: "dcc_cfg",
-        kind: DATA,
-        subtype: DATA_NVS,
-        offset: 0x61_0000,
-        size: 0x3000,
-    },
+    DCC_CFG,
     Partition {
         name: "ota_journal",
         kind: DATA,

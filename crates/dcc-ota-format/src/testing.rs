@@ -15,13 +15,17 @@ use crate::{
         PREFIX_LEN,
         header::{
             APP_DESC_AT, APP_DESC_MAGIC, CHECKSUM_SEED, CHIP_ID_AT, FIRST_SEGMENT_LEN_AT,
-            FLASH_8MB, FLASH_SIZE_AT, HASH_FLAG_AT, IMAGE_MAGIC, PROJECT_FIELD, SEGMENTS_AT,
-            VERSION_FIELD,
+            FLASH_8MB, FLASH_SIZE_AT, HASH_FLAG_AT, IMAGE_MAGIC, MAX_REVISION_AT, PROJECT_FIELD,
+            SEGMENTS_AT, VERSION_FIELD,
         },
     },
     package::{HEADER_LEN, KeyId, Manifest, sign_header, unsigned_header},
     target::{ESP32C6_CHIP_ID, PROJECT},
 };
+
+/// Highest chip revision espflash 4.3.0 writes for the ESP32-C6, v0.99;
+/// the lowest it writes is v0.0.
+const ESPFLASH_MAX_REVISION: u16 = 99;
 
 /// A one-segment image of exactly `len` bytes for `version`.
 ///
@@ -36,6 +40,8 @@ pub fn fixture(version: &str, len: usize, appended_hash: bool) -> Vec<u8> {
     image[SEGMENTS_AT] = 1;
     image[FLASH_SIZE_AT] = FLASH_8MB;
     image[CHIP_ID_AT..CHIP_ID_AT + 2].copy_from_slice(&ESP32C6_CHIP_ID.to_le_bytes());
+    image[MAX_REVISION_AT..MAX_REVISION_AT + 2]
+        .copy_from_slice(&ESPFLASH_MAX_REVISION.to_le_bytes());
     image[HASH_FLAG_AT] = u8::from(appended_hash);
     let segment = (body - 48) as u32 & !15;
     image[FIRST_SEGMENT_LEN_AT..FIRST_SEGMENT_LEN_AT + 4].copy_from_slice(&segment.to_le_bytes());

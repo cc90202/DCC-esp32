@@ -11,6 +11,7 @@ use std::vec::Vec;
 use dcc_ota_format::{
     Version,
     image::{BuildKind, BuildMetadata},
+    target::ChipRevision,
     testing::{fixture, reseal, signing_key},
 };
 use ed25519_dalek::VerifyingKey;
@@ -232,6 +233,10 @@ impl Device for SimDevice {
 
     fn build_kind(&self) -> BuildKind {
         BuildKind::Release
+    }
+
+    fn chip_revision(&self) -> ChipRevision {
+        ChipRevision::new(0, 1)
     }
 
     fn state<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {

@@ -38,6 +38,7 @@ fn every_error() -> impl Iterator<Item = Error> {
         ImageError::Malformed,
         ImageError::DigestMismatch,
         ImageError::BadBuild,
+        ImageError::WrongChipRevision,
     ]
     .map(Error::Image);
     let ineligible = [

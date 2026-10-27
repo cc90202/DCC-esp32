@@ -9,6 +9,7 @@ use dcc_ota_format::{
     DigestStream,
     image::{BuildKind, BuildScanner, ImageError, ImageScanner, Prefix},
     package::Manifest,
+    target::ChipRevision,
 };
 use embedded_storage::nor_flash::NorFlash;
 
@@ -86,12 +87,14 @@ pub struct Buffers {
 }
 
 impl Buffers {
-    /// Erased buffers.
+    /// Zeroed buffers. Zero keeps a `static` of them in `.bss` instead of
+    /// 8 KiB of `.data` copied from flash at boot; the writer fills them
+    /// with the erased value before each image.
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            first: [ERASED; SECTOR_SIZE],
-            sector: [ERASED; SECTOR_SIZE],
+            first: [0; SECTOR_SIZE],
+            sector: [0; SECTOR_SIZE],
         }
     }
 }
@@ -121,6 +124,7 @@ enum Step {
 pub struct Writer<'a> {
     target: ImageId,
     device: BuildKind,
+    chip: ChipRevision,
     build: BuildScanner,
     layout: ImageScanner,
     buffers: &'a mut Buffers,
@@ -149,7 +153,8 @@ impl<'a> Writer<'a> {
     /// Starts writing the authenticated `manifest`'s image into the slot
     /// that is not `booted`, erasing its first sector before accepting any
     /// byte. `device` is the kind of the running build: the image must be
-    /// one it [accepts](BuildKind::accepts).
+    /// one it [accepts](BuildKind::accepts). `chip` is the revision of this
+    /// chip: the image must declare it, or the bootloader would refuse it.
     ///
     /// # Errors
     /// Returns a [`FlashError`] for an unsuitable flash or a failed erase.
@@ -157,6 +162,7 @@ impl<'a> Writer<'a> {
         manifest: Manifest,
         booted: Slot,
         device: BuildKind,
+        chip: ChipRevision,
         buffers: &'a mut Buffers,
         flash: &mut F,
     ) -> Result<Self, FlashError> {
@@ -168,6 +174,7 @@ impl<'a> Writer<'a> {
         Ok(Self {
             target,
             device,
+            chip,
             build: BuildScanner::new(),
             layout: ImageScanner::new(),
             buffers,
@@ -243,8 +250,9 @@ impl<'a> Writer<'a> {
             bytes = &bytes[n..];
             if self.filled == SECTOR_SIZE {
                 if self.received == SECTOR_LEN {
-                    Prefix::parse(&self.buffers.first)?
-                        .matches(self.target.version(), self.target.image_len())?;
+                    let prefix = Prefix::parse(&self.buffers.first)?;
+                    prefix.matches(self.target.version(), self.target.image_len())?;
+                    prefix.runs_on(self.chip)?;
                 } else {
                     self.write_sector(flash, SlotOffset(self.received - SECTOR_LEN))?;
                 }
@@ -359,6 +367,9 @@ mod tests {
         testing::{fixture, manifest as signed, reseal, signing_key},
     };
 
+    /// Revision of the simulated chip, v0.1 like the bench boards.
+    const CHIP: ChipRevision = ChipRevision::new(0, 1);
+
     fn manifest(image: &[u8]) -> Manifest {
         signed(Version::new(0, 2, 0), image)
     }
@@ -398,6 +409,7 @@ mod tests {
                 manifest(&image),
                 booted,
                 BuildKind::Release,
+                CHIP,
                 &mut buffers,
                 &mut flash,
             )
@@ -450,6 +462,7 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Release,
+            CHIP,
             &mut buffers,
             &mut flash,
         )
@@ -471,6 +484,7 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Release,
+            CHIP,
             &mut buffers,
             &mut flash,
         )
@@ -501,6 +515,7 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Release,
+            CHIP,
             &mut buffers,
             &mut flash,
         )
@@ -532,6 +547,7 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Release,
+            CHIP,
             &mut buffers,
             &mut flash,
         )
@@ -550,6 +566,7 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Release,
+            CHIP,
             &mut buffers,
             &mut flash,
         )
@@ -571,6 +588,7 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Release,
+            CHIP,
             &mut buffers,
             &mut flash,
         )
@@ -581,12 +599,34 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Fault,
+            CHIP,
             &mut buffers,
             &mut flash,
         )
         .unwrap();
         bench.push(&mut flash, &image).unwrap();
         assert_eq!(bench.seal(&mut flash), Ok(()));
+    }
+
+    #[test]
+    fn an_image_the_bootloader_would_refuse_on_this_chip_is_refused_at_its_first_sector() {
+        let image = release_image(9120, BuildKind::Release);
+        let mut flash = SimFlash::new(0, FLASH_SIZE);
+        let mut buffers = Buffers::new();
+        let mut writer = Writer::new(
+            manifest(&image),
+            Slot::A,
+            BuildKind::Release,
+            ChipRevision::new(1, 0),
+            &mut buffers,
+            &mut flash,
+        )
+        .unwrap();
+        assert_eq!(
+            writer.push(&mut flash, &image[..SECTOR_SIZE]),
+            Err(ImageError::WrongChipRevision.into())
+        );
+        assert_eq!(flash.bytes[Slot::B.offset() as usize], 0xFF);
     }
 
     #[test]
@@ -599,6 +639,7 @@ mod tests {
             manifest(&image),
             Slot::A,
             BuildKind::Release,
+            CHIP,
             &mut buffers,
             &mut flash,
         )

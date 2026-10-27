@@ -28,7 +28,7 @@ mod tests;
 
 use core::time::Duration;
 
-use dcc_ota_format::{Digest, ImageLen, Version, image::BuildKind};
+use dcc_ota_format::{Digest, ImageLen, Version, image::BuildKind, target::ChipRevision};
 use ed25519_dalek::VerifyingKey;
 use embedded_storage::nor_flash::NorFlash;
 
@@ -123,6 +123,10 @@ pub trait Device: Clock + Track + Storage + Feedback {
     /// Signing policy of the running build; updates must be images it
     /// [accepts](BuildKind::accepts).
     fn build_kind(&self) -> BuildKind;
+
+    /// Silicon revision of this chip; updates must be images the
+    /// bootloader starts on it.
+    fn chip_revision(&self) -> ChipRevision;
 
     /// Reads or changes the shared state, atomically; see the contract of
     /// [`Track`].
@@ -297,8 +301,9 @@ impl<'d, D: Device> Runtime<'d, D> {
     /// flash, pausing between sectors so other tasks keep running.
     async fn hash(self, slot: Slot, len: ImageLen) -> Result<Digest, Error> {
         let mut hasher = Hasher::new(slot, len);
-        let mut buffer = [0; SECTOR_SIZE];
-        self.step_until(|flash| hasher.step(flash, &mut buffer))
+        // The sector buffer lives only inside one step: kept outside, its
+        // 4 KiB would be carried across every await of this future.
+        self.step_until(|flash| hasher.step(flash, &mut [0; SECTOR_SIZE]))
             .await
     }
 
