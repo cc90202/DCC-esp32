@@ -2,7 +2,7 @@
 
 use crate::application::StatusModel;
 use crate::authority::LeasePermit;
-use crate::station_status::{FaultEvent, SystemStatusEvent};
+use crate::station_status::{FaultCause, FaultEvent, SystemStatusEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrackPowerRequest {
@@ -24,8 +24,15 @@ pub(crate) enum LeaseCheck {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrackPowerFeedback {
-    None,
-    Stopped,
+    /// The answer depends on the state the request finds; see
+    /// [`power_on_answer`].
+    CurrentState,
+    /// `LAN_X_BC_TRACK_POWER_OFF` (§2.7).
+    ///
+    /// Also the answer to `LAN_X_SET_STOP`: this station cuts the bridge on
+    /// a stop, while `LAN_X_BC_STOPPED` would tell the client the track is
+    /// still powered.
+    TrackPowerOff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,18 +82,18 @@ pub(crate) const fn judge_track_power(
             LeaseCheck::Valid(permit) => TrackPowerVerdict::Apply(TrackPowerDecision {
                 disable_output_immediately: false,
                 fault_event: FaultEvent::NetworkResume(permit),
-                feedback: TrackPowerFeedback::None,
+                feedback: TrackPowerFeedback::CurrentState,
             }),
         },
         TrackPowerRequest::Disable => TrackPowerVerdict::Apply(TrackPowerDecision {
             disable_output_immediately: true,
             fault_event: FaultEvent::StopPressed,
-            feedback: TrackPowerFeedback::None,
+            feedback: TrackPowerFeedback::TrackPowerOff,
         }),
         TrackPowerRequest::EmergencyStop => TrackPowerVerdict::Apply(TrackPowerDecision {
             disable_output_immediately: true,
             fault_event: FaultEvent::StopPressed,
-            feedback: TrackPowerFeedback::Stopped,
+            feedback: TrackPowerFeedback::TrackPowerOff,
         }),
     }
 }
@@ -120,7 +127,8 @@ impl TrackStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatusBroadcast {
     TrackPower(bool),
-    Stopped,
+    /// `LAN_X_BC_TRACK_SHORT_CIRCUIT` (§2.10).
+    ShortCircuit,
     SystemState(TrackStatus),
 }
 
@@ -129,24 +137,32 @@ pub(crate) struct StatusBroadcastPlan {
     pub(crate) messages: [Option<StatusBroadcast>; 3],
 }
 
+/// Frames sent to the lease owner for a status event.
+///
+/// A stop and a latched fault both cut the bridge here, so both report the
+/// track off; `LAN_X_BC_STOPPED` is never sent, because the Z21 protocol and
+/// JMRI read it as "locomotives stopped, track still powered". A short is
+/// reported with its own message, as the protocol asks (§2.10).
 #[must_use]
 pub(crate) const fn plan_status_broadcast(
     event: SystemStatusEvent,
     status: TrackStatus,
 ) -> StatusBroadcastPlan {
+    let snapshot = Some(StatusBroadcast::SystemState(status));
     let messages = match event {
-        SystemStatusEvent::FaultLatched(_) => [
+        // JMRI and other X-Bus clients only read `LAN_X_BC_TRACK_POWER_OFF`
+        // as power off, so the short message comes on top of it, not instead.
+        SystemStatusEvent::FaultLatched(FaultCause::TrackShort) => [
             Some(StatusBroadcast::TrackPower(false)),
-            Some(StatusBroadcast::Stopped),
-            Some(StatusBroadcast::SystemState(status)),
+            Some(StatusBroadcast::ShortCircuit),
+            snapshot,
         ],
-        SystemStatusEvent::FaultCleared => [
-            Some(StatusBroadcast::TrackPower(true)),
-            Some(StatusBroadcast::SystemState(status)),
-            None,
-        ],
-        SystemStatusEvent::EstopActive => [Some(StatusBroadcast::Stopped), None, None],
-        SystemStatusEvent::EstopCleared => [Some(StatusBroadcast::TrackPower(true)), None, None],
+        SystemStatusEvent::FaultLatched(_) | SystemStatusEvent::EstopActive => {
+            [Some(StatusBroadcast::TrackPower(false)), snapshot, None]
+        }
+        SystemStatusEvent::FaultCleared | SystemStatusEvent::EstopCleared => {
+            [Some(StatusBroadcast::TrackPower(true)), snapshot, None]
+        }
         SystemStatusEvent::BootStarted
         | SystemStatusEvent::BootCompleted
         | SystemStatusEvent::WifiConnecting
@@ -154,6 +170,59 @@ pub(crate) const fn plan_status_broadcast(
         | SystemStatusEvent::WifiDisconnected => [None, None, None],
     };
     StatusBroadcastPlan { messages }
+}
+
+/// Frames sent to the lease owner after the status model was rebuilt from
+/// the fault manager, when the events that changed it were dropped.
+///
+/// Any change sends the snapshot; a change of track power and a new short
+/// also send their own messages before it, as the events would have.
+#[must_use]
+pub(crate) const fn plan_resync_broadcast(
+    before: TrackStatus,
+    after: TrackStatus,
+) -> StatusBroadcastPlan {
+    let unchanged = before.power_on == after.power_on
+        && before.estop_active == after.estop_active
+        && before.short_circuit == after.short_circuit;
+    if unchanged {
+        return StatusBroadcastPlan {
+            messages: [None, None, None],
+        };
+    }
+    let power = if after.power_on == before.power_on {
+        None
+    } else {
+        Some(StatusBroadcast::TrackPower(after.power_on))
+    };
+    let short = if after.short_circuit && !before.short_circuit {
+        Some(StatusBroadcast::ShortCircuit)
+    } else {
+        None
+    };
+    StatusBroadcastPlan {
+        messages: [power, short, Some(StatusBroadcast::SystemState(after))],
+    }
+}
+
+/// Immediate answer to an accepted `LAN_X_SET_TRACK_POWER_ON` (Z21 LAN
+/// protocol §2.6, §2.8): `Some(on)` to send `LAN_X_BC_TRACK_POWER_ON` or
+/// `_OFF`, `None` to send nothing yet.
+///
+/// A track already powered is reported on, and a latched fault, which
+/// refuses the request, off. Otherwise an emergency stop is being lifted:
+/// the `LAN_X_BC_TRACK_POWER_ON` broadcast sent once the track is really
+/// powered answers the lease owner who asked. Nothing waits here, so a stop
+/// in the same datagram is read at once.
+#[must_use]
+pub(crate) const fn power_on_answer(track_enabled: bool, fault_latched: bool) -> Option<bool> {
+    if track_enabled {
+        Some(true)
+    } else if fault_latched {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -183,7 +252,7 @@ mod tests {
             TrackPowerVerdict::Apply(TrackPowerDecision {
                 disable_output_immediately: false,
                 fault_event: FaultEvent::NetworkResume(PERMIT),
-                feedback: TrackPowerFeedback::None,
+                feedback: TrackPowerFeedback::CurrentState,
             })
         );
     }
@@ -249,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn estop_keeps_the_stopped_feedback() {
+    fn estop_and_power_off_both_answer_track_off() {
         let estop = applied(judge_track_power(
             TrackPowerRequest::EmergencyStop,
             LeaseCheck::None,
@@ -260,8 +329,65 @@ mod tests {
             LeaseCheck::None,
             false,
         ));
-        assert_eq!(estop.feedback, TrackPowerFeedback::Stopped);
-        assert_eq!(off.feedback, TrackPowerFeedback::None);
+        assert_eq!(estop.feedback, TrackPowerFeedback::TrackPowerOff);
+        assert_eq!(off.feedback, TrackPowerFeedback::TrackPowerOff);
+    }
+
+    #[test]
+    fn a_power_on_is_answered_from_the_state_it_finds() {
+        assert_eq!(power_on_answer(true, false), Some(true));
+        assert_eq!(power_on_answer(false, true), Some(false));
+        assert_eq!(
+            power_on_answer(false, false),
+            None,
+            "lifting a stop: the broadcast answers once the track is on"
+        );
+    }
+
+    /// The frames a plan sends, in order.
+    fn sent(plan: StatusBroadcastPlan) -> Vec<StatusBroadcast> {
+        plan.messages.into_iter().flatten().collect()
+    }
+
+    #[test]
+    fn a_resync_reports_every_change() {
+        let estop = TrackStatus {
+            power_on: false,
+            estop_active: true,
+            short_circuit: false,
+        };
+        let short = TrackStatus {
+            power_on: false,
+            estop_active: false,
+            short_circuit: true,
+        };
+        assert!(sent(plan_resync_broadcast(RUNNING, RUNNING)).is_empty());
+        assert_eq!(
+            sent(plan_resync_broadcast(RUNNING, estop)),
+            [
+                StatusBroadcast::TrackPower(false),
+                StatusBroadcast::SystemState(estop)
+            ]
+        );
+        assert_eq!(
+            sent(plan_resync_broadcast(estop, short)),
+            [
+                StatusBroadcast::ShortCircuit,
+                StatusBroadcast::SystemState(short)
+            ]
+        );
+        // The track stays off, but the short is gone: the snapshot says so.
+        assert_eq!(
+            sent(plan_resync_broadcast(short, estop)),
+            [StatusBroadcast::SystemState(estop)]
+        );
+        assert_eq!(
+            sent(plan_resync_broadcast(estop, RUNNING)),
+            [
+                StatusBroadcast::TrackPower(true),
+                StatusBroadcast::SystemState(RUNNING)
+            ]
+        );
     }
 
     #[test]
@@ -279,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn fault_latched_broadcasts_power_off_stop_and_snapshot() {
+    fn a_short_broadcasts_power_off_the_short_message_and_snapshot() {
         let status = TrackStatus {
             power_on: false,
             estop_active: false,
@@ -293,8 +419,29 @@ mod tests {
             .messages,
             [
                 Some(StatusBroadcast::TrackPower(false)),
-                Some(StatusBroadcast::Stopped),
+                Some(StatusBroadcast::ShortCircuit),
                 Some(StatusBroadcast::SystemState(status)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_internal_fault_broadcasts_power_off_and_snapshot() {
+        let status = TrackStatus {
+            power_on: false,
+            estop_active: false,
+            short_circuit: false,
+        };
+        assert_eq!(
+            plan_status_broadcast(
+                SystemStatusEvent::FaultLatched(FaultCause::Internal),
+                status
+            )
+            .messages,
+            [
+                Some(StatusBroadcast::TrackPower(false)),
+                Some(StatusBroadcast::SystemState(status)),
+                None,
             ]
         );
     }
@@ -312,14 +459,22 @@ mod tests {
     }
 
     #[test]
-    fn estop_events_have_minimal_broadcasts() {
+    fn estop_events_broadcast_power_and_snapshot() {
         assert_eq!(
             plan_status_broadcast(SystemStatusEvent::EstopActive, RUNNING).messages,
-            [Some(StatusBroadcast::Stopped), None, None]
+            [
+                Some(StatusBroadcast::TrackPower(false)),
+                Some(StatusBroadcast::SystemState(RUNNING)),
+                None,
+            ]
         );
         assert_eq!(
             plan_status_broadcast(SystemStatusEvent::EstopCleared, RUNNING).messages,
-            [Some(StatusBroadcast::TrackPower(true)), None, None]
+            [
+                Some(StatusBroadcast::TrackPower(true)),
+                Some(StatusBroadcast::SystemState(RUNNING)),
+                None,
+            ]
         );
     }
 

@@ -355,6 +355,7 @@ async fn spawn_network_runtime(
             fault_sender: FAULT_CHANNEL.sender(),
             channels: NetTaskChannels {
                 net_status: NET_STATUS.receiver(),
+                fault_state: &FAULT_STATE,
                 status_sender: SYSTEM_STATUS.sender(),
                 display_sender: DISPLAY_CHANNEL.sender(),
                 ready_sender: BOOT_READY.sender(),

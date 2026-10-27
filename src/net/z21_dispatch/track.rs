@@ -3,7 +3,7 @@
 use crate::application::StatusModel;
 use crate::application::track_control::{
     LeaseCheck, RefusalReply, RefuseReason, TrackPowerFeedback, TrackPowerRequest,
-    TrackPowerVerdict, TrackStatus, judge_track_power, refusal_reply,
+    TrackPowerVerdict, TrackStatus, judge_track_power, power_on_answer, refusal_reply,
 };
 use crate::net::z21_context::Z21Ctx;
 use z21 as z21_proto;
@@ -80,7 +80,15 @@ pub(super) async fn apply_power_request(
     }
     ctx.fault_sender.send(decision.fault_event).await;
     match decision.feedback {
-        TrackPowerFeedback::None => 0,
-        TrackPowerFeedback::Stopped => encoded_len(z21_proto::encode_bc_stopped(out)),
+        TrackPowerFeedback::CurrentState => {
+            let fault_latched = ctx.status_model.fault_cause().is_some();
+            match power_on_answer(crate::track_output::is_track_enabled(), fault_latched) {
+                Some(on) => encoded_len(z21_proto::encode_bc_track_power(on, out)),
+                None => 0,
+            }
+        }
+        TrackPowerFeedback::TrackPowerOff => {
+            encoded_len(z21_proto::encode_bc_track_power(false, out))
+        }
     }
 }

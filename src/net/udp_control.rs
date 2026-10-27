@@ -19,8 +19,10 @@ use static_cell::StaticCell;
 
 use crate::application::LocoSlots;
 use crate::application::StatusModel;
-use crate::application::pom::PomCompletion;
-use crate::application::track_control::{StatusBroadcast, TrackStatus, plan_status_broadcast};
+use crate::application::pom::{PomCompletion, PomOutcome};
+use crate::application::track_control::{
+    StatusBroadcast, StatusBroadcastPlan, TrackStatus, plan_resync_broadcast, plan_status_broadcast,
+};
 use crate::authority::policy::{LeaseRequest, LeaseVerdict, lease_verdict};
 use crate::dcc::channels::{
     LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
@@ -36,7 +38,8 @@ use crate::net::z21_dispatch::{
     LeaseClassification, classify_lease_activity, encode_system_state, encoded_len, handle_command,
 };
 use crate::system_status::channels::{
-    BootReadySender, DisplaySender, FaultEventSender, NetStatusReceiver, SystemStatusSender,
+    BootReadySender, DisplaySender, FaultEventSender, FaultStateWatch, NET_STATUS_OVERFLOWED,
+    NetStatusReceiver, SystemStatusSender,
 };
 use crate::system_status::{BootReadyEvent, announce_ready};
 use z21 as z21_proto;
@@ -79,6 +82,7 @@ pub(crate) fn lease_round_trip_count() -> u32 {
 
 pub(crate) struct NetTaskChannels {
     pub(crate) net_status: NetStatusReceiver,
+    pub(crate) fault_state: &'static FaultStateWatch,
     pub(crate) status_sender: SystemStatusSender,
     pub(crate) display_sender: DisplaySender,
     pub(crate) ready_sender: BootReadySender,
@@ -93,6 +97,7 @@ pub(crate) struct NetTaskChannels {
 
 struct Z21LoopIo {
     net_status: NetStatusReceiver,
+    fault_state: &'static FaultStateWatch,
     fault_sender: FaultEventSender,
     pom_request_sender: PomRequestSender,
     pom_response_receiver: PomResponseReceiver,
@@ -287,18 +292,34 @@ async fn broadcast_status(
     state: &mut Z21LoopState,
 ) {
     state.status_model.apply(event);
+    let status = TrackStatus::from_model(state.status_model);
+    send_to_owner(
+        socket,
+        plan_status_broadcast(event, status),
+        send_buf,
+        state,
+    )
+    .await;
+}
+
+/// Sends the frames of `plan` to the lease owner, if there is one.
+async fn send_to_owner(
+    socket: &UdpSocket<'_>,
+    plan: StatusBroadcastPlan,
+    send_buf: &mut [u8],
+    state: &Z21LoopState,
+) {
     let Some(endpoint) = state.lease_owner else {
         return;
     };
-
-    let status = TrackStatus::from_model(state.status_model);
-    let plan = plan_status_broadcast(event, status);
     for message in plan.messages.into_iter().flatten() {
         let response_len = match message {
             StatusBroadcast::TrackPower(enabled) => {
                 encoded_len(z21_proto::encode_bc_track_power(enabled, send_buf))
             }
-            StatusBroadcast::Stopped => encoded_len(z21_proto::encode_bc_stopped(send_buf)),
+            StatusBroadcast::ShortCircuit => {
+                encoded_len(z21_proto::encode_bc_track_short_circuit(send_buf))
+            }
             StatusBroadcast::SystemState(status) => encode_system_state(status, send_buf),
         };
         if send_reply(socket, send_buf, response_len, endpoint)
@@ -309,6 +330,39 @@ async fn broadcast_status(
             warn!("Z21 status broadcast send failed");
         }
     }
+}
+
+/// Rebuilds the status model after the fault relay had to drop events.
+///
+/// The queued events are applied first, for the boot and Wi-Fi state they
+/// carry; the safety state is then taken from the fault manager itself,
+/// because the dropped events may have changed it.
+async fn resync_status_if_overflowed(
+    socket: &UdpSocket<'_>,
+    send_buf: &mut [u8],
+    io: &Z21LoopIo,
+    state: &mut Z21LoopState,
+) {
+    if !NET_STATUS_OVERFLOWED.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let before = TrackStatus::from_model(state.status_model);
+    while let Ok(event) = io.net_status.try_receive() {
+        state.status_model.apply(event);
+    }
+    if let Some(safety) = io.fault_state.try_get() {
+        state.status_model.sync_safety_state(safety);
+    }
+    info!("Z21 status rebuilt after dropped status events");
+    // The dropped events never reached the lease owner: tell it what changed.
+    let after = TrackStatus::from_model(state.status_model);
+    send_to_owner(
+        socket,
+        plan_resync_broadcast(before, after),
+        send_buf,
+        state,
+    )
+    .await;
 }
 
 /// Completes the session entry the actor's response belongs to and settles it.
@@ -347,6 +401,14 @@ async fn settle_pom(
         let Some(start) = completion.next else {
             return;
         };
+        // A queued request was admitted when it arrived; the track may have
+        // stopped, or the lease changed, while it waited.
+        if !state.status_model.pom_allowed() || !crate::track_authority::accepts(start.job.permit) {
+            completion = state
+                .pom_session
+                .complete(start.request_id, PomOutcome::Refused);
+            continue;
+        }
         let loco = LocoChannels {
             request_sender: &io.loco_request_sender,
             response_receiver: &io.loco_response_receiver,
@@ -372,6 +434,7 @@ async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
         use embassy_futures::select::{Either4, select4};
 
         crate::liveness::beat(crate::liveness::Task::Net);
+        resync_status_if_overflowed(&socket, &mut send_buf, &io, &mut state).await;
         // A buffered response is taken before the deadline check: the select
         // below polls the socket first, so it could otherwise stay unread
         // while its request expires.
@@ -419,14 +482,18 @@ async fn run_z21_loop(socket: UdpSocket<'static>, io: Z21LoopIo) -> ! {
                 if owner_endpoint.is_some() {
                     state.lease_owner = None;
                 }
-                let response_len = encoded_len(z21_proto::encode_bc_stopped(&mut send_buf));
+                // The trip cuts the bridge, so the tripped owner is told the
+                // track is off; the status event that follows no longer
+                // reaches it.
+                let response_len =
+                    encoded_len(z21_proto::encode_bc_track_power(false, &mut send_buf));
                 if let Some(endpoint) = owner_endpoint
                     && send_reply(&socket, &send_buf, response_len, endpoint)
                         .await
                         .is_err()
                 {
                     STATUS_BROADCAST_SEND_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
-                    warn!("Z21 stopped broadcast send failed after controller lease trip");
+                    warn!("Z21 track-off broadcast send failed after controller lease trip");
                 }
                 info!("Controller lease tripped: track output disabled");
             }
@@ -450,6 +517,7 @@ pub(crate) async fn net_task(
 ) -> Result<(), NetInitError> {
     let NetTaskChannels {
         net_status,
+        fault_state,
         status_sender,
         display_sender,
         ready_sender,
@@ -477,6 +545,7 @@ pub(crate) async fn net_task(
         socket,
         Z21LoopIo {
             net_status,
+            fault_state,
             fault_sender,
             pom_request_sender,
             pom_response_receiver,

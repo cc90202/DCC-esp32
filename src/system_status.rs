@@ -294,6 +294,14 @@ pub(crate) mod channels {
     pub(crate) type NetStatusSender = RuntimeSender<SystemStatusEvent, NET_STATUS_DEPTH>;
     pub(crate) type NetStatusReceiver = RuntimeReceiver<SystemStatusEvent, NET_STATUS_DEPTH>;
 
+    /// Set when a status event could not be queued for the net task.
+    ///
+    /// The net task only drains its queue once the network is up, so the
+    /// fault relay drops instead of waiting; the net task then rebuilds its
+    /// status from [`FaultStateWatch`] instead of from the events.
+    pub(crate) static NET_STATUS_OVERFLOWED: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+
     pub(crate) type BootReadyChannel = RuntimeChannel<BootReadyEvent, BOOT_READY_DEPTH>;
     pub(crate) type BootReadySender = RuntimeSender<BootReadyEvent, BOOT_READY_DEPTH>;
     pub(crate) type BootReadyReceiver = RuntimeReceiver<BootReadyEvent, BOOT_READY_DEPTH>;

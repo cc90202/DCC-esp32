@@ -68,6 +68,7 @@ pub(super) const RESP_XH_FIRMWARE_VERSION: u8 = 0xF3;
 
 // Response DB0 values
 pub(super) const RESP_DB0_POWER_ON: u8 = 0x01;
+pub(super) const RESP_DB0_SHORT_CIRCUIT: u8 = 0x08;
 pub(super) const RESP_DB0_POWER_OFF: u8 = 0x00;
 pub(super) const RESP_DB0_STATUS_CHANGED: u8 = 0x22;
 pub(super) const RESP_DB0_UNKNOWN_COMMAND: u8 = 0x82;

@@ -66,6 +66,14 @@ impl StatusModel {
         }
     }
 
+    /// Replaces the safety state with the one the fault manager holds now.
+    ///
+    /// Used when status events were dropped and the model can no longer be
+    /// rebuilt from them.
+    pub fn sync_safety_state(&mut self, state: FaultManagerState) {
+        self.safety_state = state;
+    }
+
     /// Returns whether track power should be considered enabled for operator/protocol status.
     #[must_use]
     pub const fn track_power_on(self) -> bool {

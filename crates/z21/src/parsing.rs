@@ -5,6 +5,13 @@ use dcc_protocol::{DccAddress, Direction, FunctionIndex, LogicalSpeed, SpeedForm
 use super::wire::*;
 use super::{FrameKind, FunctionAction, ParseError, Z21Command};
 
+/// Reads the address of `LAN_GET_LOCOMODE` and `LAN_SET_LOCOMODE`: a plain
+/// big-endian number (§3.1), unlike the X-Bus commands. The two flag bits some
+/// clients still set are ignored.
+fn parse_plain_loco_address(high: u8, low: u8) -> Option<DccAddress> {
+    DccAddress::from_magnitude(u16::from(high & 0x3F) << 8 | u16::from(low))
+}
+
 /// Parse a single Z21 frame from `buf`.
 ///
 /// `buf` must start at the first byte of the frame. Only the first `data_len`
@@ -40,7 +47,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
                 return Err(ParseError::FrameTooShort);
             }
             let address =
-                parse_loco_address(frame[4], frame[5]).ok_or(ParseError::InvalidAddress)?;
+                parse_plain_loco_address(frame[4], frame[5]).ok_or(ParseError::InvalidAddress)?;
             Ok(Z21Command::GetLocoMode { address })
         }
         HEADER_SET_LOCOMODE => {
@@ -48,7 +55,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<Z21Command, ParseError> {
                 return Err(ParseError::FrameTooShort);
             }
             let address =
-                parse_loco_address(frame[4], frame[5]).ok_or(ParseError::InvalidAddress)?;
+                parse_plain_loco_address(frame[4], frame[5]).ok_or(ParseError::InvalidAddress)?;
             Ok(Z21Command::SetLocoMode {
                 address,
                 mode: frame[6],
@@ -303,9 +310,7 @@ fn parse_xbus(buf: &[u8]) -> Result<Z21Command, ParseError> {
             if payload.len() < 4 {
                 return Err(ParseError::FrameTooShort);
             }
-            let raw_address = u16::from(payload[1]) << 8 | u16::from(payload[2]);
-            let address =
-                DccAddress::from_magnitude(raw_address).ok_or(ParseError::InvalidAddress)?;
+            let address = u16::from_be_bytes([payload[1], payload[2]]);
             Ok(Z21Command::GetTurnoutInfo { address })
         }
         XHEADER_SET_STOP => Ok(Z21Command::SetStop),
