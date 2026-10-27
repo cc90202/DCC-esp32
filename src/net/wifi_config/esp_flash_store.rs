@@ -7,12 +7,20 @@ use esp_bootloader_esp_idf::partitions::{
 };
 use esp_storage::FlashStorage;
 
-use super::store::{StoreError, WifiConfigStore};
+use super::store::{STORE_SPAN, StoreError, WifiConfigStore};
 
-pub(crate) const DCC_CFG_PARTITION_LABEL: &str = "dcc_cfg";
+pub(crate) const DCC_CFG_PARTITION_LABEL: &str = dcc_ota::layout::DCC_CFG.name;
 // 3 x 4 KiB sectors: slot A + slot B used by `WifiConfigStore`, plus one
 // spare sector reserved for future config records (see partitions.csv).
-const DCC_CFG_PARTITION_SIZE: usize = 0x3000;
+const DCC_CFG_PARTITION_SIZE: usize = dcc_ota::layout::DCC_CFG.size as usize;
+
+// `FlashRegion` (esp-bootloader-esp-idf 0.4) refuses an erase that ends
+// exactly at the end of the partition, so its last sector cannot be erased.
+// The spare sector is that last one; the slots must never reach it.
+const _: () = assert!(
+    STORE_SPAN < DCC_CFG_PARTITION_SIZE,
+    "FlashRegion cannot erase the last sector of dcc_cfg"
+);
 
 pub type EspWifiConfigStore<'a, 'd> = WifiConfigStore<FlashRegion<'a, FlashStorage<'d>>>;
 pub type EspWifiConfigStoreError = StoreError<PartitionError>;

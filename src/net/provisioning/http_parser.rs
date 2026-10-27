@@ -89,7 +89,8 @@ fn parse_request_metadata(bytes: &[u8]) -> Result<RequestMetadata<'_>, ParseErro
     }
 
     let headers = str::from_utf8(&bytes[..header_end]).map_err(|_| ParseError::BadRequest)?;
-    let (request_line, header_lines) = headers.split_once("\r\n").ok_or(ParseError::BadRequest)?;
+    // A request with no header lines ends right after its request line.
+    let (request_line, header_lines) = headers.split_once("\r\n").unwrap_or((headers, ""));
     if request_line.len() > MAX_REQUEST_LINE_BYTES {
         return Err(ParseError::RequestLineTooLong);
     }
@@ -289,6 +290,14 @@ mod tests {
         )
         .unwrap();
         request
+    }
+
+    #[test]
+    fn a_request_without_header_lines_is_accepted() {
+        assert_eq!(
+            parse_request(b"GET / HTTP/1.1\r\n\r\n"),
+            Ok(ParsedRequest::GetRoot)
+        );
     }
 
     #[test]

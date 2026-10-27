@@ -59,6 +59,7 @@ pub enum NetInitError {
     WifiBringup(WifiBringupError),
     WifiRunnerSpawn,
     ConnectionSpawn,
+    IpDisplaySpawn,
     HttpSpawn,
     UdpBind(UdpBindError),
 }
@@ -75,6 +76,7 @@ impl fmt::Display for NetInitError {
             Self::WifiBringup(error) => write!(formatter, "{error}"),
             Self::WifiRunnerSpawn => formatter.write_str("failed to spawn wifi_runner_task"),
             Self::ConnectionSpawn => formatter.write_str("failed to spawn connection_task"),
+            Self::IpDisplaySpawn => formatter.write_str("failed to spawn ip_display_task"),
             Self::HttpSpawn => formatter.write_str("failed to spawn OTA HTTP task"),
             Self::UdpBind(error) => write!(formatter, "UDP bind on Z21 port failed: {error:?}"),
         }
@@ -86,7 +88,10 @@ impl core::error::Error for NetInitError {
         match self {
             Self::WifiBringup(error) => Some(error),
             Self::UdpBind(error) => Some(error),
-            Self::WifiRunnerSpawn | Self::ConnectionSpawn | Self::HttpSpawn => None,
+            Self::WifiRunnerSpawn
+            | Self::ConnectionSpawn
+            | Self::IpDisplaySpawn
+            | Self::HttpSpawn => None,
         }
     }
 }
@@ -128,10 +133,12 @@ pub(super) async fn start_network_stack(
 
     info!("Waiting for DHCP...");
     stack.wait_config_up().await;
+    spawner
+        .spawn(ip_display_task(stack, display_sender))
+        .map_err(|_| NetInitError::IpDisplaySpawn)?;
     if let Some(config) = stack.config_v4() {
         let address = config.address.address();
         info!("Network up, IP: {}", defmt::Display2Format(&address));
-        let _ = display_sender.try_send(DisplayEvent::IpAssigned(address.octets()));
         let _ = display_sender.try_send(DisplayEvent::BootProgress(
             crate::system_status::BootStep::WifiConnected,
         ));
@@ -140,6 +147,24 @@ pub(super) async fn start_network_stack(
     }
 
     Ok(stack)
+}
+
+/// Shows the station's address on the display after every DHCP lease that
+/// changes it, reconnections included.
+#[embassy_executor::task]
+pub(super) async fn ip_display_task(stack: Stack<'static>, display_sender: DisplaySender) {
+    let mut shown = None;
+    loop {
+        stack.wait_config_up().await;
+        if let Some(config) = stack.config_v4() {
+            let octets = config.address.address().octets();
+            if shown != Some(octets) {
+                display_sender.send(DisplayEvent::IpAssigned(octets)).await;
+                shown = Some(octets);
+            }
+        }
+        stack.wait_config_down().await;
+    }
 }
 
 /// Runs the embassy-net stack driver in a dedicated Embassy task, following the official example.
