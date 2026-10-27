@@ -220,6 +220,13 @@ pub fn record_rx_overflows(count: u32) {
         .fetch_add(count, Ordering::Relaxed);
 }
 
+/// Windows lost so far between capture and dispatch: ring overruns, torn
+/// slots and oversized windows all count here.
+#[cfg(target_arch = "riscv32")]
+pub(crate) fn rx_overflow_total() -> u32 {
+    RAILCOM_RX.rx_overflow_count.load(Ordering::Relaxed)
+}
+
 #[cfg(any(target_arch = "riscv32", test))]
 pub(crate) fn record_pom_result_forwarded() {
     RAILCOM_RX
