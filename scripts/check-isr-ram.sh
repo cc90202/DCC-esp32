@@ -25,7 +25,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script_path="$script_dir/$(basename "${BASH_SOURCE[0]}")"
-default_elf="target/riscv32imac-unknown-none-elf/release/dcc-esp32"
+default_elf="${CARGO_TARGET_DIR:-target}/riscv32imac-unknown-none-elf/release/dcc-esp32"
 allowlist="${ISR_RAM_ALLOWLIST:-$script_dir/isr-ram-allowlist.txt}"
 
 # ESP32-C6 address map (esp-hal memory.x): internal SRAM, the mask ROM whose
@@ -849,11 +849,17 @@ while ((${#queue[@]} > 0)); do
                 [[ -n "$end" ]] || fail "cannot bound the jump table at 0x$table"
                 entries=$(((end - 16#$table) / 4))
                 ((entries > 0 && entries <= 1024)) || fail "jump table at 0x$table has $entries entries"
+                # Read into a variable first: a failure inside a process
+                # substitution would be lost and leave the table unchecked.
+                words="$(read_words "$table" "$entries")" ||
+                    fail "cannot read the jump table at 0x$table"
+                (($(wc -w <<<"$words") == entries)) ||
+                    fail "jump table at 0x$table: read fewer than $entries entries"
                 while read -r word; do
                     if ((16#$word < 16#$start || 16#$word >= 16#$stop)); then
                         violations+=("jump table at 0x$table sends $name to 0x$word, outside the function")
                     fi
-                done < <(read_words "$table" "$entries")
+                done <<<"$words"
                 validated+=("jump table 0x$table: $entries entries inside $name")
                 ;;
             tablecall)
