@@ -73,6 +73,16 @@ pub fn suppress_short_edges_for(duration: Duration) {
     });
 }
 
+/// Gives the first power-on after boot the same settling time as a resume.
+///
+/// Arming the track at boot keeps the fault manager in Normal, so the settle
+/// that follows every return to Normal never runs; keep-alive capacitors on
+/// the track would then be qualified from the first millisecond.
+#[cfg(target_arch = "riscv32")]
+pub fn settle_after_arming() {
+    suppress_short_edges_for(Duration::from_millis(RECOVERY_SETTLE_MS));
+}
+
 #[cfg(target_arch = "riscv32")]
 fn short_edges_suppressed() -> bool {
     critical_section::with(|cs| {
