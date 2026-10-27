@@ -24,6 +24,8 @@ const BEAT_PERIOD: Duration = Duration::from_secs(1);
 const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 /// Pause after a failed accept before listening again.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+/// Time the stack gets to send the RST of an aborted connection.
+const ABORT_SETTLE: Duration = Duration::from_millis(50);
 /// Receive window: room for a full sector of image data in flight.
 const RX_BUFFER: usize = 4096;
 /// Transmit window: holds the status JSON in one go; the larger page
@@ -90,6 +92,9 @@ pub async fn server_task(stack: Stack<'static>, task: Task) -> ! {
             .is_err()
         {
             socket.abort();
+            // Let the stack send the RST before `accept` reuses the socket,
+            // or the client is left waiting on a connection nobody serves.
+            Timer::after(ABORT_SETTLE).await;
             continue;
         }
         socket.close();

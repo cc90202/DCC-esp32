@@ -49,6 +49,9 @@ fn refused_while_inhibited(event: FaultEvent, state: FaultManagerState) -> bool 
 /// Applies the decided track power after a completed fence; a network
 /// resume also needs its lease to be current. Returns whether it applied.
 fn apply_track_power(event: FaultEvent, enabled: bool, track_output: &mut TrackOutput) -> bool {
+    if event == FaultEvent::TrackPowerArmed && enabled {
+        crate::short_detector::settle_after_arming();
+    }
     let FaultEvent::NetworkResume(permit) = event else {
         return track_output.set_track_enabled(enabled);
     };

@@ -214,6 +214,7 @@ impl<D: Device> UpdateGuard<'_, D> {
                     manifest,
                     booted,
                     runtime.device.build_kind(),
+                    runtime.device.chip_revision(),
                     buffers,
                     flash,
                 )

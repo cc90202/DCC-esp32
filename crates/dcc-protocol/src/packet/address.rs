@@ -1,14 +1,17 @@
 //! Locomotive decoder addresses and the high byte that carries them.
 //!
 //! [`DccAddress`] holds a validated NMRA S-9.2 short (1-127) or long
-//! (128-10239) address; [`HighFragment`] reads the flag bits of the first
-//! byte of a two-byte address.
+//! (128-10239) address; [`HighFragment`] reads the RailCom `ADR1` datagram
+//! that precedes the low byte of an address.
 //!
 //! `new_short`, `new_long`, `is_short` and `value` are `#[inline(always)]`:
 //! these helpers must inline into their callers, which may run from RAM and
 //! cannot afford a call into a separately placed function.
 
 use heapless::Vec;
+
+/// Flag bits of the first byte of a long address in a DCC packet (NMRA S-9.2.1).
+const LONG_ADDRESS_PREFIX: u8 = 0b1100_0000;
 
 /// DCC decoder address (opaque type enforcing NMRA address validation)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,14 +101,16 @@ impl DccAddress {
         }
     }
 
-    /// Create an address from the two bytes that carry one on the wire.
+    /// Create an address from the RailCom `ADR1` and `ADR2` datagrams.
     ///
-    /// The high byte is read by [`HighFragment`], and its form decides: a
-    /// stated long address is taken at its word, a plain fragment leaves the
-    /// mode to magnitude, and a byte of no known form yields nothing.
+    /// The high byte is read by [`HighFragment`], and its form decides: a base
+    /// or consist address is short, an extended address is long, and a byte of
+    /// no known form yields nothing. A consist address is the one the decoder
+    /// currently answers to, so it is returned as the short address it is on
+    /// the track.
     ///
     /// Returns `None` for a malformed high byte, for zero, for a value above
-    /// 10239, and for a stated long address below 128 — legal on the wire, but
+    /// 10239, and for an extended address below 128 — legal on the wire, but
     /// outside what this type can hold. Reading that last one as the short
     /// address of the same number would name a different decoder.
     ///
@@ -115,9 +120,13 @@ impl DccAddress {
     /// clients encode it that way.
     #[must_use]
     pub fn from_address_fragments(high: u8, low: u8) -> Option<Self> {
-        match HighFragment::read(high) {
-            HighFragment::Long(value) => Self::new_long(HighFragment::compose(value, low)),
-            HighFragment::Plain(value) => Self::from_magnitude(HighFragment::compose(value, low)),
+        let fragment = HighFragment::read(high);
+        let value = fragment.address_value(low)?;
+        match fragment {
+            HighFragment::Long(_) => Self::new_long(value),
+            HighFragment::Short | HighFragment::Consist => {
+                Self::new_short(u8::try_from(value).ok()?)
+            }
             HighFragment::Malformed => None,
         }
     }
@@ -161,7 +170,7 @@ impl DccAddress {
                 // Long address format: 11AAAAAA AAAAAAAA
                 // Top 6 bits in first byte (with 0xC0 prefix)
                 // Bottom 8 bits in second byte
-                let high = HighFragment::FLAG_MASK | ((addr >> 8) as u8);
+                let high = LONG_ADDRESS_PREFIX | ((addr >> 8) as u8);
                 let low = (addr & 0xFF) as u8;
                 Vec::from_array([high, low])
             }
@@ -169,32 +178,42 @@ impl DccAddress {
     }
 }
 
-/// The high byte of a two-byte address, read by its flag bits.
+/// The RailCom `ADR1` datagram (ID 1), read by its form.
 ///
-/// A long address travels as `0b11AAAAAA AAAAAAAA`; a short one is carried in
-/// the low byte alone, behind a zero high byte. The two flag bits are read
-/// together, because that is the pattern the standard defines and the only one
-/// this crate emits: a byte carrying just one of them belongs to neither form.
+/// RCN-217 table 11 gives it three forms: `00000000` before a base (short)
+/// address, `01100000` before a consist address, and `10AAAAAA` carrying the
+/// top six bits of an extended (long) address. Every other byte is malformed.
+/// This is not the long-address byte of a DCC packet, which is `11AAAAAA`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HighFragment {
-    /// Both flag bits set: the fragment states a long address.
+    /// `00000000`: `ADR2` holds a base address, 1 to 127.
+    Short,
+    /// `01100000`: `ADR2` holds a consist address in its low seven bits.
+    Consist,
+    /// `10AAAAAA`: the top six bits of an extended address.
     Long(u8),
-    /// Neither flag bit set: six value bits and no statement about the mode.
-    Plain(u8),
-    /// One flag bit alone: a byte of no known form.
+    /// Any other byte.
     Malformed,
 }
 
 impl HighFragment {
-    const FLAG_MASK: u8 = 0b1100_0000;
+    const SHORT: u8 = 0b0000_0000;
+    const CONSIST: u8 = 0b0110_0000;
+    const LONG_MARKER_MASK: u8 = 0b1100_0000;
+    const LONG_MARKER: u8 = 0b1000_0000;
     const VALUE_MASK: u8 = 0b0011_1111;
+    /// Bit 7 of `ADR2` after a consist marker is the direction bit `R`.
+    const CONSIST_ADDRESS_MASK: u8 = 0b0111_1111;
 
-    /// Reads the flag bits of a high address byte and tells which form it has.
+    /// Reads an `ADR1` byte and tells which form it has.
     #[must_use]
     pub fn read(high: u8) -> Self {
-        match high & Self::FLAG_MASK {
-            Self::FLAG_MASK => Self::Long(high & Self::VALUE_MASK),
-            0 => Self::Plain(high & Self::VALUE_MASK),
+        match high {
+            Self::SHORT => Self::Short,
+            Self::CONSIST => Self::Consist,
+            long if long & Self::LONG_MARKER_MASK == Self::LONG_MARKER => {
+                Self::Long(long & Self::VALUE_MASK)
+            }
             _ => Self::Malformed,
         }
     }
@@ -210,11 +229,13 @@ impl HighFragment {
     }
 
     /// The address value this fragment carries together with `low`, or `None`
-    /// when the fragment has no known form.
+    /// when the fragment is malformed or `low` does not fit its form.
     #[must_use]
     pub fn address_value(self, low: u8) -> Option<u16> {
         match self {
-            Self::Long(value) | Self::Plain(value) => Some(Self::compose(value, low)),
+            Self::Short => (low <= Self::CONSIST_ADDRESS_MASK).then_some(u16::from(low)),
+            Self::Consist => Some(u16::from(low & Self::CONSIST_ADDRESS_MASK)),
+            Self::Long(value) => Some(Self::compose(value, low)),
             Self::Malformed => None,
         }
     }

@@ -11,10 +11,10 @@ use crate::cutout::CutoutMode;
 use crate::dcc::channels::{PomRailcomResultSender, SchedulerCommandSender};
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
 use crate::macros::bench_diag;
-use crate::railcom::loco_tracker::RailcomLocoSighting;
+use crate::railcom::loco_tracker::{FragmentWindow, RailcomLocoSighting};
 use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
 use crate::railcom::pipeline::{
-    RailcomRxResult, record_pom_result_dropped, record_pom_result_forwarded,
+    RailcomRxResult, record_pom_result_dropped, record_pom_result_forwarded, rx_overflow_total,
 };
 use crate::railcom::pom_dispatch::evaluate_pom_window;
 use crate::railcom::uart_reader::{RailcomRxOutput, RailcomRxOutputReceiver};
@@ -24,10 +24,37 @@ use crate::track_output::RailcomPacketMetadata;
 #[derive(Default)]
 struct LogonDispatchState {
     pending_channel1: Option<(PacketSequence, [u8; 2])>,
+    /// [`rx_overflow_total`] when the last window was dispatched.
+    overflows_seen: u32,
+    /// Windows still to dispatch that may predate a lost one.
+    suspect_windows: usize,
     select_sent_for: Option<(u16, u32)>,
 }
 
+/// Windows that can be on their way to dispatch when the capture side counts
+/// a loss: the full queue, plus the one the capture task is sending.
+const WINDOWS_IN_FLIGHT: usize = crate::railcom::uart_reader::RX_WINDOW_DEPTH + 1;
+
 impl LogonDispatchState {
+    /// A window lost on the way breaks the run of consecutive windows that
+    /// pairs address fragments (RCN-217 §4).
+    ///
+    /// The loss is counted when it happens, while windows captured before it
+    /// may still wait in the queue. None of those may hand a high fragment to
+    /// one captured after the loss, so the held fragment is dropped before
+    /// each of them.
+    fn forget_fragment_across_lost_windows(&mut self) {
+        let overflows = rx_overflow_total();
+        if overflows != self.overflows_seen {
+            self.overflows_seen = overflows;
+            self.suspect_windows = WINDOWS_IN_FLIGHT;
+        }
+        if self.suspect_windows > 0 {
+            self.suspect_windows -= 1;
+            crate::railcom::loco_tracker::forget_pending_fragment();
+        }
+    }
+
     fn observe_window(&mut self, result: &RailcomRxResult) -> Option<RailcomLogonResponse> {
         match result.window.channel {
             RailcomChannel::Channel1 if result.window.raw_len() == 2 => {
@@ -113,8 +140,17 @@ fn record_loco_sighting(
     packet_metadata: Option<RailcomPacketMetadata>,
     complete_items: &[RailcomItem],
 ) {
+    let window = match (result.window.channel, packet_metadata) {
+        (RailcomChannel::Channel2, _) => FragmentWindow::Channel2,
+        (RailcomChannel::Channel1, None) => FragmentWindow::UnknownChannel1,
+        (RailcomChannel::Channel1, Some(metadata)) if metadata.target_address.is_some() => {
+            FragmentWindow::LocoChannel1
+        }
+        (RailcomChannel::Channel1, Some(_)) => FragmentWindow::OtherChannel1,
+    };
     let direct_sighting = crate::railcom::loco_tracker::record_loco_identification(
         result.window.packet_sequence,
+        window,
         complete_items,
     );
     let target_sighting = direct_sighting.or_else(|| {
@@ -222,6 +258,7 @@ fn dispatch_processed_window(
     let packet_metadata =
         crate::track_output::railcom_packet_metadata(result.window.packet_sequence);
 
+    state.forget_fragment_across_lost_windows();
     record_loco_sighting(result, packet_metadata, complete_items);
 
     if let Some(response) = state.observe_window(result) {

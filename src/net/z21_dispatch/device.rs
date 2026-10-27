@@ -1,6 +1,5 @@
 //! Z21 controller for static device and accessory information.
 
-use crate::dcc::DccAddress;
 use z21 as z21_proto;
 
 use super::encoded_len;
@@ -31,6 +30,6 @@ pub(super) fn encode_firmware_version(out: &mut [u8]) -> usize {
     encoded_len(z21_proto::encode_firmware_version(out))
 }
 
-pub(super) fn encode_unknown_turnout(address: DccAddress, out: &mut [u8]) -> usize {
+pub(super) fn encode_unknown_turnout(address: u16, out: &mut [u8]) -> usize {
     encoded_len(z21_proto::encode_turnout_info(address, out))
 }

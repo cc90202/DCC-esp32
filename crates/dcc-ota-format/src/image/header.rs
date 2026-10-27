@@ -5,19 +5,22 @@
 use super::ImageError;
 use crate::{
     ImageLen, Version,
-    fields::le_u32,
-    target::{ESP32C6_CHIP_ID, PROJECT},
+    fields::{le_u16, le_u32},
+    target::{ChipRevision, ESP32C6_CHIP_ID, PROJECT},
 };
 
 /// Image header, first segment header and application descriptor.
 pub const PREFIX_LEN: usize = 288;
 pub(crate) const IMAGE_MAGIC: u8 = 0xE9;
-/// Image header fields: magic, segment count, flash size, chip id, and the
-/// flag of an appended SHA-256.
+/// Image header fields: magic, segment count, flash size, chip id, the
+/// range of chip revisions the image runs on, and the flag of an appended
+/// SHA-256.
 const MAGIC_AT: usize = 0;
 pub(crate) const SEGMENTS_AT: usize = 1;
 pub(crate) const FLASH_SIZE_AT: usize = 3;
 pub(crate) const CHIP_ID_AT: usize = 12;
+pub(crate) const MIN_REVISION_AT: usize = 15;
+pub(crate) const MAX_REVISION_AT: usize = 17;
 pub(crate) const HASH_FLAG_AT: usize = 23;
 const MAX_SEGMENTS: u8 = 16;
 /// Flash-size nibble for 8 MB, in byte 3.
@@ -107,6 +110,9 @@ pub struct Prefix {
     header: Header,
     version: Version,
     first_segment_end: u32,
+    min_revision: ChipRevision,
+    /// `None` when the header sets no upper bound.
+    max_revision: Option<ChipRevision>,
 }
 
 impl Prefix {
@@ -136,6 +142,13 @@ impl Prefix {
             header,
             version,
             first_segment_end: first_segment_len + IMAGE_HEADER_LEN + SEGMENT_HEADER_LEN,
+            min_revision: ChipRevision::from_full(le_u16(p, MIN_REVISION_AT)),
+            // ESP-IDF v5.5 `bootloader_common_loader.c`: 0 and 0xFFFF leave
+            // the maximum unset (`IS_FIELD_SET`).
+            max_revision: match le_u16(p, MAX_REVISION_AT) {
+                0 | u16::MAX => None,
+                full => Some(ChipRevision::from_full(full)),
+            },
         })
     }
 
@@ -155,6 +168,19 @@ impl Prefix {
             return Err(ImageError::Malformed);
         }
         Ok(())
+    }
+
+    /// Checks that the bootloader will start the image on a chip of
+    /// `revision`: it refuses one outside the range the header declares.
+    ///
+    /// # Errors
+    /// Returns [`ImageError::WrongChipRevision`] outside that range.
+    pub fn runs_on(&self, revision: ChipRevision) -> Result<(), ImageError> {
+        if revision >= self.min_revision && self.max_revision.is_none_or(|max| revision <= max) {
+            Ok(())
+        } else {
+            Err(ImageError::WrongChipRevision)
+        }
     }
 
     /// Finds the encoded length of the image from its segment headers alone;
@@ -201,6 +227,41 @@ mod tests {
             prefix.matches(Version::new(1, 2, 3), len(8175)),
             Err(ImageError::Malformed)
         );
+    }
+
+    #[test]
+    fn prefix_runs_only_on_the_declared_chip_revisions() {
+        let mut image = fixture("1.2.3", 4096, false);
+        image[MIN_REVISION_AT..MIN_REVISION_AT + 2].copy_from_slice(&1u16.to_le_bytes());
+        image[MAX_REVISION_AT..MAX_REVISION_AT + 2].copy_from_slice(&99u16.to_le_bytes());
+        let prefix = Prefix::parse(&image[..PREFIX_LEN]).unwrap();
+        assert_eq!(prefix.runs_on(ChipRevision::new(0, 1)), Ok(()));
+        assert_eq!(prefix.runs_on(ChipRevision::new(0, 99)), Ok(()));
+        for refused in [ChipRevision::new(0, 0), ChipRevision::new(1, 0)] {
+            assert_eq!(
+                prefix.runs_on(refused),
+                Err(ImageError::WrongChipRevision),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_maximum_of_zero_or_all_ones_sets_no_upper_bound() {
+        // As the bootloader reads it: such an image starts on any revision
+        // from its minimum up.
+        for unset in [0u16, u16::MAX] {
+            let mut image = fixture("1.2.3", 4096, false);
+            image[MIN_REVISION_AT..MIN_REVISION_AT + 2].copy_from_slice(&1u16.to_le_bytes());
+            image[MAX_REVISION_AT..MAX_REVISION_AT + 2].copy_from_slice(&unset.to_le_bytes());
+            let prefix = Prefix::parse(&image[..PREFIX_LEN]).unwrap();
+            assert_eq!(prefix.runs_on(ChipRevision::new(3, 0)), Ok(()), "{unset}");
+            assert_eq!(
+                prefix.runs_on(ChipRevision::new(0, 0)),
+                Err(ImageError::WrongChipRevision),
+                "{unset}"
+            );
+        }
     }
 
     #[test]

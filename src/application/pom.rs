@@ -56,7 +56,7 @@ pub(crate) fn prepare_write(
 fn projected_format(slots: &LocoSlots, address: DccAddress) -> SpeedFormat {
     projected_slot_index(slots, address)
         .and_then(|index| slots[index])
-        .map_or(SpeedFormat::Speed128, |slot| slot.speed.format())
+        .map_or(SpeedFormat::DEFAULT, |slot| slot.speed.format())
 }
 
 /// An admitted POM operation, ready to be handed to the actor.
@@ -72,6 +72,17 @@ pub(crate) enum PomPlan {
     Write(PomWritePlan),
 }
 
+impl PomPlan {
+    /// Decoder the operation is addressed to.
+    #[must_use]
+    pub(crate) const fn address(self) -> DccAddress {
+        match self {
+            Self::Read(plan) => plan.address,
+            Self::Write(plan) => plan.address,
+        }
+    }
+}
+
 /// How a POM request ended, as reported to its client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PomOutcome {
@@ -81,6 +92,12 @@ pub(crate) enum PomOutcome {
     /// No response: the request could not be handed to the actor, or its
     /// deadline passed first.
     Unavailable,
+    /// Replaced in the queue by a newer request from its client before it
+    /// could start.
+    Displaced,
+    /// A read answered at once because its client has since asked about
+    /// another decoder; whatever the decoder answers is dropped.
+    Superseded,
     /// Refused before it reached the actor, for a reason already reported.
     #[cfg_attr(
         not(target_arch = "riscv32"),
@@ -108,11 +125,16 @@ pub(crate) struct PomDelivery<Reply> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PomSubmission {
+pub(crate) enum PomSubmission<Reply> {
     /// The slot was free: start this request now.
     Start(PomStart),
-    /// Waits behind the request in flight from the same client.
-    Queued,
+    /// Waits behind the request in flight from the same client. `superseded`
+    /// is the reply owed now to a read in flight for another decoder,
+    /// `displaced` the one owed to the request pushed out of the queue.
+    Queued {
+        superseded: Option<PomDelivery<Reply>>,
+        displaced: Option<PomDelivery<Reply>>,
+    },
     /// Another client's request is in flight; refuse at once.
     Busy,
 }
@@ -148,19 +170,30 @@ struct InFlight<Client, Reply> {
     request_id: PomRequestId,
     /// `None` until the request has been handed to the actor.
     deadline_ms: Option<u64>,
+    /// Already answered as [`PomOutcome::Superseded`]: its outcome is dropped.
+    answered: bool,
 }
 
 /// POM requests of every Z21 client: one in flight at the single-flight actor,
 /// and at most one successor from the same client waiting behind it.
 ///
-/// The request in flight is always answered, even when its client has sent a
-/// newer one meanwhile: a client polling CVs keeps its rhythm only if every
-/// request it sent gets its reply, and the Z21 result carries the CV number,
-/// so an older value cannot land in the field of a newer read. A newer request
-/// from the client in flight replaces the waiting successor, which never gets a
-/// reply; a queued write is never replaced: while one waits, a newer request
-/// from its client is refused. The actor attempt is never cancelled; the
-/// successor starts when the attempt ends.
+/// Every request gets exactly one reply, and a client reads one decoder at a
+/// time. The request in flight is answered even when its client has sent a
+/// newer one for the same decoder meanwhile: a client polling CVs keeps its
+/// rhythm only if every request it sent gets its reply, and the Z21 result
+/// carries the CV number, so an older value cannot land in the field of a
+/// newer read. It carries no decoder address, though: once the client asks
+/// about another decoder, a read in flight is answered at once as
+/// [`PomOutcome::Superseded`] and what the decoder answers is dropped, or the
+/// value would show up as the other decoder's (bench, 2026-10-26: "CV 8 =
+/// 151" of loco 4 sent 1.9 s after the app had moved to loco 5). A write in
+/// flight is still answered with its outcome. A newer request from the client
+/// in flight replaces the waiting successor, which is answered at once as
+/// [`PomOutcome::Displaced`]: left without a reply, the Z21 app repeats it,
+/// and each repeat displaced the next (same bench: 1496 reads sent, 412
+/// answered, the app never settled). A queued write is never replaced: while
+/// one waits, a newer request from its client is refused. The actor attempt
+/// is never cancelled; the successor starts when the attempt ends.
 pub(crate) struct PomSession<Client, Reply> {
     next_request_id: u32,
     in_flight: Option<InFlight<Client, Reply>>,
@@ -181,7 +214,12 @@ impl<Client: Copy + Eq, Reply: Copy> PomSession<Client, Reply> {
     /// the actor, then calls [`Self::arm_deadline`], or [`Self::complete`] with
     /// the failure if the hand-off fails.
     #[must_use]
-    pub(crate) fn submit(&mut self, client: Client, reply: Reply, job: PomJob) -> PomSubmission {
+    pub(crate) fn submit(
+        &mut self,
+        client: Client,
+        reply: Reply,
+        job: PomJob,
+    ) -> PomSubmission<Reply> {
         let ticket = PomTicket { client, reply, job };
         let Some(in_flight) = self.in_flight.as_mut() else {
             return PomSubmission::Start(self.launch(ticket));
@@ -192,8 +230,26 @@ impl<Client: Copy + Eq, Reply: Copy> PomSession<Client, Reply> {
         if in_flight.ticket.client != client || queued_write {
             return PomSubmission::Busy;
         }
-        self.queued = Some(ticket);
-        PomSubmission::Queued
+        let superseded = (!in_flight.answered
+            && matches!(in_flight.ticket.job.plan, PomPlan::Read(_))
+            && in_flight.ticket.job.plan.address() != job.plan.address())
+        .then(|| {
+            in_flight.answered = true;
+            PomDelivery {
+                reply: in_flight.ticket.reply,
+                job: in_flight.ticket.job,
+                outcome: PomOutcome::Superseded,
+            }
+        });
+        let displaced = self.queued.replace(ticket).map(|old| PomDelivery {
+            reply: old.reply,
+            job: old.job,
+            outcome: PomOutcome::Displaced,
+        });
+        PomSubmission::Queued {
+            superseded,
+            displaced,
+        }
     }
 
     /// Starts the deadline of the request in flight, now handed to the actor.
@@ -222,7 +278,7 @@ impl<Client: Copy + Eq, Reply: Copy> PomSession<Client, Reply> {
             return PomCompletion::idle();
         };
         PomCompletion {
-            delivery: Some(PomDelivery {
+            delivery: (!in_flight.answered).then_some(PomDelivery {
                 reply: in_flight.ticket.reply,
                 job: in_flight.ticket.job,
                 outcome,
@@ -252,6 +308,7 @@ impl<Client: Copy + Eq, Reply: Copy> PomSession<Client, Reply> {
             ticket,
             request_id,
             deadline_ms: None,
+            answered: false,
         });
         PomStart {
             request_id,
@@ -335,12 +392,22 @@ mod tests {
         }
     }
 
+    /// Starts `job` from a free slot and arms its deadline at 1 000 ms.
     fn start(session: &mut Session, client: u8, reply: u16, job: PomJob) -> PomStart {
         let PomSubmission::Start(start) = session.submit(client, reply, job) else {
             panic!("the slot must be free");
         };
         assert_eq!(start.job, job);
+        session.arm_deadline(1_000);
         start
+    }
+
+    /// A request queued without displacing or superseding another.
+    fn queued() -> PomSubmission<u16> {
+        PomSubmission::Queued {
+            superseded: None,
+            displaced: None,
+        }
     }
 
     fn delivery(reply: u16, job: PomJob, outcome: PomOutcome) -> Option<PomDelivery<u16>> {
@@ -355,8 +422,7 @@ mod tests {
     fn read_in_flight_is_answered_before_the_newer_read_starts() {
         let mut session = Session::new();
         let first = start(&mut session, OWNER, 10, read(8));
-        session.arm_deadline(1_000);
-        assert_eq!(session.submit(OWNER, 11, read(29)), PomSubmission::Queued);
+        assert_eq!(session.submit(OWNER, 11, read(29)), queued());
 
         let completion = session.complete(first.request_id, PomOutcome::Value(5));
         assert_eq!(
@@ -377,11 +443,78 @@ mod tests {
         );
     }
 
+    fn read_of(address: u8, cv: u16) -> PomJob {
+        let address = DccAddress::new_short(address).unwrap();
+        PomJob {
+            permit: LeasePermit::new(LeaseEpoch::new(1), u64::MAX),
+            plan: PomPlan::Read(
+                prepare_read(&[None; 12], true, address, PomCv::new(cv).unwrap()).unwrap(),
+            ),
+        }
+    }
+
+    #[test]
+    fn read_in_flight_is_answered_at_once_when_the_client_moves_to_another_loco() {
+        // Bench, 2026-10-26: the Z21 app had moved to loco 5 and the value of
+        // loco 4 still in flight landed in its fields.
+        let mut session = Session::new();
+        let first = start(&mut session, OWNER, 10, read_of(4, 8));
+
+        assert_eq!(
+            session.submit(OWNER, 11, read_of(5, 8)),
+            PomSubmission::Queued {
+                superseded: delivery(10, read_of(4, 8), PomOutcome::Superseded),
+                displaced: None
+            }
+        );
+
+        let completion = session.complete(first.request_id, PomOutcome::Value(151));
+        assert_eq!(completion.delivery, None);
+        assert_eq!(completion.next.map(|next| next.job), Some(read_of(5, 8)));
+    }
+
+    #[test]
+    fn superseded_read_is_answered_once_even_if_the_client_keeps_switching() {
+        let mut session = Session::new();
+        start(&mut session, OWNER, 10, read_of(4, 8));
+        assert!(matches!(
+            session.submit(OWNER, 11, read_of(5, 7)),
+            PomSubmission::Queued {
+                superseded: Some(_),
+                ..
+            }
+        ));
+
+        assert_eq!(
+            session.submit(OWNER, 12, read_of(4, 7)),
+            PomSubmission::Queued {
+                superseded: None,
+                displaced: delivery(11, read_of(5, 7), PomOutcome::Displaced)
+            }
+        );
+
+        let completion = session.expire(1_000);
+        assert_eq!(completion.delivery, None);
+        assert_eq!(completion.next.map(|next| next.job), Some(read_of(4, 7)));
+    }
+
+    #[test]
+    fn write_in_flight_keeps_its_outcome_when_the_client_moves_to_another_loco() {
+        let mut session = Session::new();
+        let first = start(&mut session, OWNER, 10, write(29, 6));
+
+        assert_eq!(session.submit(OWNER, 11, read_of(5, 8)), queued());
+
+        assert_eq!(
+            session.complete(first.request_id, PomOutcome::Ack).delivery,
+            delivery(10, write(29, 6), PomOutcome::Ack)
+        );
+    }
+
     #[test]
     fn another_clients_request_is_refused_while_the_slot_is_busy() {
         let mut session = Session::new();
         let first = start(&mut session, OWNER, 10, read(8));
-        session.arm_deadline(1_000);
 
         assert_eq!(session.submit(OTHER, 20, read(7)), PomSubmission::Busy);
 
@@ -399,8 +532,7 @@ mod tests {
     fn pending_write_is_delivered_before_the_next_read_starts() {
         let mut session = Session::new();
         let first = start(&mut session, OWNER, 10, write(29, 6));
-        session.arm_deadline(1_000);
-        assert_eq!(session.submit(OWNER, 11, read(29)), PomSubmission::Queued);
+        assert_eq!(session.submit(OWNER, 11, read(29)), queued());
 
         let completion = session.complete(first.request_id, PomOutcome::Ack);
 
@@ -415,7 +547,6 @@ mod tests {
     fn response_with_an_unknown_request_id_is_ignored() {
         let mut session = Session::new();
         let first = start(&mut session, OWNER, 10, read(8));
-        session.arm_deadline(1_000);
         let stale = PomRequestId::new(first.request_id.value().wrapping_sub(1));
 
         assert_eq!(
@@ -434,8 +565,7 @@ mod tests {
     fn deadline_answers_the_pending_request_and_starts_the_successor() {
         let mut session = Session::new();
         start(&mut session, OWNER, 10, write(29, 6));
-        session.arm_deadline(1_000);
-        assert_eq!(session.submit(OWNER, 11, read(29)), PomSubmission::Queued);
+        assert_eq!(session.submit(OWNER, 11, read(29)), queued());
 
         assert_eq!(session.expire(999), PomCompletion::idle());
         let completion = session.expire(1_000);
@@ -448,12 +578,17 @@ mod tests {
     }
 
     #[test]
-    fn newer_queued_request_replaces_the_older_one_without_a_reply() {
+    fn newer_queued_request_replaces_the_older_one_which_is_answered_at_once() {
         let mut session = Session::new();
         let first = start(&mut session, OWNER, 10, write(29, 6));
-        session.arm_deadline(1_000);
-        assert_eq!(session.submit(OWNER, 11, read(7)), PomSubmission::Queued);
-        assert_eq!(session.submit(OWNER, 12, read(8)), PomSubmission::Queued);
+        assert_eq!(session.submit(OWNER, 11, read(7)), queued());
+        assert_eq!(
+            session.submit(OWNER, 12, read(8)),
+            PomSubmission::Queued {
+                superseded: None,
+                displaced: delivery(11, read(7), PomOutcome::Displaced)
+            }
+        );
 
         let next = session
             .complete(first.request_id, PomOutcome::Ack)
@@ -475,11 +610,7 @@ mod tests {
     fn queued_write_is_not_replaced_by_a_later_request() {
         let mut session = Session::new();
         let first = start(&mut session, OWNER, 10, read(8));
-        session.arm_deadline(1_000);
-        assert_eq!(
-            session.submit(OWNER, 11, write(29, 6)),
-            PomSubmission::Queued
-        );
+        assert_eq!(session.submit(OWNER, 11, write(29, 6)), queued());
 
         assert_eq!(session.submit(OWNER, 12, read(7)), PomSubmission::Busy);
 

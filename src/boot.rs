@@ -170,7 +170,9 @@ async fn load_boot_wifi_decision(
     let mut flash = provisioning::lock_flash().await?;
     let partition_table_buffer = WIFI_PARTITION_TABLE_BUFFER.init([0; PARTITION_TABLE_MAX_LEN]);
     // A trial or recovery boot must not use up a pending setup request.
-    let flag = if crate::ota::on_trial() || crate::ota::in_recovery() {
+    let flag = if crate::ota::on_trial() {
+        SetupFlag::Trial
+    } else if crate::ota::in_recovery() {
         SetupFlag::Keep
     } else {
         SetupFlag::Consume
@@ -355,6 +357,7 @@ async fn spawn_network_runtime(
             fault_sender: FAULT_CHANNEL.sender(),
             channels: NetTaskChannels {
                 net_status: NET_STATUS.receiver(),
+                fault_state: &FAULT_STATE,
                 status_sender: SYSTEM_STATUS.sender(),
                 display_sender: DISPLAY_CHANNEL.sender(),
                 ready_sender: BOOT_READY.sender(),

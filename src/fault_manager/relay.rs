@@ -1,6 +1,9 @@
 //! Backpressure-isolated delivery of fault-policy side effects.
 
 #[cfg(target_arch = "riscv32")]
+use core::sync::atomic::Ordering;
+
+#[cfg(target_arch = "riscv32")]
 use embassy_sync::signal::Signal;
 
 #[cfg(target_arch = "riscv32")]
@@ -8,7 +11,9 @@ use crate::{
     dcc::{SchedulerCommand, channels::SchedulerCommandSender},
     station_status::{FaultCause, SystemStatusEvent},
     system_status::DisplayEvent,
-    system_status::channels::{DisplaySender, NetStatusSender, SystemStatusSender},
+    system_status::channels::{
+        DisplaySender, NET_STATUS_OVERFLOWED, NetStatusSender, SystemStatusSender,
+    },
 };
 
 use super::policy::{FaultDecision, SchedulerEffect, StatusEffect};
@@ -190,7 +195,12 @@ pub(crate) async fn fault_effects_task(context: FaultEffectsTaskContext) -> ! {
                 }
             };
             status_sender.send(event).await;
-            net_status_sender.send(event).await;
+            // Never wait on the net task: it drains only once the network is
+            // up, and waiting here would stall the scheduler and LED effects.
+            if net_status_sender.try_send(event).is_err() {
+                NET_STATUS_OVERFLOWED.store(true, Ordering::Relaxed);
+                defmt::warn!("fault_manager: net status event dropped");
+            }
             if display_sender.try_send(display_event).is_err() {
                 defmt::warn!("fault_manager: display event dropped");
             }

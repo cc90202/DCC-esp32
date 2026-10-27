@@ -1,4 +1,5 @@
-use dcc_protocol::{DccAddress, Direction, PomCv, SpeedFormat};
+use dcc_protocol::function_groups::group_bits;
+use dcc_protocol::{DccAddress, Direction, FunctionGroupKind, PomCv, SpeedFormat};
 
 use super::wire::*;
 use super::{CentralState, LocoInfo};
@@ -47,23 +48,17 @@ pub fn encode_loco_info(state: &LocoInfo, out: &mut [u8]) -> Option<usize> {
     };
     out[8] = dir_bit | (wire_speed & 0x7F);
 
-    // DB4: 0DSLFGHJ, D=double traction(0), S=smartsearch(0), L=F0, F=F4, G=F3, H=F2, J=F1
-    let f = state.functions.bits();
-    let f0 = (f & 1) as u8;
-    let f1 = ((f >> 1) & 1) as u8;
-    let f2 = ((f >> 2) & 1) as u8;
-    let f3 = ((f >> 3) & 1) as u8;
-    let f4 = ((f >> 4) & 1) as u8;
-    out[9] = (f0 << 4) | (f4 << 3) | (f3 << 2) | (f2 << 1) | f1;
-
+    // The function bytes share the DCC function-group layouts.
+    let group = |kind| group_bits(state.functions, kind);
+    // DB4: 0DSLFGHJ, D=double traction(0), S=smartsearch(0), L=F0, F=F4,
+    // G=F3, H=F2, J=F1: exactly the group-one data bits.
+    out[9] = group(FunctionGroupKind::G1);
     // DB5: F5(bit0)..F12(bit7)
-    out[10] = ((f >> 5) & 0xFF) as u8;
-
+    out[10] = group(FunctionGroupKind::G2a) | (group(FunctionGroupKind::G2b) << 4);
     // DB6: F13(bit0)..F20(bit7)
-    out[11] = ((f >> 13) & 0xFF) as u8;
-
+    out[11] = group(FunctionGroupKind::G3);
     // DB7: F21(bit0)..F28(bit7)
-    out[12] = ((f >> 21) & 0xFF) as u8;
+    out[12] = group(FunctionGroupKind::G4);
 
     // XBus checksum: XOR of bytes [4..13)
     write_xbus_checksum(out, 4, 9);
@@ -87,15 +82,30 @@ pub fn encode_bc_track_power(on: bool, out: &mut [u8]) -> Option<usize> {
     Some(LEN)
 }
 
-/// Encode `LAN_X_BC_STOPPED` into `out`.
+/// Encode `LAN_X_BC_TRACK_SHORT_CIRCUIT` into `out`: `07 00 40 00 61 08 69`
+/// (§2.10).
 ///
-/// Returns `None` if `out` is shorter than 6 bytes.
+/// Returns `None` if `out` is shorter than 7 bytes.
+pub fn encode_bc_track_short_circuit(out: &mut [u8]) -> Option<usize> {
+    const LEN: usize = 7;
+    let out = output_with_capacity::<LEN>(out)?;
+    write_frame_header(out, LEN as u16, HEADER_XBUS);
+    out[4] = RESP_XH_TRACK_POWER;
+    out[5] = RESP_DB0_SHORT_CIRCUIT;
+    write_xbus_checksum(out, 4, 2);
+    Some(LEN)
+}
+
+/// Encode `LAN_X_BC_STOPPED` into `out`: `07 00 40 00 81 00 81` (§2.14).
+///
+/// Returns `None` if `out` is shorter than 7 bytes.
 pub fn encode_bc_stopped(out: &mut [u8]) -> Option<usize> {
-    const LEN: usize = 6;
+    const LEN: usize = 7;
     let out = output_with_capacity::<LEN>(out)?;
     write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = RESP_XH_BC_STOPPED;
-    write_xbus_checksum(out, 4, 1);
+    out[5] = 0x00;
+    write_xbus_checksum(out, 4, 2);
     Some(LEN)
 }
 
@@ -151,11 +161,10 @@ pub fn encode_cv_nack(out: &mut [u8]) -> Option<usize> {
 /// XBus reply, header=0x0040, X-Header=0x43 (same byte as request).
 /// DB2=0x00 means state unknown, since there is no accessory decoder support.
 /// Spec section: Z21 LAN Protocol v1.13, accessory decoder chapter.
-pub fn encode_turnout_info(address: DccAddress, out: &mut [u8]) -> Option<usize> {
+pub fn encode_turnout_info(address: u16, out: &mut [u8]) -> Option<usize> {
     // [DataLen:2][Header=0x0040:2][0x43][AddrH][AddrL][DB2=0x00][XCS]
     const LEN: usize = 9;
     let out = output_with_capacity::<LEN>(out)?;
-    let address = address.value();
     write_frame_header(out, LEN as u16, HEADER_XBUS);
     out[4] = XHEADER_TURNOUT_INFO;
     out[5] = (address >> 8) as u8;
@@ -249,8 +258,8 @@ pub fn encode_hwinfo(out: &mut [u8]) -> Option<usize> {
 /// Per spec §2.12: XBus reply, header=0x0040, X-Header=0x62, DB0=0x22, DB1=Status, XCS.
 /// Bitmask: bit0=EmergencyStop, bit1=TrackVoltageOff, bit2=ShortCircuit, bit5=ProgrammingMode.
 ///
-/// Only bit0 and bit1 are reported here: `state.short_circuit` is ignored, so
-/// this broadcast never carries bit2. [`encode_system_state`] reports it.
+/// Bit2 follows `state.short_circuit`, as in [`encode_system_state`]: the
+/// Z21 app renders its short-circuit notice from this reply.
 pub fn encode_status(state: CentralState, out: &mut [u8]) -> Option<usize> {
     // [DataLen:2][Header=0x0040:2][0x62][0x22][Status][XCS]
     const LEN: usize = 8;
@@ -264,6 +273,9 @@ pub fn encode_status(state: CentralState, out: &mut [u8]) -> Option<usize> {
     }
     if !state.track_on {
         status |= CS_TRACK_VOLTAGE_OFF;
+    }
+    if state.short_circuit {
+        status |= CS_SHORT_CIRCUIT;
     }
     out[6] = status;
     write_xbus_checksum(out, 4, 3);
@@ -326,7 +338,8 @@ pub fn encode_loco_mode(address: DccAddress, out: &mut [u8]) -> Option<usize> {
     let out = output_with_capacity::<LEN>(out)?;
 
     write_frame_header(out, LEN as u16, RESP_LOCOMODE);
-    write_loco_address_be(address, out, 4);
+    // A plain big-endian number, without the X-Bus flag bits (§3.1).
+    out[4..6].copy_from_slice(&address.value().to_be_bytes());
     out[6] = LOCO_MODE_DCC;
     Some(LEN)
 }

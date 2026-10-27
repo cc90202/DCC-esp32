@@ -7,18 +7,17 @@ use crate::railcom::PacketSequence;
 use dcc_protocol::packet::HighFragment;
 use dcc_protocol::railcom_data::{RailcomDatagram, RailcomItem};
 
+// Packet boundaries after which a held high fragment is dropped even though
+// no lost window was seen: about one second at the usual packet rate. Command
+// packets get no cutout, so windows can lie far apart; a fragment this old
+// predates a pause of the track, after which decoders restart their
+// alternation.
+const PENDING_ADR_HIGH_MAX_PACKET_GAP: u32 = 128;
+
 // Fixed-size recent-activity cache used by diagnostics and Z21 RailCom lookup.
 // It is deliberately not a locomotive roster: retaining four addresses keeps
 // the stack-resident diagnostics snapshot bounded while serving recent polls.
 const RECENT_SIGHTING_CAPACITY: usize = 4;
-
-// Maximum packet-boundary gap allowed between an ADR-HIGH fragment (channel 1)
-// and the ADR-LOW fragment that completes a long-address identification.
-//
-// The fragments normally arrive on consecutive RailCom-eligible packets.
-// Eight packet boundaries tolerate skipped or collided cutouts while still
-// expiring the high fragment before it can be paired with unrelated traffic.
-const PENDING_ADR_HIGH_MAX_PACKET_GAP: u32 = 8;
 
 // How long a sighting is still served as current, in packet boundaries.
 //
@@ -111,6 +110,15 @@ struct TrackerState {
     invalid_identification_count: u32,
     unrepresentable_address_count: u32,
     recent_sightings: [Option<RailcomLocoSighting>; RECENT_SIGHTING_CAPACITY],
+    /// A high fragment waiting for its low one.
+    ///
+    /// RCN-217 §5.2: after every packet sent to a locomotive decoder, each
+    /// decoder sends one of its two fragments in channel 1, alternating, so a
+    /// high fragment pairs only with the low one of the next channel-1 window
+    /// after a locomotive packet, however many packets without a window come
+    /// in between. A window that should have carried a fragment and did not,
+    /// a window lost on the way, or [`PENDING_ADR_HIGH_MAX_PACKET_GAP`]
+    /// packets drop it.
     pending_adr_high: Option<PendingAdrHigh>,
     /// The last window the identification pass judged, so that the target pass
     /// cannot judge it again. The two passes do not see the same state — the
@@ -226,16 +234,23 @@ impl TrackerState {
         }
     }
 
-    fn record_pending_high(&mut self, packet_sequence: PacketSequence, value: u8) {
-        self.pending_adr_high = Some(PendingAdrHigh {
-            value,
-            packet_sequence,
-        });
+    fn record_decoded(
+        &mut self,
+        packet_sequence: PacketSequence,
+        high: u8,
+        low: u8,
+    ) -> Option<RailcomLocoSighting> {
+        match decode_railcom_address(Some(high), Some(low)) {
+            Ok(address) => Some(self.record_identified(packet_sequence, address)),
+            Err(fragments) => {
+                self.record_unreadable(fragments);
+                None
+            }
+        }
     }
 
-    fn take_recent_pending_high(&mut self, packet_sequence: PacketSequence) -> Option<u8> {
-        let pending = self.pending_adr_high?;
-        self.pending_adr_high = None;
+    fn take_pending_high(&mut self, packet_sequence: PacketSequence) -> Option<u8> {
+        let pending = self.pending_adr_high.take()?;
         packet_sequence
             .is_within(pending.packet_sequence, PENDING_ADR_HIGH_MAX_PACKET_GAP)
             .then_some(pending.value)
@@ -243,10 +258,10 @@ impl TrackerState {
 
     /// Judges a window against the address a programming request was sent to.
     ///
-    /// In the runtime only a lone high fragment reaches this: the
-    /// identification pass runs first on every window and judges any that
-    /// carries the low fragment, so the cases below that need both are there
-    /// for the predicate's sake, not because this path can meet them.
+    /// In the runtime only a lone fragment reaches this: the identification
+    /// pass runs first on every window and judges any that completes an
+    /// address, so the cases below that need both are there for the
+    /// predicate's sake, not because this path can meet them.
     fn record_target_from_matching_address_fragment(
         &mut self,
         packet_sequence: PacketSequence,
@@ -275,30 +290,60 @@ impl TrackerState {
     fn record_loco_identification(
         &mut self,
         packet_sequence: PacketSequence,
+        window: FragmentWindow,
         items: &[RailcomItem],
     ) -> Option<RailcomLocoSighting> {
         let (adr_high, adr_low, saw_address_datagram) = address_parts(items);
+        match window {
+            FragmentWindow::LocoChannel1 => {}
+            // No telling what this window followed, so whether a fragment
+            // was owed: the run of consecutive windows is broken.
+            FragmentWindow::UnknownChannel1 => {
+                self.pending_adr_high = None;
+                return None;
+            }
+            // No decoder sends its address after an idle, broadcast or logon
+            // packet (RCN-217 §5.2); whatever parses as a fragment here is not
+            // one, and the held fragment keeps its place.
+            FragmentWindow::OtherChannel1 => return None,
+            // A track-search answer carries both fragments in one window; a
+            // lone one is not part of the channel-1 alternation.
+            FragmentWindow::Channel2 => {
+                let (Some(high), Some(low)) = (adr_high, adr_low) else {
+                    return None;
+                };
+                self.count_window();
+                self.judge(packet_sequence);
+                return self.record_decoded(packet_sequence, high, low);
+            }
+        }
         if !saw_address_datagram {
+            // Every decoder had to send a fragment here (RCN-217 §4): this
+            // window was lost, so a held high fragment no longer has its low
+            // one next. Pairing it later could join parts of two decoders'
+            // addresses, which the standard forbids.
+            self.pending_adr_high = None;
             return None;
         }
         self.count_window();
 
         if let Some(low) = adr_low {
-            let high = adr_high.or_else(|| self.take_recent_pending_high(packet_sequence));
+            // RCN-217 §5.2 has every decoder alternate ADR1 and ADR2, short
+            // addresses included, so a low fragment alone means its high
+            // fragment was lost. Reading it as a short address would invent a
+            // locomotive; the window is left to the target pass instead.
+            let high = adr_high.or_else(|| self.take_pending_high(packet_sequence))?;
             self.judge(packet_sequence);
-            return match decode_railcom_address(high, Some(low)) {
-                Ok(address) => Some(self.record_identified(packet_sequence, address)),
-                Err(fragments) => {
-                    self.record_unreadable(fragments);
-                    None
-                }
-            };
+            return self.record_decoded(packet_sequence, high, low);
         }
 
         // Only a lone high fragment can reach here: the low fragment returns
         // above, and nothing else sets `saw_address_datagram`.
         if let Some(high) = adr_high {
-            self.record_pending_high(packet_sequence, high);
+            self.pending_adr_high = Some(PendingAdrHigh {
+                value: high,
+                packet_sequence,
+            });
         }
         None
     }
@@ -322,17 +367,11 @@ fn decode_railcom_address(
     adr_high: Option<u8>,
     adr_low: Option<u8>,
 ) -> Result<DccAddress, UnreadableFragments> {
-    let address = match (adr_high, adr_low) {
-        (Some(high), Some(low)) => DccAddress::from_address_fragments(high, low),
-        // A lone low fragment is read as a short address. The same guess the
-        // flag was introduced to stop making — a long-addressed decoder whose
-        // high fragment was lost, or expired, lands on the short address of the
-        // same number — but here nothing states otherwise, and a decoder that
-        // sends only the low fragment is stating a short address by omission.
-        (None, Some(low)) => DccAddress::new_short(low),
-        _ => None,
+    let (Some(high), Some(low)) = (adr_high, adr_low) else {
+        return Err(UnreadableFragments::Invalid);
     };
-    address.ok_or_else(|| classify_unreadable(adr_high, adr_low))
+    DccAddress::from_address_fragments(high, low)
+        .ok_or_else(|| classify_unreadable(adr_high, adr_low))
 }
 
 /// Tells the one address the wire can state and this crate cannot hold apart
@@ -350,17 +389,16 @@ fn classify_unreadable(adr_high: Option<u8>, adr_low: Option<u8>) -> UnreadableF
 
 /// Whether a high fragment can belong to `target`.
 ///
-/// The form of the fragment decides first, on the same rule as
-/// [`DccAddress::from_address_fragments`]: a fragment that states a long
-/// address cannot answer for a short target, a plain one leaves its value bits
-/// to speak alone, and one of no known form answers for nothing. Comparing the
-/// byte whole would instead reject every decoder that flags its address, since
-/// the value expected from the target carries no flags.
+/// The form of the fragment decides, on the same rule as
+/// [`DccAddress::from_address_fragments`]: an extended-address fragment
+/// answers only for a long target with the same top bits, a base or consist
+/// marker only for a short target, and a malformed byte for nothing.
 fn high_fragment_matches(high: u8, target: DccAddress) -> bool {
-    let expected_value = HighFragment::value_bits_of(target);
     match HighFragment::read(high) {
-        HighFragment::Long(value) => target.is_long() && value == expected_value,
-        HighFragment::Plain(value) => value == expected_value,
+        HighFragment::Long(value) => {
+            target.is_long() && value == HighFragment::value_bits_of(target)
+        }
+        HighFragment::Short | HighFragment::Consist => target.is_short(),
         HighFragment::Malformed => false,
     }
 }
@@ -370,20 +408,14 @@ fn address_fragment_matches_target(
     adr_high: Option<u8>,
     adr_low: Option<u8>,
 ) -> Option<bool> {
-    let expected_low = (target_address.value() & 0xff) as u8;
-
     match (adr_high, adr_low) {
         (Some(high), Some(low)) => {
-            Some(high_fragment_matches(high, target_address) && low == expected_low)
+            Some(DccAddress::from_address_fragments(high, low) == Some(target_address))
         }
-        (None, Some(low)) if target_address.is_short() => Some(low == expected_low),
-        (None, Some(low)) => {
-            if low == expected_low {
-                None
-            } else {
-                Some(false)
-            }
-        }
+        // A lone low fragment names no address (RCN-217 §5.2), short or long,
+        // and rules out none either: with several decoders on the track it
+        // may be another one's.
+        (None, Some(_)) => None,
         (Some(high), None) => {
             if high_fragment_matches(high, target_address) {
                 None
@@ -439,16 +471,38 @@ pub fn record_target_from_matching_address_fragment(
     })
 }
 
+/// Which window the fragments came from, which decides what they may pair with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FragmentWindow {
+    /// Channel 1 after a packet sent to a locomotive decoder: every decoder
+    /// must send one fragment here (RCN-217 §4, §5.2).
+    LocoChannel1,
+    /// Channel 1 whose packet is no longer known.
+    UnknownChannel1,
+    /// Channel 1 after any other packet: idle, broadcast or logon.
+    OtherChannel1,
+    /// Channel 2.
+    Channel2,
+}
+
+/// Reads the address fragments of one window.
 pub fn record_loco_identification(
     packet_sequence: impl Into<PacketSequence>,
+    window: FragmentWindow,
     items: &[RailcomItem],
 ) -> Option<RailcomLocoSighting> {
     let packet_sequence = packet_sequence.into();
     critical_section::with(|cs| {
         TRACKER_STATE
             .borrow_ref_mut(cs)
-            .record_loco_identification(packet_sequence, items)
+            .record_loco_identification(packet_sequence, window, items)
     })
+}
+
+/// Drops a held high fragment: a window was lost between capture and
+/// dispatch, so the next low fragment may not follow it.
+pub fn forget_pending_fragment() {
+    critical_section::with(|cs| TRACKER_STATE.borrow_ref_mut(cs).pending_adr_high = None);
 }
 
 pub fn record_identified_address(
@@ -488,15 +542,23 @@ mod tests {
     #[test]
     fn test_record_identifies_a_flagged_long_address_across_two_windows() {
         let mut state = TrackerState::new();
-        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0xc3))];
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x83))];
         let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(0xe8))];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(10), &high_items),
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
             None
         );
         let sighting = state
-            .record_loco_identification(PacketSequence::new(11), &low_items)
+            .record_loco_identification(
+                PacketSequence::new(11),
+                FragmentWindow::LocoChannel1,
+                &low_items,
+            )
             .expect("must identify");
 
         assert_eq!(sighting.address, long_addr(1000));
@@ -504,34 +566,35 @@ mod tests {
 
     #[test]
     fn test_a_flagged_fragment_matches_the_long_target_it_names() {
-        // Comparing the fragment byte whole rejected this pair, because the
-        // value expected from the target carries no flag: a long-addressed
-        // decoder answering a programming request read as a mismatch. Asserted
-        // on the predicate, which is where the rule lives — the window itself
-        // never reaches the target pass, since one carrying both fragments is
-        // judged by the identification pass first.
+        // RCN-217 table 11 sends 1000 as ADR1 0x83, ADR2 0xe8. Asserted on the
+        // predicate, which is where the rule lives — the window itself never
+        // reaches the target pass, since one carrying both fragments is judged
+        // by the identification pass first.
         assert_eq!(
-            address_fragment_matches_target(long_addr(1000), Some(0xc3), Some(0xe8)),
+            address_fragment_matches_target(long_addr(1000), Some(0x83), Some(0xe8)),
             Some(true)
         );
         assert_eq!(
-            address_fragment_matches_target(short_addr(3), Some(0xc0), Some(3)),
+            address_fragment_matches_target(short_addr(3), Some(0x80), Some(3)),
             Some(false)
+        );
+        assert_eq!(
+            address_fragment_matches_target(short_addr(3), Some(0x00), Some(3)),
+            Some(true)
         );
     }
 
     #[test]
     fn test_record_target_rejects_every_flagged_high_fragment_for_a_short_target() {
-        // The value bits agreeing is not enough. `0xc0` says long where the
-        // target is short; `0x40` and `0x80` carry half a marker and belong to
-        // no form at all. Reading only the six value bits would let all three
-        // confirm the target, which is looser than judging the byte whole.
-        // Driven in the order the runtime uses. The identification pass judges
-        // the window and produces the outcome; the target pass that follows
-        // finds it already judged and adds nothing. One window, one outcome —
-        // and the reason is carried through, so `0xc0` states a long address
-        // the firmware cannot hold while the other two are of no known form.
-        let cases = [(0x40, 1, 0), (0x80, 1, 0), (0xc0, 0, 1)];
+        // The low byte agreeing is not enough. `0x80` says long where the
+        // target is short; `0x40` and `0xc0` (the DCC packet prefix) are no
+        // ADR1 form at all. Driven in the order the runtime uses. The
+        // identification pass judges the window and produces the outcome; the
+        // target pass that follows finds it already judged and adds nothing.
+        // One window, one outcome — and the reason is carried through, so
+        // `0x80` states a long address the firmware cannot hold while the
+        // other two are of no known form.
+        let cases = [(0x40, 1, 0), (0xc0, 1, 0), (0x80, 0, 1)];
         for (high, expected_invalid, expected_unrepresentable) in cases {
             let mut state = TrackerState::new();
             let items = [
@@ -540,7 +603,11 @@ mod tests {
             ];
 
             assert_eq!(
-                state.record_loco_identification(PacketSequence::new(42), &items),
+                state.record_loco_identification(
+                    PacketSequence::new(42),
+                    FragmentWindow::LocoChannel1,
+                    &items
+                ),
                 None,
                 "high fragment {high:#04x}"
             );
@@ -572,19 +639,23 @@ mod tests {
 
     #[test]
     fn test_decode_reads_each_form_of_high_fragment() {
-        // The whole rule in one place: flagged, plain, half-marked, and the
-        // long address the wire allows and `DccAddress` cannot hold.
+        // The whole rule in one place, after RCN-217 table 11: base, consist
+        // and extended forms, malformed bytes, and the long address the wire
+        // allows and `DccAddress` cannot hold.
         let cases = [
             (0x00, 0x03, Ok(short_addr(3))),
             (0x00, 0x2a, Ok(short_addr(42))),
-            (0x03, 0xe8, Ok(long_addr(1000))),
-            (0xc3, 0xe8, Ok(long_addr(1000))),
-            (0xc0, 0x03, Err(UnreadableFragments::UnrepresentableLong)),
+            (0x60, 0x05, Ok(short_addr(5))),
+            (0x83, 0xe8, Ok(long_addr(1000))),
+            (0x84, 0x03, Ok(long_addr(1027))),
+            (0x81, 0x2c, Ok(long_addr(300))),
+            (0x80, 0x03, Err(UnreadableFragments::UnrepresentableLong)),
             // Zero is no address in any reading, so it is not the configuration
             // the unrepresentable counter is meant to name.
-            (0xc0, 0x00, Err(UnreadableFragments::Invalid)),
+            (0x80, 0x00, Err(UnreadableFragments::Invalid)),
+            (0xc3, 0xe8, Err(UnreadableFragments::Invalid)),
+            (0x03, 0xe8, Err(UnreadableFragments::Invalid)),
             (0x40, 0x03, Err(UnreadableFragments::Invalid)),
-            (0x80, 0x03, Err(UnreadableFragments::Invalid)),
             (0x00, 0x00, Err(UnreadableFragments::Invalid)),
             (0xff, 0xff, Err(UnreadableFragments::Invalid)),
         ];
@@ -604,15 +675,23 @@ mod tests {
         // decoder is configured in a way this firmware cannot represent; that
         // must not read as line noise in the diagnostics.
         let mut state = TrackerState::new();
-        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0xc0))];
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x80))];
         let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(3))];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(30), &high_items),
+            state.record_loco_identification(
+                PacketSequence::new(30),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
             None
         );
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(31), &low_items),
+            state.record_loco_identification(
+                PacketSequence::new(31),
+                FragmentWindow::LocoChannel1,
+                &low_items
+            ),
             None
         );
 
@@ -629,7 +708,7 @@ mod tests {
         // A lone high fragment that agrees with a long target decides nothing:
         // it is neither a match nor a mismatch until the low fragment arrives.
         let mut state = TrackerState::new();
-        let items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0xc3))];
+        let items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x83))];
 
         assert_eq!(
             state.record_target_from_matching_address_fragment(
@@ -648,7 +727,11 @@ mod tests {
         let items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x01))];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(7), &items),
+            state.record_loco_identification(
+                PacketSequence::new(7),
+                FragmentWindow::LocoChannel1,
+                &items
+            ),
             None
         );
         assert_eq!(
@@ -666,15 +749,23 @@ mod tests {
     #[test]
     fn test_record_identifies_long_address_from_pending_adr_high_and_next_low() {
         let mut state = TrackerState::new();
-        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x03))];
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x83))];
         let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(0xe8))];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(10), &high_items),
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
             None
         );
         let sighting = state
-            .record_loco_identification(PacketSequence::new(11), &low_items)
+            .record_loco_identification(
+                PacketSequence::new(11),
+                FragmentWindow::LocoChannel1,
+                &low_items,
+            )
             .expect("must identify");
 
         assert_eq!(
@@ -692,58 +783,157 @@ mod tests {
                 identified_loco_count: 1,
                 invalid_identification_count: 0,
                 unrepresentable_address_count: 0,
-                recent_sightings: [
-                    Some(RailcomLocoSighting {
-                        address: long_addr(1000),
-                        packet_sequence: PacketSequence::new(11),
-                        seen_count: 1,
-                    }),
-                    None,
-                    None,
-                    None,
-                ],
+                recent_sightings: listed(&[RailcomLocoSighting {
+                    address: long_addr(1000),
+                    packet_sequence: PacketSequence::new(11),
+                    seen_count: 1,
+                }]),
             }
         );
     }
 
     #[test]
-    fn test_record_ignores_stale_pending_adr_high() {
+    fn test_a_high_fragment_waits_through_packets_without_a_window() {
+        // Command packets get no cutout, so the next window can come many
+        // packets later; the pair still forms there.
         let mut state = TrackerState::new();
-        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x03))];
-        let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(42))];
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x84))];
+        let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(0x03))];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(10), &high_items),
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
             None
         );
         let sighting = state
             .record_loco_identification(
-                PacketSequence::new(10 + PENDING_ADR_HIGH_MAX_PACKET_GAP + 1),
+                PacketSequence::new(110),
+                FragmentWindow::LocoChannel1,
                 &low_items,
             )
-            .expect("stale high must fall back to short address");
+            .expect("1027 is ADR1 0x84, ADR2 0x03");
+        assert_eq!(sighting.address, long_addr(1027));
+    }
+
+    #[test]
+    fn test_a_high_fragment_expires_after_a_long_silence() {
+        let mut state = TrackerState::new();
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x84))];
+        let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(0x03))];
 
         assert_eq!(
-            sighting,
-            RailcomLocoSighting {
-                address: short_addr(42),
-                packet_sequence: PacketSequence::new(19),
-                seen_count: 1,
-            }
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
+            None
         );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10 + PENDING_ADR_HIGH_MAX_PACKET_GAP + 1),
+                FragmentWindow::LocoChannel1,
+                &low_items,
+            ),
+            None
+        );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
+    }
+
+    #[test]
+    fn test_a_lost_window_drops_the_held_fragment() {
+        critical_section::with(|cs| *TRACKER_STATE.borrow_ref_mut(cs) = TrackerState::new());
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x83))];
+        let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(5))];
+
+        assert_eq!(
+            record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
+            None
+        );
+        forget_pending_fragment();
+        assert_eq!(
+            record_loco_identification(
+                PacketSequence::new(17),
+                FragmentWindow::LocoChannel1,
+                &low_items
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_a_lone_low_fragment_names_no_locomotive() {
+        // RCN-217 §5.2: decoders always alternate ADR1 and ADR2, so a lone
+        // ADR2 is an ADR1 that was lost, never a short address by omission.
+        let mut state = TrackerState::new();
+        let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(0x2c))];
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &items
+            ),
+            None
+        );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
         assert_eq!(state.snapshot().invalid_identification_count, 0);
+    }
+
+    #[test]
+    fn test_a_short_address_is_read_from_its_two_fragments_in_consecutive_windows() {
+        // Loco 4, as the bench decoder sends it: ADR1 0x00, then ADR2 4 one
+        // window (seven packets) later.
+        let mut state = TrackerState::new();
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00))];
+        let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(4))];
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
+            None
+        );
+        let sighting = state
+            .record_loco_identification(
+                PacketSequence::new(17),
+                FragmentWindow::LocoChannel1,
+                &low_items,
+            )
+            .expect("the pair names loco 4");
+        assert_eq!(sighting.address, short_addr(4));
     }
 
     #[test]
     fn test_record_updates_existing_sighting_seen_count() {
         let mut state = TrackerState::new();
-        let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(7))];
+        let items = [
+            RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00)),
+            RailcomItem::Datagram(RailcomDatagram::AdrLow(7)),
+        ];
 
         let first = state
-            .record_loco_identification(PacketSequence::new(11), &items)
+            .record_loco_identification(
+                PacketSequence::new(11),
+                FragmentWindow::LocoChannel1,
+                &items,
+            )
             .expect("must identify");
         let second = state
-            .record_loco_identification(PacketSequence::new(19), &items)
+            .record_loco_identification(
+                PacketSequence::new(19),
+                FragmentWindow::LocoChannel1,
+                &items,
+            )
             .expect("must identify");
 
         assert_eq!(
@@ -782,26 +972,256 @@ mod tests {
     }
 
     #[test]
-    fn test_record_target_from_matching_short_address_low_fragment() {
+    fn test_record_target_waits_on_a_lone_matching_low_fragment() {
+        // RCN-217 §5.2: a lone ADR2 names no address. A long decoder such as
+        // 1028 sends ADR2 4 too, so it cannot confirm short target 4.
         let mut state = TrackerState::new();
-        let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(3))];
-
-        let sighting = state
-            .record_target_from_matching_address_fragment(
-                PacketSequence::new(42),
-                short_addr(3),
-                &items,
-            )
-            .expect("matching low fragment should confirm short target address");
+        let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(4))];
 
         assert_eq!(
-            sighting,
-            RailcomLocoSighting {
-                address: short_addr(3),
-                packet_sequence: PacketSequence::new(42),
-                seen_count: 1,
-            }
+            state.record_target_from_matching_address_fragment(
+                PacketSequence::new(42),
+                short_addr(4),
+                &items,
+            ),
+            None
         );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
+    }
+
+    #[test]
+    fn test_a_lost_window_after_a_loco_packet_breaks_the_pair() {
+        // ADR1 of one decoder, then a window every decoder had to answer and
+        // nothing came, then an ADR2: it may belong to another decoder, and
+        // RCN-217 §4 forbids joining parts of different addresses.
+        let mut state = TrackerState::new();
+        let high = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x83))];
+        let low = [RailcomItem::Datagram(RailcomDatagram::AdrLow(5))];
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(17),
+                FragmentWindow::LocoChannel1,
+                &[]
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(24),
+                FragmentWindow::LocoChannel1,
+                &low
+            ),
+            None
+        );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
+    }
+
+    #[test]
+    fn test_the_channel_2_window_of_the_same_cutout_keeps_the_pair() {
+        // Each cutout is reported as a channel-1 window, then a channel-2
+        // window with the same packet sequence; channel 2 carries the
+        // addressed decoder's reply, never an address fragment it owed.
+        let mut state = TrackerState::new();
+        let high = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00))];
+        let low = [RailcomItem::Datagram(RailcomDatagram::AdrLow(4))];
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::Channel2,
+                &[RailcomItem::Ack]
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(17),
+                FragmentWindow::LocoChannel1,
+                &[]
+            ),
+            None
+        );
+        assert_eq!(
+            state.snapshot().identified_loco_count,
+            0,
+            "a lost channel-1 window breaks it"
+        );
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(24),
+                FragmentWindow::LocoChannel1,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(24),
+                FragmentWindow::Channel2,
+                &[]
+            ),
+            None
+        );
+        let sighting = state
+            .record_loco_identification(PacketSequence::new(31), FragmentWindow::LocoChannel1, &low)
+            .expect("the pair names loco 4");
+        assert_eq!(sighting.address, short_addr(4));
+    }
+
+    #[test]
+    fn test_channel_2_and_non_loco_windows_never_join_the_alternation() {
+        // A logon answer or a stray channel-2 byte that parses as a fragment
+        // must neither complete a held high fragment nor become one.
+        let mut state = TrackerState::new();
+        let high = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x83))];
+        let low = [RailcomItem::Datagram(RailcomDatagram::AdrLow(0x2c))];
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(12),
+                FragmentWindow::Channel2,
+                &low
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(14),
+                FragmentWindow::OtherChannel1,
+                &low
+            ),
+            None
+        );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
+
+        let mut state = TrackerState::new();
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::Channel2,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(12),
+                FragmentWindow::OtherChannel1,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(17),
+                FragmentWindow::LocoChannel1,
+                &low
+            ),
+            None
+        );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
+    }
+
+    #[test]
+    fn test_a_track_search_answer_names_its_address_in_one_window() {
+        let mut state = TrackerState::new();
+        let both = [
+            RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00)),
+            RailcomItem::Datagram(RailcomDatagram::AdrLow(4)),
+        ];
+        let sighting = state
+            .record_loco_identification(PacketSequence::new(10), FragmentWindow::Channel2, &both)
+            .expect("ADR1 and ADR2 together name loco 4");
+        assert_eq!(sighting.address, short_addr(4));
+    }
+
+    #[test]
+    fn test_a_window_of_unknown_origin_breaks_the_pair() {
+        let mut state = TrackerState::new();
+        let high = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00))];
+        let low = [RailcomItem::Datagram(RailcomDatagram::AdrLow(4))];
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(17),
+                FragmentWindow::UnknownChannel1,
+                &low
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(24),
+                FragmentWindow::LocoChannel1,
+                &low
+            ),
+            None
+        );
+        assert_eq!(state.snapshot().identified_loco_count, 0);
+    }
+
+    #[test]
+    fn test_a_window_after_an_idle_packet_keeps_the_pair() {
+        // No decoder sends after an idle packet, so its empty window is no
+        // lost answer.
+        let mut state = TrackerState::new();
+        let high = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00))];
+        let low = [RailcomItem::Datagram(RailcomDatagram::AdrLow(4))];
+
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &high
+            ),
+            None
+        );
+        assert_eq!(
+            state.record_loco_identification(
+                PacketSequence::new(12),
+                FragmentWindow::OtherChannel1,
+                &[]
+            ),
+            None
+        );
+        let sighting = state
+            .record_loco_identification(PacketSequence::new(17), FragmentWindow::LocoChannel1, &low)
+            .expect("the pair names loco 4");
+        assert_eq!(sighting.address, short_addr(4));
     }
 
     #[test]
@@ -831,15 +1251,23 @@ mod tests {
         // would put back exactly the aliasing this whole change removes — the
         // wrong locomotive recorded, under a third outcome on two windows.
         let mut state = TrackerState::new();
-        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0xc0))];
+        let high_items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x80))];
         let low_items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(3))];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(30), &high_items),
+            state.record_loco_identification(
+                PacketSequence::new(30),
+                FragmentWindow::LocoChannel1,
+                &high_items
+            ),
             None
         );
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(31), &low_items),
+            state.record_loco_identification(
+                PacketSequence::new(31),
+                FragmentWindow::LocoChannel1,
+                &low_items
+            ),
             None
         );
         assert_eq!(
@@ -865,10 +1293,14 @@ mod tests {
         // it is driven the way the runtime does: identification first, which
         // only sets the fragment aside, then the target pass.
         let mut state = TrackerState::new();
-        let items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x05))];
+        let items = [RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x85))];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(42), &items),
+            state.record_loco_identification(
+                PacketSequence::new(42),
+                FragmentWindow::LocoChannel1,
+                &items
+            ),
             None
         );
         assert_eq!(
@@ -891,6 +1323,17 @@ mod tests {
             packet_sequence: PacketSequence::new(sequence),
             seen_count: 1,
         }
+    }
+
+    /// A sighting list holding `sightings` in its first slots.
+    fn listed(
+        sightings: &[RailcomLocoSighting],
+    ) -> [Option<RailcomLocoSighting>; RECENT_SIGHTING_CAPACITY] {
+        let mut list = [None; RECENT_SIGHTING_CAPACITY];
+        for (slot, sighting) in list.iter_mut().zip(sightings) {
+            *slot = Some(*sighting);
+        }
+        list
     }
 
     fn stats_with(
@@ -931,7 +1374,7 @@ mod tests {
         // lookup kept saying it was there for as long as the firmware ran,
         // because only four addresses share the list and a second address
         // practically never appears.
-        let stats = stats_with([Some(sighting_at(short_addr(3), 1_000)), None, None, None]);
+        let stats = stats_with(listed(&[sighting_at(short_addr(3), 1_000)]));
         let within = PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS);
         let past = PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS + 1);
 
@@ -947,7 +1390,7 @@ mod tests {
     fn test_the_latest_sighting_skips_the_stale_ones() {
         let stale = sighting_at(short_addr(7), 1_000);
         let fresh = sighting_at(short_addr(3), 1_000 + SIGHTING_MAX_AGE_PACKETS);
-        let stats = stats_with([Some(stale), Some(fresh), None, None]);
+        let stats = stats_with(listed(&[stale, fresh]));
         let now = PacketSequence::new(1_000 + SIGHTING_MAX_AGE_PACKETS + 1);
 
         assert_eq!(stats.latest_current_sighting(now), Some(fresh));
@@ -959,7 +1402,7 @@ mod tests {
         // With the freshness filter doing nothing, the ordering is what decides.
         let older = sighting_at(short_addr(7), 1_000);
         let newer = sighting_at(short_addr(3), 1_500);
-        let stats = stats_with([Some(older), Some(newer), None, None]);
+        let stats = stats_with(listed(&[older, newer]));
 
         assert_eq!(
             stats.latest_current_sighting(PacketSequence::new(2_000)),
@@ -972,10 +1415,17 @@ mod tests {
         // The two halves of the decision, in one test: silent while stale, and
         // counting from where it left off when the locomotive comes back.
         let mut state = TrackerState::new();
-        let items = [RailcomItem::Datagram(RailcomDatagram::AdrLow(3))];
+        let items = [
+            RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00)),
+            RailcomItem::Datagram(RailcomDatagram::AdrLow(3)),
+        ];
 
         state
-            .record_loco_identification(PacketSequence::new(10), &items)
+            .record_loco_identification(
+                PacketSequence::new(10),
+                FragmentWindow::LocoChannel1,
+                &items,
+            )
             .expect("must identify");
 
         let gone = PacketSequence::new(10 + SIGHTING_MAX_AGE_PACKETS + 1);
@@ -984,7 +1434,7 @@ mod tests {
         assert!(stats.recent_sightings[0].is_some());
 
         let back = state
-            .record_loco_identification(gone, &items)
+            .record_loco_identification(gone, FragmentWindow::LocoChannel1, &items)
             .expect("must identify again");
 
         assert_eq!(back.seen_count, 2);
@@ -994,26 +1444,32 @@ mod tests {
         );
     }
 
+    /// One distinct short address per slot, with address 3 in the first.
+    fn full_list_addresses() -> [u8; RECENT_SIGHTING_CAPACITY] {
+        core::array::from_fn(|slot| 3 + 4 * slot as u8)
+    }
+
     #[test]
     fn test_a_new_address_evicts_the_one_seen_longest_ago() {
-        // Four locomotives, all still confirmed, and a fifth address turns up.
-        // The list has to give something up: it gives up the one the track has
-        // gone longest without confirming.
+        // A full list, every locomotive still confirmed, and one more address
+        // turns up. The list has to give something up: it gives up the one the
+        // track has gone longest without confirming.
         let mut state = TrackerState::new();
-        for (offset, address) in [3u8, 7, 11, 15].into_iter().enumerate() {
+        let addresses = full_list_addresses();
+        for (offset, address) in addresses.into_iter().enumerate() {
             state.record_identified(PacketSequence::new(10 + offset as u32), short_addr(address));
         }
 
         let now = PacketSequence::new(100);
-        state.record_identified(now, short_addr(42));
+        state.record_identified(now, short_addr(100));
 
         let stats = state.snapshot();
         assert_eq!(
-            stats.current_sighting_for(short_addr(3), now),
+            stats.current_sighting_for(short_addr(addresses[0]), now),
             None,
             "the oldest must be the one to go"
         );
-        for address in [7u8, 11, 15, 42] {
+        for address in addresses[1..].iter().copied().chain([100]) {
             assert!(
                 stats
                     .current_sighting_for(short_addr(address), now)
@@ -1027,9 +1483,9 @@ mod tests {
     fn test_a_new_address_evicts_a_stale_slot_before_a_current_one() {
         // The list is full, only one locomotive is still being seen, and a new
         // address turns up. Rotating blindly would evict the live one and keep
-        // three dead entries.
+        // the dead entries.
         let mut state = TrackerState::new();
-        for address in [3u8, 7, 11, 15] {
+        for address in full_list_addresses() {
             state.record_identified(PacketSequence::new(10), short_addr(address));
         }
         // The list is full and the rotation points back at the first slot,
@@ -1057,7 +1513,11 @@ mod tests {
         let items = [RailcomItem::Ack];
 
         assert_eq!(
-            state.record_loco_identification(PacketSequence::new(50), &items),
+            state.record_loco_identification(
+                PacketSequence::new(50),
+                FragmentWindow::LocoChannel1,
+                &items
+            ),
             None
         );
         assert_eq!(state.snapshot().identified_loco_count, 0);

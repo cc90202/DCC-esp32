@@ -56,10 +56,10 @@ mod wire;
 
 pub use command::{FrameKind, FunctionAction, ParseError, RailcomRequestType, Z21Command};
 pub use encoding::{
-    encode_bc_stopped, encode_bc_track_power, encode_code, encode_cv_nack, encode_cv_result,
-    encode_firmware_version, encode_hwinfo, encode_loco_info, encode_loco_mode,
-    encode_railcom_data, encode_serial_number, encode_status, encode_system_state,
-    encode_turnout_info, encode_unknown_command, encode_xbus_version,
+    encode_bc_stopped, encode_bc_track_power, encode_bc_track_short_circuit, encode_code,
+    encode_cv_nack, encode_cv_result, encode_firmware_version, encode_hwinfo, encode_loco_info,
+    encode_loco_mode, encode_railcom_data, encode_serial_number, encode_status,
+    encode_system_state, encode_turnout_info, encode_unknown_command, encode_xbus_version,
 };
 pub use parsing::{FrameBoundaryError, FrameIter, frame_kind, iter_frames, parse_frame};
 pub use state::{CentralState, LocoInfo};

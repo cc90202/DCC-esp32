@@ -124,8 +124,9 @@ pub enum Z21Command {
     /// LAN_X_GET_TURNOUT_INFO: accessory decoder state request.
     /// We have no accessory decoder support; respond with state=0 (unknown).
     GetTurnoutInfo {
-        /// Accessory decoder asked about.
-        address: DccAddress,
+        /// Accessory function address as received (`FAdr`, 0-based): not a
+        /// locomotive address, so 0 is valid.
+        address: u16,
     },
     /// `LAN_RAILCOM_GETDATA`.
     RailcomGetData {

@@ -40,7 +40,7 @@ pub(crate) fn projected_or_neutral(slots: &LocoSlots, address: DccAddress) -> Lo
         .and_then(|index| slots[index])
         .unwrap_or(LocoState {
             address,
-            speed: LogicalSpeed::zero(SpeedFormat::Speed128),
+            speed: LogicalSpeed::zero(SpeedFormat::DEFAULT),
             direction: Direction::Forward,
             functions: FunctionState::empty(),
         })

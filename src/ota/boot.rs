@@ -73,11 +73,21 @@ fn booted_slot(flash: &mut Flash) -> Result<Slot, Error> {
     Slot::at(booted.offset()).ok_or(Error::Corrupt)
 }
 
-/// Why the chip last restarted: a power-on or a brown-out is a power loss.
+/// Why the chip last restarted: a power-on, a brown-out, or a reset asked for
+/// by a host on USB or JTAG is external.
+///
+/// `espflash monitor` resets the chip through USB when it opens and on Ctrl+R,
+/// which must not reject the image on trial.
 fn reset_cause() -> ResetCause {
     use esp_hal::rtc_cntl::SocResetReason;
     match esp_hal::system::reset_reason() {
-        Some(SocResetReason::ChipPowerOn | SocResetReason::SysBrownOut) => ResetCause::PowerLoss,
+        Some(
+            SocResetReason::ChipPowerOn
+            | SocResetReason::SysBrownOut
+            | SocResetReason::CoreUsbUart
+            | SocResetReason::CoreUsbJtag
+            | SocResetReason::Cpu0JtagCpu,
+        ) => ResetCause::External,
         _ => ResetCause::Other,
     }
 }

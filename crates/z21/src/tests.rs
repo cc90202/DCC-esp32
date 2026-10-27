@@ -458,6 +458,26 @@ fn test_encode_firmware_version() {
 }
 
 #[test]
+fn test_parse_loco_mode_reads_a_plain_long_address() {
+    // §3.1: 1000 is 0x03E8 with no flag bits.
+    let frame = [0x06, 0x00, 0x60, 0x00, 0x03, 0xE8];
+    assert_eq!(
+        parse_frame(&frame),
+        Ok(Z21Command::GetLocoMode {
+            address: addr_long(1000)
+        })
+    );
+}
+
+#[test]
+fn test_encode_loco_mode_writes_a_plain_long_address() {
+    let mut buf = [0u8; 16];
+    let n = encode_loco_mode(addr_long(1000), &mut buf);
+    assert_eq!(n, Some(7));
+    assert_eq!(&buf[4..7], &[0x03, 0xE8, 0x00]);
+}
+
+#[test]
 fn test_encode_loco_mode() {
     let mut buf = [0u8; 16];
     let n = encode_loco_mode(addr_short(3), &mut buf);
@@ -561,6 +581,14 @@ fn test_encode_loco_info_speed28() {
 }
 
 #[test]
+fn test_encode_bc_track_short_circuit() {
+    let mut buf = [0u8; 32];
+    let n = encode_bc_track_short_circuit(&mut buf);
+    assert_eq!(n, Some(7));
+    assert_eq!(&buf[..7], &[0x07, 0x00, 0x40, 0x00, 0x61, 0x08, 0x69]);
+}
+
+#[test]
 fn test_encode_bc_track_power_on_off() {
     let mut buf = [0u8; 32];
 
@@ -613,10 +641,8 @@ fn test_encode_system_state_central_state_bits() {
 fn test_encode_bc_stopped() {
     let mut buf = [0u8; 32];
     let n = encode_bc_stopped(&mut buf);
-    assert_eq!(n, Some(6));
-    assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 6);
-    assert_eq!(buf[4], 0x81);
-    assert_eq!(buf[5], xbus_checksum(&[0x81]));
+    assert_eq!(n, Some(7));
+    assert_eq!(&buf[..7], &[0x07, 0x00, 0x40, 0x00, 0x81, 0x00, 0x81]);
 }
 
 #[test]
@@ -662,7 +688,8 @@ fn test_all_encoders_reject_short_output_buffers() {
         None
     );
     assert_eq!(encode_cv_nack(&mut empty), None);
-    assert_eq!(encode_turnout_info(addr_short(3), &mut empty), None);
+    assert_eq!(encode_bc_track_short_circuit(&mut empty), None);
+    assert_eq!(encode_turnout_info(3, &mut empty), None);
     assert_eq!(encode_serial_number(0, &mut empty), None);
     assert_eq!(encode_xbus_version(&mut empty), None);
     assert_eq!(encode_firmware_version(&mut empty), None);
@@ -845,7 +872,17 @@ fn test_parse_get_turnout_info_address_5() {
     let Ok(Z21Command::GetTurnoutInfo { address }) = parse_frame(&frame) else {
         panic!("expected GetTurnoutInfo, got {:?}", parse_frame(&frame));
     };
-    assert_eq!(address, addr_short(5));
+    assert_eq!(address, 5);
+}
+
+#[test]
+fn test_parse_get_turnout_info_address_zero() {
+    // FAdr 0 is the first accessory output, not an invalid address.
+    let frame = xbus_frame(0x43, &[0x00, 0x00]);
+    assert_eq!(
+        parse_frame(&frame),
+        Ok(Z21Command::GetTurnoutInfo { address: 0 })
+    );
 }
 
 #[test]
@@ -867,7 +904,7 @@ fn test_parse_get_turnout_info_high_address() {
     let Ok(Z21Command::GetTurnoutInfo { address }) = parse_frame(&frame) else {
         panic!("expected GetTurnoutInfo, got {:?}", parse_frame(&frame));
     };
-    assert_eq!(address, addr_long(256));
+    assert_eq!(address, 256);
 }
 
 #[test]
@@ -876,7 +913,7 @@ fn test_encode_turnout_info_unknown_state() {
     // LEN=9, Header=0x0040, X-Header=0x43, AddrH=0x00, AddrL=0x05, DB2=0x00, XCS
     // XCS = 0x43^0x00^0x05^0x00 = 0x46
     let mut buf = [0u8; 16];
-    let n = encode_turnout_info(addr_short(5), &mut buf);
+    let n = encode_turnout_info(5, &mut buf);
     assert_eq!(n, Some(9));
     assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 9); // DataLen
     assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 0x0040); // Header
@@ -886,7 +923,7 @@ fn test_encode_turnout_info_unknown_state() {
     assert_eq!(buf[7], 0x00); // DB2: state unknown
     assert_eq!(buf[8], 0x43 ^ 0x05); // XCS
 
-    encode_turnout_info(addr_long(300), &mut buf).expect("test response buffer must fit");
+    encode_turnout_info(300, &mut buf).expect("test response buffer must fit");
     assert_eq!(&buf[5..7], &[0x01, 0x2C], "address 300 high byte first");
 }
 
@@ -921,7 +958,7 @@ fn frame_iterator_rejects_declared_length_past_datagram() {
 // --- Shared encoding helpers ---
 
 #[test]
-fn status_changed_omits_the_short_bit_while_system_state_sets_it() {
+fn status_changed_and_system_state_both_set_the_short_bit() {
     let shorted = CentralState {
         track_on: false,
         estop: false,
@@ -933,7 +970,7 @@ fn status_changed_omits_the_short_bit_while_system_state_sets_it() {
     encode_status(shorted, &mut status).expect("test response buffer must fit");
     encode_system_state(shorted, &mut system_state).expect("test response buffer must fit");
 
-    assert_eq!(status[6], CS_TRACK_VOLTAGE_OFF);
+    assert_eq!(status[6], CS_TRACK_VOLTAGE_OFF | CS_SHORT_CIRCUIT);
     assert_eq!(status[7], xbus_checksum(&status[4..7]));
     assert_eq!(system_state[16], CS_TRACK_VOLTAGE_OFF | CS_SHORT_CIRCUIT);
 }

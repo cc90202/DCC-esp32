@@ -15,8 +15,9 @@ pub enum CurrentImage {
 /// Why the chip last restarted, as far as a trial cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetCause {
-    /// Power was lost or sagged: not the image's fault.
-    PowerLoss,
+    /// Power was lost or sagged, or a host on USB or JTAG reset the chip:
+    /// not the image's fault.
+    External,
     /// Software restart, crash or watchdog: the running image is to blame.
     Other,
 }
@@ -70,7 +71,7 @@ impl Record {
     ///
     /// `booted` is the hashed identity of the running image; `current` says
     /// whether the recorded current image is intact in flash; `cause` is why
-    /// the chip restarted. A trial cut short by a power loss goes back to
+    /// the chip restarted. A trial cut short by a power loss or an external reset goes back to
     /// the current image without rejecting the candidate, which can then be
     /// uploaded again; any other interrupted trial rejects it.
     ///
@@ -138,7 +139,7 @@ impl Record {
                 self.update = Update::Trying(candidate);
                 return Ok(BootAction::Trial(self));
             }
-            Update::Trying(_) if cause == ResetCause::PowerLoss => self.withdraw_trial(),
+            Update::Trying(_) if cause == ResetCause::External => self.withdraw_trial(),
             Update::Trying(_) => self.roll_back(),
             _ => self.end_transfer(Ending::Aborted),
         };
@@ -146,7 +147,7 @@ impl Record {
     }
 
     /// Ends a trial that was cut short through no fault of the candidate, a
-    /// power loss or the operator entering Wi-Fi setup: back to the current
+    /// power loss, an external reset or the operator entering Wi-Fi setup: back to the current
     /// image, the candidate stays eligible for a new upload.
     ///
     /// # Errors
@@ -330,7 +331,7 @@ mod tests {
         let trying = in_flight(Update::Trying);
         let new = image(Slot::B, 1);
         let Ok(BootAction::Restore(interrupted)) =
-            trying.on_boot(new, CurrentImage::Intact, ResetCause::PowerLoss)
+            trying.on_boot(new, CurrentImage::Intact, ResetCause::External)
         else {
             panic!("a trial cut by a power loss must go back to the current image")
         };

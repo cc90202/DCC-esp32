@@ -16,6 +16,9 @@ const VALID_FLAGS_MASK: u8 = FLAG_FORCE_PROVISIONING;
 const SSID_MAX_LEN: usize = 32;
 const PASSWORD_MAX_LEN: usize = 64;
 const SECTOR_SIZE: usize = 4096;
+/// Bytes from the start of the region that the two slots occupy.
+pub(crate) const STORE_SPAN: usize = 2 * SECTOR_SIZE;
+const _: () = assert!(slot_offset(ConfigSlot::B) as usize + SECTOR_SIZE == STORE_SPAN);
 
 // Record layout, shared by `encode_record` and `decode_record`.
 const OFFSET_VERSION: usize = MAGIC.len();

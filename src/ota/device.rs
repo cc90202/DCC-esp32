@@ -12,9 +12,10 @@ use dcc_ota::{
     trial::Health,
     uptime::Uptime,
 };
-use dcc_ota_format::{Version, image::BuildKind};
+use dcc_ota_format::{Version, image::BuildKind, target::ChipRevision};
 use ed25519_dalek::VerifyingKey;
 use embassy_time::Timer;
+use esp_hal::efuse::Efuse;
 
 use super::{interlock, key, notify, watchdog};
 use crate::{
@@ -133,6 +134,10 @@ impl Device for Esp {
 
     fn build_kind(&self) -> BuildKind {
         key::BUILD_KIND
+    }
+
+    fn chip_revision(&self) -> ChipRevision {
+        ChipRevision::new(Efuse::major_chip_version(), Efuse::minor_chip_version())
     }
 
     fn state<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {

@@ -69,7 +69,7 @@ fn upload(device: &SimDevice, version: &str) -> Result<Restart, Error> {
 /// A device running 1.0.0, booted and armed.
 fn armed() -> SimDevice {
     let device = SimDevice::with_image("1.0.0");
-    assert_eq!(device.start(ResetCause::PowerLoss), None);
+    assert_eq!(device.start(ResetCause::External), None);
     block_on(device.runtime().arm_after_boot());
     assert_eq!(device.lifecycle(), Lifecycle::Armed);
     device
@@ -106,7 +106,7 @@ fn stored(device: &SimDevice) -> crate::journal::Record {
 #[test]
 fn the_first_boot_installs_the_running_image_and_frees_the_track() {
     let device = SimDevice::with_image("1.0.0");
-    assert_eq!(device.start(ResetCause::PowerLoss), None);
+    assert_eq!(device.start(ResetCause::External), None);
     assert_eq!(device.lifecycle(), Lifecycle::Running);
     assert_eq!(stored(&device).current().version(), Version::new(1, 0, 0));
     assert_eq!(stored(&device).update(), Update::None);
@@ -142,7 +142,7 @@ fn an_update_is_tried_after_the_restart_and_confirmed_after_a_healthy_minute() {
     // The confirmed image keeps booting. Its first boot waits for the
     // operator to power the track; the ones after it start as before.
     let next = device.restarted("1.1.0");
-    assert_eq!(next.start(ResetCause::PowerLoss), None);
+    assert_eq!(next.start(ResetCause::External), None);
     assert_eq!(next.lifecycle(), Lifecycle::Running);
     assert!(
         next.inhibited.get(),
@@ -151,7 +151,7 @@ fn an_update_is_tried_after_the_restart_and_confirmed_after_a_healthy_minute() {
     assert_eq!(next.last_shown(), Some(Notice::TrackOff));
     assert!(!stored(&next).holds_track_off());
     let later = next.restarted("1.1.0");
-    assert_eq!(later.start(ResetCause::PowerLoss), None);
+    assert_eq!(later.start(ResetCause::External), None);
     assert_eq!(later.lifecycle(), Lifecycle::Running);
     assert!(!later.inhibited.get(), "later boots power the track");
     assert_eq!(later.last_shown(), None);
@@ -184,7 +184,7 @@ fn a_trial_that_never_gets_healthy_rolls_back_and_rejects_the_release() {
     );
     // Only that one boot waits.
     let later = back.restarted("1.0.0");
-    assert_eq!(later.start(ResetCause::PowerLoss), None);
+    assert_eq!(later.start(ResetCause::External), None);
     assert!(!later.inhibited.get());
 }
 
@@ -298,11 +298,11 @@ fn a_trial_ended_by_setup_or_by_power_loss_keeps_the_release_eligible() {
 
     let device = on_trial();
     let cut = device.restarted("1.1.0");
-    assert_eq!(cut.start(ResetCause::PowerLoss), Some(Restart));
+    assert_eq!(cut.start(ResetCause::External), Some(Restart));
     assert_eq!(stored(&cut).update().ending(), Some(Ending::Aborted));
     assert_eq!(stored(&cut).rejected(), None);
     let back = cut.restarted("1.0.0");
-    assert_eq!(back.start(ResetCause::PowerLoss), None);
+    assert_eq!(back.start(ResetCause::External), None);
     block_on(back.runtime().arm_after_boot());
     assert_eq!(upload(&back, "1.1.0"), Ok(Restart));
 }
@@ -310,7 +310,7 @@ fn a_trial_ended_by_setup_or_by_power_loss_keeps_the_release_eligible() {
 #[test]
 fn a_boot_arming_that_fails_is_retried_on_the_next_tick() {
     let device = SimDevice::with_image("1.0.0");
-    assert_eq!(device.start(ResetCause::PowerLoss), None);
+    assert_eq!(device.start(ResetCause::External), None);
     device.failing_arms.set(1);
     block_on(device.runtime().arm_after_boot());
     assert_eq!(device.lifecycle(), Lifecycle::Running);

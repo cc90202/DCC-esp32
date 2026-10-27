@@ -3,31 +3,42 @@
 use super::*;
 
 #[test]
-fn test_high_fragment_reads_each_form_of_the_byte() {
-    assert_eq!(HighFragment::read(0x00), HighFragment::Plain(0x00));
-    assert_eq!(HighFragment::read(0x03), HighFragment::Plain(0x03));
-    assert_eq!(HighFragment::read(0xc3), HighFragment::Long(0x03));
+fn test_high_fragment_reads_each_form_of_rcn217_table_11() {
+    assert_eq!(HighFragment::read(0x00), HighFragment::Short);
+    assert_eq!(HighFragment::read(0x60), HighFragment::Consist);
+    assert_eq!(HighFragment::read(0x83), HighFragment::Long(0x03));
+    assert_eq!(HighFragment::read(0xbf), HighFragment::Long(0x3f));
+    // The DCC packet prefix is not an ADR1 form, nor is any stray bit.
+    assert_eq!(HighFragment::read(0xc3), HighFragment::Malformed);
+    assert_eq!(HighFragment::read(0x03), HighFragment::Malformed);
     assert_eq!(HighFragment::read(0x40), HighFragment::Malformed);
-    assert_eq!(HighFragment::read(0x80), HighFragment::Malformed);
+    assert_eq!(HighFragment::read(0x61), HighFragment::Malformed);
     assert_eq!(HighFragment::Malformed.address_value(0x12), None);
     assert_eq!(HighFragment::Long(0x03).address_value(0xe8), Some(1000));
-    assert_eq!(HighFragment::Plain(0x03).address_value(0xe8), Some(1000));
+    assert_eq!(HighFragment::Short.address_value(0x03), Some(3));
+    assert_eq!(HighFragment::Short.address_value(0x83), None);
+    // Bit 7 after a consist marker is the direction bit, not address.
+    assert_eq!(HighFragment::Consist.address_value(0x85), Some(5));
 }
 
 #[test]
-fn test_from_address_fragments_reads_every_form_of_high_byte() {
-    // A stated long address is taken at its word, a plain fragment leaves
-    // magnitude to decide, and half a marker names nothing. The refusal at
-    // the end is the one the wire allows and this type cannot hold.
+fn test_from_address_fragments_reads_rcn217_examples() {
+    // RCN-217 table 11: base, consist and extended forms. The refusal of
+    // 0x80/0x03 is the extended address below 128, legal on the wire and
+    // outside what this type can hold.
     let cases = [
         (0x00, 0x03, DccAddress::new_short(3)),
-        (0x00, 0xff, DccAddress::new_long(255)),
-        (0x03, 0xe8, DccAddress::new_long(1000)),
-        (0xc3, 0xe8, DccAddress::new_long(1000)),
-        (0xc0, 0x80, DccAddress::new_long(128)),
-        (0xc0, 0x03, None),
-        (0x40, 0x03, None),
+        (0x00, 0xff, None),
+        (0x60, 0x05, DccAddress::new_short(5)),
+        (0x60, 0x85, DccAddress::new_short(5)),
+        (0x60, 0x00, None),
+        (0x83, 0xe8, DccAddress::new_long(1000)),
+        (0x84, 0x03, DccAddress::new_long(1027)),
+        (0x81, 0x2c, DccAddress::new_long(300)),
+        (0x80, 0x80, DccAddress::new_long(128)),
         (0x80, 0x03, None),
+        (0xc3, 0xe8, None),
+        (0x40, 0x03, None),
         (0x00, 0x00, None),
         (0xff, 0xff, None),
     ];

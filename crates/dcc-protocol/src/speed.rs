@@ -12,6 +12,10 @@ pub enum SpeedFormat {
 }
 
 impl SpeedFormat {
+    /// Format assumed for a locomotive no controller has driven yet, so that
+    /// every place that has to pick one reports the same.
+    pub const DEFAULT: Self = Self::Speed128;
+
     /// Highest logical speed step of this format; step 0 is stop.
     #[must_use]
     pub const fn max_step(self) -> u8 {
