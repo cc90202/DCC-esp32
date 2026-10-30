@@ -15,10 +15,10 @@
 use dcc_protocol::timing::PREAMBLE_BITS;
 
 /// RMT clock frequency (1 MHz = 1μs resolution)
-pub const RMT_CLOCK_HZ: u32 = 1_000_000;
+pub(crate) const RMT_CLOCK_HZ: u32 = 1_000_000;
 
 /// Number of fixed preamble entries written at the start of the RMT RAM window.
-pub const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
+pub(crate) const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
 
 /// RMT buffer capacity for the pre-built idle packet.
 ///
@@ -32,7 +32,7 @@ pub const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
 /// with zero inter-packet gap.  RMT channel memsize must be ≥ 2 blocks (96 slots)
 /// to fit the idle buffer. Three blocks leave enough tail RAM for RCN-218
 /// LOGON_SELECT packets.
-pub const IDLE_RMT_SIZE: usize = 49;
+pub(crate) const IDLE_RMT_SIZE: usize = 49;
 
 const _: () = assert!(
     IDLE_RMT_SIZE == PREAMBLE_BITS + 3 * (1 + 8) + 1 + 1,

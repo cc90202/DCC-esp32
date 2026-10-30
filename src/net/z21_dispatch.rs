@@ -46,7 +46,20 @@ pub(super) const fn classify_lease_activity(command: Z21Command) -> LeaseClassif
             LeaseClassification::SafetyCommand
         }
         Z21Command::Unknown => LeaseClassification::None,
-        _ => LeaseClassification::Activity(LeaseActivity::KeepAlive),
+        Z21Command::GetSerialNumber
+        | Z21Command::GetCode
+        | Z21Command::GetHwInfo
+        | Z21Command::GetSystemState
+        | Z21Command::GetXBusVersion
+        | Z21Command::GetFirmwareVersion
+        | Z21Command::GetStatus
+        | Z21Command::SetBroadcastFlags
+        | Z21Command::GetLocoMode { .. }
+        | Z21Command::SetLocoMode { .. }
+        | Z21Command::GetLocoInfo { .. }
+        | Z21Command::GetTurnoutInfo { .. }
+        | Z21Command::RailcomGetData { .. }
+        | Z21Command::LoconetDetector => LeaseClassification::Activity(LeaseActivity::KeepAlive),
     }
 }
 

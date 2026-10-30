@@ -11,7 +11,18 @@ pub(in crate::dcc::scheduler) fn pom_cutout(packet: DccPacket) -> Option<CutoutM
     match packet {
         DccPacket::PomReadByte { .. } => Some(CutoutMode::PomRead),
         DccPacket::PomWriteByte { .. } => Some(CutoutMode::PomWrite),
-        _ => None,
+        DccPacket::Idle
+        | DccPacket::Reset
+        | DccPacket::Speed28 { .. }
+        | DccPacket::Speed128 { .. }
+        | DccPacket::FunctionGroup { .. }
+        | DccPacket::EmergencyStop { .. }
+        | DccPacket::BroadcastStop
+        | DccPacket::BroadcastBinaryStateShort { .. }
+        | DccPacket::LogonEnable { .. }
+        | DccPacket::LogonSelect { .. }
+        | DccPacket::ServiceModeVerifyByte { .. }
+        | DccPacket::ServiceModeWriteByte { .. } => None,
     }
 }
 
@@ -55,7 +66,7 @@ impl SlotManager {
 
     #[cfg(test)]
     #[must_use]
-    pub fn program_on_main(&mut self, request_id: PomRequestId, packet: DccPacket) -> bool {
+    pub(crate) fn program_on_main(&mut self, request_id: PomRequestId, packet: DccPacket) -> bool {
         self.queue_program_on_main(request_id, None, packet)
     }
 
@@ -68,7 +79,7 @@ impl SlotManager {
         self.queue_program_on_main(request_id, Some(permit), packet)
     }
 
-    pub fn close_program_on_main(&mut self, request_id: PomRequestId) -> bool {
+    pub(crate) fn close_program_on_main(&mut self, request_id: PomRequestId) -> bool {
         if !self
             .active_pom
             .is_some_and(|active| active.request_id == request_id)

@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn partitions_csv_matches_the_required_table() {
         let csv = include_str!("../../../partitions.csv");
-        let rows: std::vec::Vec<std::vec::Vec<&str>> = csv
+        let rows: Vec<Vec<&str>> = csv
             .lines()
             .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
             .map(|line| line.split(',').map(str::trim).collect())

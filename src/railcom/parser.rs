@@ -289,7 +289,10 @@ fn decode_symbols<const N: usize>(raw_bytes: &[u8]) -> Result<Vec<DecodedSymbol,
         match decoded {
             DecodedSymbol::Invalid(code) => return Err(ParseError::Invalid4Of8Code(code)),
             DecodedSymbol::Reserved(code) => return Err(ParseError::Reserved4Of8Code(code)),
-            _ => symbols
+            DecodedSymbol::Data6(_)
+            | DecodedSymbol::Ack
+            | DecodedSymbol::Nack
+            | DecodedSymbol::Busy => symbols
                 .push(decoded)
                 .map_err(|_| ParseError::TooManyItems)?,
         }

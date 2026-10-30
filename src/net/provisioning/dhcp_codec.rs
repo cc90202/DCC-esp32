@@ -50,7 +50,14 @@ pub(crate) fn build_reply(
     let reply_type = match request.message_type {
         DhcpMessageType::Discover => DhcpMessageType::Offer,
         DhcpMessageType::Request if request_targets_this_server(&request) => DhcpMessageType::Ack,
-        _ => return Ok(None),
+        DhcpMessageType::Offer
+        | DhcpMessageType::Request
+        | DhcpMessageType::Decline
+        | DhcpMessageType::Ack
+        | DhcpMessageType::Nak
+        | DhcpMessageType::Release
+        | DhcpMessageType::Inform
+        | DhcpMessageType::Unknown(_) => return Ok(None),
     };
     let destination = reply_destination(&request);
 
@@ -111,7 +118,7 @@ fn reply_destination(request: &DhcpRepr<'_>) -> DhcpReplyDestination {
 
 #[cfg(test)]
 mod tests {
-    use smoltcp::wire::{DhcpMessageType, EthernetAddress};
+    use smoltcp::wire::EthernetAddress;
 
     use super::*;
 

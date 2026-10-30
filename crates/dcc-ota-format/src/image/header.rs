@@ -52,7 +52,7 @@ pub(super) struct Header {
 
 impl Header {
     /// Reads the segment count and the appended-hash flag.
-    pub fn parse(header: &[u8]) -> Result<Self, ImageError> {
+    pub(super) fn parse(header: &[u8]) -> Result<Self, ImageError> {
         if !(1..=MAX_SEGMENTS).contains(&header[SEGMENTS_AT]) || header[HASH_FLAG_AT] > 1 {
             return Err(ImageError::Malformed);
         }
@@ -62,7 +62,7 @@ impl Header {
         })
     }
 
-    pub const fn hash_len(self) -> u32 {
+    pub(super) const fn hash_len(self) -> u32 {
         if self.appended_hash {
             APPENDED_HASH_LEN
         } else {

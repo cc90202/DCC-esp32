@@ -81,6 +81,18 @@ impl PomPlan {
             Self::Write(plan) => plan.address,
         }
     }
+
+    /// Request that ends the refresh slot a read asked for, owed once the
+    /// read's attempt is over, whatever the outcome. A write asks for none.
+    #[must_use]
+    pub(crate) const fn refresh_release(self) -> Option<LocoRequest> {
+        match self {
+            Self::Read(plan) => Some(LocoRequest::ReleasePomRefresh {
+                address: plan.address,
+            }),
+            Self::Write(_) => None,
+        }
+    }
 }
 
 /// How a POM request ended, as reported to its client.
@@ -139,11 +151,14 @@ pub(crate) enum PomSubmission<Reply> {
     Busy,
 }
 
-/// What follows the end of the request in flight: the reply to send, then
-/// the queued successor to start, if any.
+/// What follows the end of the request in flight: the reply to send, the
+/// refresh slot to release, then the queued successor to start, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PomCompletion<Reply> {
     pub(crate) delivery: Option<PomDelivery<Reply>>,
+    /// Set for every read that leaves the session, including one already
+    /// answered as superseded: its attempt is over only now.
+    pub(crate) release: Option<LocoRequest>,
     pub(crate) next: Option<PomStart>,
 }
 
@@ -152,6 +167,7 @@ impl<Reply> PomCompletion<Reply> {
     pub(crate) const fn idle() -> Self {
         Self {
             delivery: None,
+            release: None,
             next: None,
         }
     }
@@ -283,6 +299,7 @@ impl<Client: Copy + Eq, Reply: Copy> PomSession<Client, Reply> {
                 job: in_flight.ticket.job,
                 outcome,
             }),
+            release: in_flight.ticket.job.plan.refresh_release(),
             next: self.queued.take().map(|ticket| self.launch(ticket)),
         }
     }
@@ -334,6 +351,19 @@ mod tests {
             direction: Direction::Forward,
             functions: FunctionState::empty(),
         }
+    }
+
+    #[test]
+    fn only_a_read_releases_its_refresh_slot() {
+        let cv = PomCv::new(29).unwrap();
+        let read = prepare_read(&LocoSlots::default(), true, address(), cv).unwrap();
+        let write = prepare_write(true, address(), cv, 7).unwrap();
+
+        assert_eq!(
+            PomPlan::Read(read).refresh_release(),
+            Some(LocoRequest::ReleasePomRefresh { address: address() })
+        );
+        assert_eq!(PomPlan::Write(write).refresh_release(), None);
     }
 
     #[test]
@@ -438,6 +468,7 @@ mod tests {
             completion,
             PomCompletion {
                 delivery: delivery(11, read(29), PomOutcome::Value(3)),
+                release: Some(LocoRequest::ReleasePomRefresh { address: address() }),
                 next: None,
             }
         );
@@ -471,6 +502,56 @@ mod tests {
         let completion = session.complete(first.request_id, PomOutcome::Value(151));
         assert_eq!(completion.delivery, None);
         assert_eq!(completion.next.map(|next| next.job), Some(read_of(5, 8)));
+    }
+
+    #[test]
+    fn superseded_read_releases_its_refresh_slot_when_its_attempt_ends() {
+        let loco4 = DccAddress::new_short(4).unwrap();
+        let mut session = Session::new();
+        let first = start(&mut session, OWNER, 10, read_of(4, 8));
+        assert!(matches!(
+            session.submit(OWNER, 11, read_of(5, 8)),
+            PomSubmission::Queued {
+                superseded: Some(_),
+                ..
+            }
+        ));
+
+        let completion = session.complete(first.request_id, PomOutcome::Value(151));
+        assert_eq!(
+            completion.release,
+            Some(LocoRequest::ReleasePomRefresh { address: loco4 })
+        );
+    }
+
+    #[test]
+    fn every_started_request_releases_once_and_writes_release_nothing() {
+        let mut session = Session::new();
+        let first = start(&mut session, OWNER, 10, read(8));
+        assert_eq!(session.submit(OWNER, 11, read(8)), queued());
+
+        let completion = session.complete(first.request_id, PomOutcome::Value(1));
+        let release = Some(LocoRequest::ReleasePomRefresh { address: address() });
+        assert_eq!(completion.release, release);
+        let next = completion.next.expect("the second read must start");
+        assert_eq!(
+            session
+                .complete(first.request_id, PomOutcome::Value(1))
+                .release,
+            None
+        );
+        assert_eq!(
+            session
+                .complete(next.request_id, PomOutcome::Value(2))
+                .release,
+            release
+        );
+
+        let write = start(&mut session, OWNER, 12, write(29, 6));
+        assert_eq!(
+            session.complete(write.request_id, PomOutcome::Ack).release,
+            None
+        );
     }
 
     #[test]
@@ -523,6 +604,7 @@ mod tests {
             completion,
             PomCompletion {
                 delivery: delivery(10, read(8), PomOutcome::Value(5)),
+                release: Some(LocoRequest::ReleasePomRefresh { address: address() }),
                 next: None,
             }
         );
@@ -601,6 +683,7 @@ mod tests {
             session.complete(next.request_id, PomOutcome::Value(4)),
             PomCompletion {
                 delivery: delivery(12, read(8), PomOutcome::Value(4)),
+                release: Some(LocoRequest::ReleasePomRefresh { address: address() }),
                 next: None,
             }
         );

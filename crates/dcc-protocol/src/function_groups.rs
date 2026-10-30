@@ -130,7 +130,10 @@ pub const fn group_bits(functions: FunctionState, kind: FunctionGroupKind) -> u8
     let run = ((functions & layout.mask) >> layout.shift) as u8;
     match kind {
         FunctionGroupKind::G1 => run | (((functions & 1) as u8) << 4),
-        _ => run,
+        FunctionGroupKind::G2a
+        | FunctionGroupKind::G2b
+        | FunctionGroupKind::G3
+        | FunctionGroupKind::G4 => run,
     }
 }
 

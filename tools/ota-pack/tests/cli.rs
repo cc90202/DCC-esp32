@@ -5,7 +5,7 @@ use dcc_ota_format::{
 use ed25519_dalek::SigningKey;
 use std::{fs, path::Path, process::Command};
 
-#[allow(
+#[expect(
     clippy::unwrap_used,
     reason = "a tool that cannot be spawned fails the calling test"
 )]

@@ -375,7 +375,7 @@ mod tests {
     }
 
     /// An image of `len` bytes carrying a build record of `kind`.
-    fn release_image(len: usize, kind: BuildKind) -> std::vec::Vec<u8> {
+    fn release_image(len: usize, kind: BuildKind) -> Vec<u8> {
         let mut image = fixture("0.2.0", len, false);
         let key = signing_key().verifying_key();
         let record = BuildMetadata {
@@ -489,7 +489,7 @@ mod tests {
             &mut flash,
         )
         .unwrap();
-        let mut progress = std::vec::Vec::new();
+        let mut progress = Vec::new();
         for chunk in image.chunks(5000) {
             writer.push(&mut flash, chunk).unwrap();
             progress.push((writer.received(), writer.written()));

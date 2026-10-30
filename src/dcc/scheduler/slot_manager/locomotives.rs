@@ -11,7 +11,7 @@ use super::{DIRTY_STOP_RETRY_COUNT, Slot, SlotAdmission, SlotManager, speed_retr
 impl SlotManager {
     /// Return a copy of the scheduler-owned state for one locomotive.
     #[must_use]
-    pub fn loco_snapshot(&self, address: DccAddress) -> Option<LocoSnapshot> {
+    pub(crate) fn loco_snapshot(&self, address: DccAddress) -> Option<LocoSnapshot> {
         self.slot_index(address)
             .map(|index| self.slots[index].snapshot())
     }
@@ -134,7 +134,8 @@ impl SlotManager {
     /// replace a slot. If no stopped slot is safe to replace, the request returns
     /// [`LocoRequestResult::Full`] without mutation.
     #[must_use]
-    pub fn handle_loco_request(&mut self, request: LocoRequest) -> LocoRequestResult {
+    pub(crate) fn handle_loco_request(&mut self, request: LocoRequest) -> LocoRequestResult {
+        self.claim_for_command(request);
         match request {
             LocoRequest::GetState { address } => self
                 .loco_snapshot(address)
@@ -201,7 +202,46 @@ impl SlotManager {
                 };
                 LocoRequestResult::Updated(snapshot)
             }
+            LocoRequest::ReleasePomRefresh { address } => self.release_pom_refresh(address),
         }
+    }
+
+    /// A loco command makes a slot created for a POM read permanent.
+    fn claim_for_command(&mut self, request: LocoRequest) {
+        let commands = matches!(
+            request,
+            LocoRequest::SetSpeed { .. }
+                | LocoRequest::SetFunction { .. }
+                | LocoRequest::EmergencyStop { .. }
+        );
+        if commands && let Some(index) = self.slot_index(request.address()) {
+            self.slots[index].pom_refresh_only = false;
+        }
+    }
+
+    /// Drops the slot a POM read created for `address`, unless a command
+    /// claimed it. Reports [`LocoRequestResult::NotFound`] once the slot is
+    /// gone and [`LocoRequestResult::Found`] when it stays.
+    ///
+    /// Pending packets do not keep the slot: only a stop of every loco can
+    /// leave an unclaimed slot dirty, and that stop also goes out as a
+    /// broadcast. A stop of this loco alone claims the slot.
+    fn release_pom_refresh(&mut self, address: DccAddress) -> LocoRequestResult {
+        let Some(index) = self.slot_index(address) else {
+            return LocoRequestResult::NotFound;
+        };
+        let slot = &self.slots[index];
+        if !slot.pom_refresh_only {
+            return LocoRequestResult::Found(slot.snapshot());
+        }
+        self.slots.remove(index);
+        // Keep both cursors on the slot they would have visited next.
+        for cursor in [&mut self.next_index, &mut self.dirty_cursor] {
+            if *cursor > index {
+                *cursor -= 1;
+            }
+        }
+        LocoRequestResult::NotFound
     }
 
     /// Set a validated logical speed for a locomotive.
@@ -209,7 +249,7 @@ impl SlotManager {
     /// Used by the tests only; production goes through `handle_loco_request`.
     #[cfg(test)]
     #[must_use]
-    pub fn set_speed(
+    pub(crate) fn set_speed(
         &mut self,
         address: DccAddress,
         speed: LogicalSpeed,
@@ -228,7 +268,7 @@ impl SlotManager {
 
     #[cfg(test)]
     #[must_use]
-    pub fn set_speed_with_format(
+    pub(crate) fn set_speed_with_format(
         &mut self,
         address: DccAddress,
         speed: LogicalSpeed,
@@ -239,7 +279,7 @@ impl SlotManager {
     }
 
     /// Request global emergency stop.
-    pub fn request_emergency_stop_all(&mut self) {
+    pub(crate) fn request_emergency_stop_all(&mut self) {
         let stopped_since = self
             .slots
             .iter()
@@ -287,7 +327,7 @@ impl SlotManager {
 
     /// Request emergency stop for a single locomotive.
     #[must_use]
-    pub fn request_emergency_stop(&mut self, address: DccAddress) -> bool {
+    pub(crate) fn request_emergency_stop(&mut self, address: DccAddress) -> bool {
         let Some(index) = self.slot_index(address) else {
             return false;
         };

@@ -189,7 +189,7 @@ impl PacketBytes {
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::expect_used,
         reason = "every packet variant encodes to at most DCC_MAX_PACKET_BYTES; an overflow is an encoder bug"
     )]
@@ -216,7 +216,7 @@ impl PacketBytes {
         self.push(crc);
     }
 
-    #[allow(
+    #[expect(
         clippy::expect_used,
         reason = "every packet variant encodes to at most DCC_MAX_PACKET_BYTES; an overflow is an encoder bug"
     )]

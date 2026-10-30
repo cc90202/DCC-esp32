@@ -426,15 +426,19 @@ fn the_trial_countdown_is_shown_when_its_whole_seconds_change() {
         device.advance(SECOND / 2);
         assert_eq!(block_on(device.runtime().tick(&mut trial)), None);
     }
-    let shown: std::vec::Vec<_> = device
+    let shown: Vec<_> = device
         .shown
         .borrow()
         .iter()
-        .filter_map(|notice| match notice {
-            Notice::Trial {
+        .filter_map(|notice| {
+            if let Notice::Trial {
                 left: Some(left), ..
-            } => Some(left.as_secs()),
-            _ => None,
+            } = notice
+            {
+                Some(left.as_secs())
+            } else {
+                None
+            }
         })
         .collect();
     assert_eq!(shown, [60, 59, 58, 57]);

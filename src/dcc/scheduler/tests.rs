@@ -81,8 +81,8 @@ fn loco_request_id_preserves_wrapped_counter_values() {
     assert_eq!(id.value(), u32::MAX);
 }
 
-fn permit() -> crate::authority::LeasePermit {
-    crate::authority::LeasePermit::new(crate::authority::LeaseEpoch::new(1), u64::MAX)
+fn permit() -> LeasePermit {
+    LeasePermit::new(LeaseEpoch::new(1), u64::MAX)
 }
 
 #[test]
@@ -1106,6 +1106,10 @@ fn test_f13_f28_dirty_and_refresh() {
     let mut seen_fg3 = false;
     let mut seen_fg4 = false;
     for p in [p1, p2] {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "the test asserts on two packets and ignores the rest"
+        )]
         match p {
             DccPacket::FunctionGroup {
                 address,
@@ -1220,9 +1224,10 @@ fn test_function_refresh_bound_under_12_slots() {
         let packet = mgr
             .build_next_packet_with_function_budget(max_visits)
             .unwrap_or(DccPacket::Idle);
-        let address = match packet {
-            DccPacket::FunctionGroup { address, .. } => Some(address),
-            _ => None,
+        let address = if let DccPacket::FunctionGroup { address, .. } = packet {
+            Some(address)
+        } else {
+            None
         };
 
         if let Some(address) = address {
@@ -1684,6 +1689,147 @@ fn test_ensure_railcom_refresh_slot_does_not_modify_existing_slot() {
             && speed.value() == 42
             && direction == Direction::Reverse
     ));
+}
+
+fn release_pom_refresh(manager: &mut SlotManager, address: DccAddress) -> LocoRequestResult {
+    manager.handle_loco_request(LocoRequest::ReleasePomRefresh { address })
+}
+
+fn ensure_refresh(manager: &mut SlotManager, address: DccAddress) -> LocoRequestResult {
+    manager.handle_loco_request(LocoRequest::EnsureRefresh {
+        address,
+        format: SpeedFormat::Speed128,
+    })
+}
+
+#[test]
+fn releasing_a_read_only_refresh_slot_removes_it() {
+    let mut mgr = SlotManager::new();
+    assert!(matches!(
+        ensure_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::Inserted(_)
+    ));
+
+    assert_eq!(
+        release_pom_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::NotFound
+    );
+    assert_eq!(mgr.slot_count(), 0);
+}
+
+#[test]
+fn releasing_an_unknown_address_reports_not_found() {
+    let mut mgr = SlotManager::new();
+
+    assert_eq!(
+        release_pom_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::NotFound
+    );
+}
+
+#[test]
+fn releasing_keeps_a_slot_that_was_driven_before_the_read() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.set_speed(addr(4), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    assert!(matches!(
+        ensure_refresh(&mut mgr, addr(4)),
+        LocoRequestResult::Found(_)
+    ));
+
+    assert!(matches!(
+        release_pom_refresh(&mut mgr, addr(4)),
+        LocoRequestResult::Found(snapshot) if snapshot.address == addr(4)
+    ));
+    assert_eq!(mgr.slot_count(), 1);
+}
+
+#[test]
+fn releasing_keeps_a_read_slot_that_got_a_command_during_the_read() {
+    for command in [
+        LocoRequest::SetSpeed {
+            address: addr(7),
+            speed: ls(5, SpeedFormat::Speed128),
+            direction: Direction::Forward,
+        },
+        LocoRequest::SetFunction {
+            address: addr(7),
+            function: FunctionIndex::new(0).unwrap(),
+            change: FunctionChange::Enable,
+        },
+        LocoRequest::EmergencyStop { address: addr(7) },
+    ] {
+        let mut mgr = SlotManager::new();
+        assert!(matches!(
+            ensure_refresh(&mut mgr, addr(7)),
+            LocoRequestResult::Inserted(_)
+        ));
+        assert!(matches!(
+            mgr.handle_loco_request(command),
+            LocoRequestResult::Updated(_)
+        ));
+        drain_pending_slot_transmissions(&mut mgr);
+
+        assert!(
+            matches!(
+                release_pom_refresh(&mut mgr, addr(7)),
+                LocoRequestResult::Found(_)
+            ),
+            "{command:?}"
+        );
+        assert_eq!(mgr.slot_count(), 1, "{command:?}");
+    }
+}
+
+#[test]
+fn releasing_a_read_slot_after_a_stop_of_every_loco_still_removes_it() {
+    let mut mgr = SlotManager::new();
+    assert!(matches!(
+        ensure_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::Inserted(_)
+    ));
+    // A fault stops every loco and pauses emission while the read runs.
+    mgr.request_emergency_stop_all();
+    mgr.pause();
+
+    assert_eq!(
+        release_pom_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::NotFound
+    );
+    assert_eq!(mgr.slot_count(), 0);
+}
+
+fn refresh_address(manager: &mut SlotManager) -> Option<DccAddress> {
+    match manager.build_next_packet() {
+        Some(DccPacket::Speed128 { address, .. }) => Some(address),
+        _ => None,
+    }
+}
+
+#[test]
+fn releasing_a_read_slot_keeps_the_refresh_cycle_on_the_other_slots() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    assert!(matches!(
+        ensure_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::Inserted(_)
+    ));
+    assert!(mgr.set_speed(addr(5), ls(20, SpeedFormat::Speed128), Direction::Forward));
+    drain_pending_slot_transmissions(&mut mgr);
+    // Leave the refresh cursor on loco 5, just past the slot about to go.
+    assert!(
+        (0..8).any(|_| refresh_address(&mut mgr) == Some(addr(7))),
+        "loco 7 was never refreshed"
+    );
+
+    assert_eq!(
+        release_pom_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::NotFound
+    );
+
+    // Loco 5 keeps its turn, then the cycle goes on without loco 7.
+    assert_eq!(refresh_address(&mut mgr), Some(addr(5)));
+    assert_eq!(refresh_address(&mut mgr), Some(addr(3)));
+    assert_eq!(refresh_address(&mut mgr), Some(addr(5)));
 }
 
 #[test]

@@ -6,8 +6,10 @@
 //! transport.
 
 mod pom;
+#[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+pub(crate) use pom::pom_runtime_stats;
 #[cfg(target_arch = "riscv32")]
-pub use pom::{
-    PomOp, PomRailcomResult, PomRequest, PomResponse, PomRuntimeStats, PomTxStarted,
-    pom_actor_task, pom_result_from_railcom_items, pom_runtime_stats,
+pub(crate) use pom::{
+    PomOp, PomRailcomResult, PomRequest, PomResponse, PomTxStarted, pom_actor_task,
+    pom_result_from_railcom_items,
 };

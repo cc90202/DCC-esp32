@@ -11,10 +11,9 @@ use crate::system_status::{BootReadyEvent, OptionalPeripheralInit, announce_read
 #[cfg(target_arch = "riscv32")]
 use defmt::warn;
 #[cfg(target_arch = "riscv32")]
-use embassy_time::{Duration, Instant, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 #[cfg(target_arch = "riscv32")]
 use embedded_graphics::{
-    geometry::Size,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
     prelude::*,
@@ -366,7 +365,7 @@ pub async fn display_task(
     };
 
     // Allow the SSD1306 to settle after power-on before sending commands.
-    embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+    Timer::after(Duration::from_millis(100)).await;
 
     let interface = I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306Async::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)

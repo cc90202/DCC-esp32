@@ -72,7 +72,7 @@ fn erased<F: NorFlash>(flash: &mut F, offset: u32, len: usize) -> Result<bool, F
 /// Returns [`StateError::Corrupt`] for a non-blank journal without a valid
 /// record, and [`StateError::Flash`] for an unsuitable flash or a failed
 /// read.
-pub fn load<F: NorFlash>(flash: &mut F) -> Result<Option<Record>, StateError> {
+pub(crate) fn load<F: NorFlash>(flash: &mut F) -> Result<Option<Record>, StateError> {
     Ok(scan(flash)?.map(|(_, record)| record))
 }
 
@@ -86,7 +86,7 @@ pub fn load<F: NorFlash>(flash: &mut F) -> Result<Option<Record>, StateError> {
 /// Returns [`StateError::Flash`] when the record did not land; [`load`]
 /// then still returns the previous one. Returns [`StateError::Corrupt`] for
 /// a corrupt journal or an exhausted generation counter.
-pub fn save<F: NorFlash>(flash: &mut F, mut record: Record) -> Result<Record, StateError> {
+pub(crate) fn save<F: NorFlash>(flash: &mut F, mut record: Record) -> Result<Record, StateError> {
     let newest = scan(flash)?;
     record.generation = newest.map_or(Ok(1), |(_, r)| {
         r.generation.checked_add(1).ok_or(StateError::Corrupt)

@@ -11,7 +11,8 @@
 use defmt::{info, warn};
 
 use crate::application::locomotive::{
-    LocoCommandFailure, LocoCommandOutcome, resolve_loco_command,
+    LocoCommandFailure, LocoCommandOutcome, LocoLookupIssue, resolve_loco_command,
+    resolve_loco_lookup,
 };
 use crate::application::pom::{
     PomAdmissionError, PomCompletion, PomDelivery, PomJob, PomOutcome, PomPlan, PomReadPlan,
@@ -20,7 +21,7 @@ use crate::application::pom::{
 use crate::application::{LeasePermit, LocoSlots};
 use crate::dcc::PomCv;
 use crate::dcc::channels::PomRequestSender;
-use crate::dcc::{PomOp, PomRequest, PomResponse};
+use crate::dcc::{LocoRequest, PomOp, PomRequest, PomResponse};
 use crate::net::loco_client::request_loco;
 use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
 use crate::net::z21_dispatch::encoded_len;
@@ -104,6 +105,9 @@ async fn submit(
                 completion.next.is_none(),
                 "a request started from a free slot has no successor"
             );
+            if let Some(release) = completion.release {
+                release_target(loco_slots, &ctx.loco, release).await;
+            }
             completion
                 .delivery
                 .map_or(0, |delivery| encode_delivery(delivery, out))
@@ -216,6 +220,46 @@ async fn refresh_target(
             );
             false
         }
+    }
+}
+
+/// Sends `request`, the release a finished read owes its refresh slot, and
+/// drops the address from `loco_slots` when the scheduler removed the slot.
+pub(super) async fn release_target(
+    loco_slots: &mut LocoSlots,
+    loco: &LocoChannels<'_>,
+    request: LocoRequest,
+) {
+    let address = request.address();
+    let response = request_loco(
+        loco.request_sender,
+        loco.response_receiver,
+        loco.next_request_id,
+        None,
+        request,
+    )
+    .await;
+    let outcome = resolve_loco_lookup(
+        loco_slots,
+        address,
+        response.map(|response| response.result),
+    );
+    match outcome.issue {
+        None => {}
+        Some(LocoLookupIssue::SchedulerTimeout) => warn!(
+            "POM read addr={} refresh release timed out",
+            address.value()
+        ),
+        Some(LocoLookupIssue::UnexpectedResult(result)) => warn!(
+            "POM read addr={} refresh release result={:?}",
+            address.value(),
+            result
+        ),
+        Some(LocoLookupIssue::Projection(error)) => warn!(
+            "POM read addr={} refresh release projection failed: {:?}",
+            address.value(),
+            error
+        ),
     }
 }
 

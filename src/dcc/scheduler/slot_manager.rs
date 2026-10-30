@@ -65,6 +65,9 @@ struct Slot {
     // True once a SetLocoDrive command has been received for this slot.
     // Speed packets are only included in the cyclic refresh when this is set.
     speed_commanded: bool,
+    // True while the slot exists only to keep a POM read target refreshed.
+    // Any loco command clears it; a cleared slot is never released.
+    pom_refresh_only: bool,
     // Dirty function groups bitmask: bit0=FG1, bit1=FG2A, bit2=FG2B, bit3=FG3, bit4=FG4.
     dirty_function_groups: u8,
     // Remaining immediate retries for each dirty function group. Each group uses
@@ -92,6 +95,7 @@ impl Slot {
             dirty_speed: true,
             dirty_speed_retries: speed_retry_count(speed),
             speed_commanded: true,
+            pom_refresh_only: false,
             dirty_function_groups: 0,
             dirty_function_retries: 0,
             known_groups: 0,
@@ -313,7 +317,7 @@ mod invariant_recovery_tests {
 
 /// Manages active locomotive slots with round-robin scheduling.
 #[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
-pub struct SlotManager {
+pub(crate) struct SlotManager {
     slots: Vec<Slot, LOCO_SLOT_CAPACITY>,
     pending_broadcast_estop: bool,
     pending_estop_targets: Deque<DccAddress, LOCO_SLOT_CAPACITY>,
@@ -384,7 +388,7 @@ impl Default for SlotManager {
 impl SlotManager {
     /// Create a new empty SlotManager.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             slots: Vec::new(),
             pending_broadcast_estop: false,
@@ -409,25 +413,25 @@ impl SlotManager {
     }
 
     /// Pause packet emission. All slot state is preserved.
-    pub fn pause(&mut self) {
+    pub(crate) fn pause(&mut self) {
         self.paused = true;
     }
 
     /// Resume packet emission after pause.
-    pub fn resume(&mut self) {
+    pub(crate) fn resume(&mut self) {
         self.paused = false;
     }
 
     /// Check if scheduler is currently paused.
     #[cfg(test)]
     #[must_use]
-    pub fn is_paused(&self) -> bool {
+    pub(crate) fn is_paused(&self) -> bool {
         self.paused
     }
 
     /// Ensure the scheduler has a non-dirty cyclic refresh slot for a decoder.
     #[must_use]
-    pub fn ensure_railcom_refresh_slot(
+    pub(crate) fn ensure_railcom_refresh_slot(
         &mut self,
         address: DccAddress,
         format: SpeedFormat,
@@ -438,6 +442,7 @@ impl SlotManager {
         let mut slot = Slot::new(address, LogicalSpeed::zero(format), Direction::Forward);
         slot.dirty_speed = false;
         slot.dirty_speed_retries = 0;
+        slot.pom_refresh_only = true;
         matches!(
             self.admit_new_slot(slot, false),
             SlotAdmission::Inserted { .. }
@@ -445,7 +450,7 @@ impl SlotManager {
     }
 
     #[must_use]
-    pub fn railcom_telemetry_packet(&mut self, packet: DccPacket) -> bool {
+    pub(crate) fn railcom_telemetry_packet(&mut self, packet: DccPacket) -> bool {
         if self.pending_railcom_telemetry.is_some() {
             return false;
         }
@@ -460,20 +465,20 @@ impl SlotManager {
 
     /// Number of active slots.
     #[must_use]
-    pub fn slot_count(&self) -> usize {
+    pub(crate) fn slot_count(&self) -> usize {
         self.slots.len()
     }
 
     /// Returns `true` if no slots are active.
     #[cfg(test)]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
 
     /// Apply a scheduler command.
     #[must_use]
-    pub fn apply_command(&mut self, command: SchedulerCommand) -> bool {
+    pub(crate) fn apply_command(&mut self, command: SchedulerCommand) -> bool {
         match command {
             SchedulerCommand::EmergencyStopAll => {
                 self.request_emergency_stop_all();

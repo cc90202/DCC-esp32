@@ -23,12 +23,12 @@ const ISR_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(50);
 const ISR_RESET_GRACE_PERIOD: Duration = Duration::from_millis(100);
 
 /// Pre-encoded idle waveform used to bootstrap continuous RMT loop mode.
-pub type IdleRmtBuffer = Vec<PulseCode, IDLE_RMT_SIZE>;
+pub(crate) type IdleRmtBuffer = Vec<PulseCode, IDLE_RMT_SIZE>;
 
 /// Errors while preparing the pre-encoded idle waveform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum IdleWaveformBuildError {
+pub(crate) enum IdleWaveformBuildError {
     PacketEncoding,
     BufferOverflow,
 }
@@ -58,7 +58,7 @@ struct EncodedRmtPacket {
 }
 
 /// Build the pre-encoded idle waveform used to bootstrap the continuous loop.
-pub fn build_idle_rmt_buffer() -> Result<IdleRmtBuffer, IdleWaveformBuildError> {
+pub(crate) fn build_idle_rmt_buffer() -> Result<IdleRmtBuffer, IdleWaveformBuildError> {
     let idle_packet = DccPacket::Idle;
     let idle_pulses =
         encode_dcc_packet(&idle_packet).map_err(|_| IdleWaveformBuildError::PacketEncoding)?;
@@ -74,7 +74,7 @@ pub fn build_idle_rmt_buffer() -> Result<IdleRmtBuffer, IdleWaveformBuildError> 
 }
 
 /// Pure async feeder paced by the ISR ACK.
-pub async fn dcc_engine_task(
+pub(crate) async fn dcc_engine_task(
     receiver: DccFrameReceiver,
     fault_sender: FaultEventSender,
     fence_ack_sender: PowerFenceAckSender,

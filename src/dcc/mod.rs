@@ -162,11 +162,12 @@ impl DccFrame {
 
 // Re-exports
 
+#[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+pub(crate) use cv::pom_runtime_stats;
 #[cfg(target_arch = "riscv32")]
-#[doc(inline)]
-pub use cv::{
-    PomOp, PomRailcomResult, PomRequest, PomResponse, PomRuntimeStats, PomTxStarted,
-    pom_actor_task, pom_result_from_railcom_items, pom_runtime_stats,
+pub(crate) use cv::{
+    PomOp, PomRailcomResult, PomRequest, PomResponse, PomTxStarted, pom_actor_task,
+    pom_result_from_railcom_items,
 };
 #[doc(inline)]
 pub use dcc_protocol::encoder::{
@@ -184,7 +185,7 @@ pub use dcc_protocol::speed28::{encode_nmra_instruction_speed_bits, logical_to_n
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) use packed::PackedAddressFlags;
 #[cfg(test)]
-pub use scheduler::SlotManager;
+pub(crate) use scheduler::SlotManager;
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
 pub use scheduler::packet_scheduler_task;

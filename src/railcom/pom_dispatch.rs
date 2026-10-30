@@ -12,7 +12,7 @@ use crate::railcom::{PacketSequence, RailcomChannel, RailcomItem};
 use crate::track_output::{CutoutRuntimeEvent, RailcomPacketMetadata};
 
 #[must_use]
-pub fn evaluate_pom_window(
+pub(crate) fn evaluate_pom_window(
     packet_sequence: PacketSequence,
     channel: RailcomChannel,
     packet_metadata: Option<RailcomPacketMetadata>,

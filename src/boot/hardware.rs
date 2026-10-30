@@ -29,7 +29,7 @@ pub(super) fn initialize_display_bus(
 ) -> Result<esp_hal::i2c::master::I2c<'static, esp_hal::Async>, BootError> {
     esp_hal::i2c::master::I2c::new(
         i2c0,
-        esp_hal::i2c::master::Config::default().with_frequency(esp_hal::time::Rate::from_khz(400)),
+        esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400)),
     )
     .map(|i2c| i2c.with_sda(sda).with_scl(scl).into_async())
     .map_err(|error| {

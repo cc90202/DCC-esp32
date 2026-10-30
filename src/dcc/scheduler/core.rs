@@ -75,7 +75,12 @@ impl SchedulerCore {
         match command {
             SchedulerCommand::RestartRailcomDiscovery => CommandOutcome::RestartRailcomDiscovery,
             _ if self.slots.apply_command(command) => CommandOutcome::Applied,
-            _ => CommandOutcome::Rejected,
+            SchedulerCommand::EmergencyStopAll
+            | SchedulerCommand::ProgramOnMain { .. }
+            | SchedulerCommand::CloseProgramOnMain { .. }
+            | SchedulerCommand::RailcomTelemetry { .. }
+            | SchedulerCommand::Pause
+            | SchedulerCommand::Resume => CommandOutcome::Rejected,
         }
     }
 

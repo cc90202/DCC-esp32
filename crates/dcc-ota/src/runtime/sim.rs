@@ -6,7 +6,6 @@ use core::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
-use std::vec::Vec;
 
 use dcc_ota_format::{
     Version,
@@ -80,7 +79,7 @@ pub(crate) struct SimDevice {
 
 impl SimDevice {
     /// A blank device whose slot A holds `version`, about to boot it.
-    pub fn with_image(version: &str) -> Self {
+    pub(crate) fn with_image(version: &str) -> Self {
         let mut flash = SimFlash::new(0, FLASH_SIZE);
         let image = release_image(version);
         let at = Slot::A.offset() as usize;
@@ -114,7 +113,7 @@ impl SimDevice {
     }
 
     /// The same flash after a restart, running `version`.
-    pub fn restarted(&self, version: &str) -> Self {
+    pub(crate) fn restarted(&self, version: &str) -> Self {
         Self::booting(
             self.flash.borrow().clone(),
             Version::parse(version).unwrap(),
@@ -123,7 +122,7 @@ impl SimDevice {
 
     /// The slot the bootloader starts: the selected one if it holds an
     /// image, otherwise the other.
-    pub fn bootloader_slot(&self) -> Slot {
+    pub(crate) fn bootloader_slot(&self) -> Slot {
         let mut flash = self.flash.borrow_mut();
         let selected = otadata::active(otadata::read(&mut *flash).unwrap()).map(|(_, e)| e.slot());
         let bootable = |slot: Slot| flash.bytes[slot.offset() as usize] == 0xE9;
@@ -134,29 +133,29 @@ impl SimDevice {
         }
     }
 
-    pub fn runtime(&self) -> Runtime<'_, Self> {
+    pub(crate) fn runtime(&self) -> Runtime<'_, Self> {
         Runtime::new(self)
     }
 
     /// Boots the device after a restart for `cause`.
-    pub fn start(&self, cause: ResetCause) -> Option<super::Restart> {
+    pub(crate) fn start(&self, cause: ResetCause) -> Option<super::Restart> {
         let slot = self.bootloader_slot();
         block_on(self.runtime().start(|_| Ok(slot), cause))
     }
 
-    pub fn advance(&self, duration: Duration) {
+    pub(crate) fn advance(&self, duration: Duration) {
         self.clock.set(self.clock.get() + duration);
     }
 
-    pub fn lifecycle(&self) -> crate::admission::Lifecycle {
+    pub(crate) fn lifecycle(&self) -> crate::admission::Lifecycle {
         self.state.borrow().lifecycle()
     }
 
-    pub fn record(&self) -> crate::journal::Record {
+    pub(crate) fn record(&self) -> crate::journal::Record {
         self.state.borrow().record.unwrap()
     }
 
-    pub fn last_shown(&self) -> Option<Notice> {
+    pub(crate) fn last_shown(&self) -> Option<Notice> {
         self.shown.borrow().last().copied()
     }
 }

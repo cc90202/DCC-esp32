@@ -62,7 +62,7 @@ static SHORT_SUPPRESSION: critical_section::Mutex<Cell<ShortSuppression>> =
     critical_section::Mutex::new(Cell::new(ShortSuppression { until_ms: 0 }));
 
 #[cfg(target_arch = "riscv32")]
-pub fn suppress_short_edges_for(duration: Duration) {
+pub(crate) fn suppress_short_edges_for(duration: Duration) {
     critical_section::with(|cs| {
         SHORT_SUPPRESSION
             .borrow(cs)
@@ -79,7 +79,7 @@ pub fn suppress_short_edges_for(duration: Duration) {
 /// that follows every return to Normal never runs; keep-alive capacitors on
 /// the track would then be qualified from the first millisecond.
 #[cfg(target_arch = "riscv32")]
-pub fn settle_after_arming() {
+pub(crate) fn settle_after_arming() {
     suppress_short_edges_for(Duration::from_millis(RECOVERY_SETTLE_MS));
 }
 
@@ -100,7 +100,9 @@ const SHORT_CONFIRM_SAMPLE_INTERVAL_MS: u64 = 1;
 /// Build the GPIO3 input pin for short-circuit detection (active-low, pull-up).
 #[cfg(target_arch = "riscv32")]
 #[must_use]
-pub fn new_short_detect_input(gpio3: esp_hal::peripherals::GPIO3<'static>) -> Input<'static> {
+pub(crate) fn new_short_detect_input(
+    gpio3: esp_hal::peripherals::GPIO3<'static>,
+) -> Input<'static> {
     let config = InputConfig::default().with_pull(Pull::Up);
     Input::new(gpio3, config)
 }

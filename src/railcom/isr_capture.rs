@@ -133,7 +133,7 @@ fn uart1_reg_update() {
 }
 
 #[inline(always)]
-pub fn open_window_from_isr() {
+pub(crate) fn open_window_from_isr() {
     uart1_reset_rx_fifo();
 }
 
@@ -144,7 +144,7 @@ pub fn open_window_from_isr() {
 // counter publishes availability, while the per-slot generation prevents a
 // slow consumer from combining fields from two different ring revolutions.
 #[inline(always)]
-pub fn close_window_from_isr(packet_sequence: PacketSequence, channel: RailcomChannel) {
+pub(crate) fn close_window_from_isr(packet_sequence: PacketSequence, channel: RailcomChannel) {
     let write_count = CAPTURE_WRITE_COUNT.load(Ordering::Relaxed);
     let slot = write_count as usize % CAPTURE_RING_CAPACITY;
     let Some(fifo_len) = uart1_rx_fifo_count().map(|len| len as usize) else {
@@ -307,7 +307,7 @@ fn capture_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1
     CAPTURE_NOTIFY.receiver()
 }
 
-pub async fn railcom_isr_capture_task(
+pub(crate) async fn railcom_isr_capture_task(
     uart_rx: UartRx<'static, Async>,
     result_sender: RailcomRxOutputSender,
 ) -> ! {
@@ -336,7 +336,7 @@ pub async fn railcom_isr_capture_task(
         reason = "constructed only by the optional bench diagnostics task"
     )
 )]
-pub struct Uart1RawDiag {
+pub(crate) struct Uart1RawDiag {
     pub rxfifo_cnt: u16,
     pub rxd_level: bool,
     pub rxd_edge_cnt: u16,
@@ -357,10 +357,11 @@ pub struct Uart1RawDiag {
     )
 )]
 #[must_use]
-pub fn uart1_raw_diag() -> Uart1RawDiag {
+pub(crate) fn uart1_raw_diag() -> Uart1RawDiag {
     // SAFETY: read-only register access; see the ownership note on
     // `uart1_rx_fifo_count`. The GPIO `in` register is a pure status read.
     let regs = unsafe { &*esp_hal::peripherals::UART1::ptr() };
+    // SAFETY: as above, the GPIO `in` register is only read.
     let gpio = unsafe { &*esp_hal::peripherals::GPIO::ptr() };
     const SAMPLES: u32 = 40_000;
     let mut gpio5_high_samples = 0u32;

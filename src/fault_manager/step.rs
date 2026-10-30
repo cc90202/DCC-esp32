@@ -96,7 +96,7 @@ impl FaultLoop {
     }
 
     /// Commits the candidate policy of `plan`; nothing else changes.
-    #[allow(
+    #[expect(
         clippy::needless_pass_by_value,
         reason = "taking the plan by value makes each plan committable once"
     )]

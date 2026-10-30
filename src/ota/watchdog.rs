@@ -37,7 +37,7 @@ pub(super) struct Watchdog {
 
 impl Watchdog {
     /// Takes the RTC and starts guarding at once: boot is critical.
-    pub fn start(lpwr: esp_hal::peripherals::LPWR<'static>) -> Self {
+    pub(super) fn start(lpwr: esp_hal::peripherals::LPWR<'static>) -> Self {
         let mut rtc = Rtc::new(lpwr);
         rtc.set_interrupt_handler(expired);
         let mut watchdog = Self {
@@ -50,7 +50,7 @@ impl Watchdog {
 
     /// Enables the watchdog if needed and feeds it. Stage 0 interrupts into
     /// [`expired`]; stage 1 resets the system if even that cannot run.
-    pub fn guard(&mut self) {
+    pub(super) fn guard(&mut self) {
         if !self.enabled {
             let rwdt = &mut self.rtc.rwdt;
             rwdt.enable();
@@ -65,7 +65,7 @@ impl Watchdog {
     }
 
     /// Disables the watchdog outside critical phases.
-    pub fn release(&mut self) {
+    pub(super) fn release(&mut self) {
         if self.enabled {
             self.rtc.rwdt.disable();
             self.enabled = false;

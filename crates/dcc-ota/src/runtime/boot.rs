@@ -142,7 +142,18 @@ impl<D: Device> Runtime<'_, D> {
         let (record, booted) = self.device.state(|s| (s.record, s.slot));
         let blame = match error {
             Error::Flash(FlashError::Driver(_) | FlashError::ReadBack) => Blame::Device,
-            _ => Blame::Candidate,
+            Error::Flash(FlashError::Unsuitable)
+            | Error::Corrupt
+            | Error::Forbidden
+            | Error::Unavailable
+            | Error::Internal
+            | Error::Network
+            | Error::Timeout
+            | Error::Request(_)
+            | Error::Package(_)
+            | Error::Image(_)
+            | Error::Ineligible(_)
+            | Error::Refused(_) => Blame::Candidate,
         };
         let Some(rolled_back) = record.and_then(|r| r.on_failed_candidate_boot(booted, blame))
         else {

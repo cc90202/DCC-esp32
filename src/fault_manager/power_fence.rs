@@ -39,7 +39,6 @@ pub(super) async fn request_and_wait(
 mod tests {
     use super::*;
     use crate::station_status::FaultCause;
-    use core::future::Future;
     use core::pin::pin;
     use core::task::{Context, Poll, Waker};
     use embassy_sync::channel::Channel;

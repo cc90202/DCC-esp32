@@ -12,8 +12,6 @@
 //! The expected-bytes column is fixed: never edit it to make a test pass;
 //! only the builder column may change.
 
-use std::vec::Vec;
-
 use crate::function_groups::{group_bits, group_of};
 use crate::validator::decode_pulses;
 use crate::{

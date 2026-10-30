@@ -9,7 +9,7 @@ use super::{DirtyFunctionSelection, PacketAuthority, PacketClass, SlotManager};
 impl SlotManager {
     /// Build the next packet to transmit.
     #[cfg(test)]
-    pub fn build_next_packet(&mut self) -> Option<DccPacket> {
+    pub(crate) fn build_next_packet(&mut self) -> Option<DccPacket> {
         self.build_next_packet_with_function_budget(allowed_slot_visits_without_function(
             self.slots.len(),
         ))
@@ -17,7 +17,7 @@ impl SlotManager {
 
     /// Build next packet with an explicit function-refresh budget in slot visits.
     #[cfg(test)]
-    pub fn build_next_packet_with_function_budget(
+    pub(crate) fn build_next_packet_with_function_budget(
         &mut self,
         max_slot_visits_without_function: u8,
     ) -> Option<DccPacket> {

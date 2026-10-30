@@ -3,7 +3,6 @@
 use embedded_storage::nor_flash::{
     ErrorType, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
 };
-use std::vec::Vec;
 
 /// Error of a simulated power cut.
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +31,7 @@ pub(crate) struct SimFlash {
 }
 
 impl SimFlash {
-    pub fn new(base: u32, len: usize) -> Self {
+    pub(crate) fn new(base: u32, len: usize) -> Self {
         Self {
             bytes: std::vec![0xFF; len],
             base,
@@ -44,7 +43,7 @@ impl SimFlash {
     }
 
     /// Forgets the calls made so far, so the next ones are counted from 0.
-    pub fn start_log(&mut self) {
+    pub(crate) fn start_log(&mut self) {
         self.calls = 0;
         self.mutable.clear();
         self.erased.clear();
@@ -52,7 +51,7 @@ impl SimFlash {
 
     /// Like [`Self::cuts`], but only before, halfway through and after each
     /// mutating call, for sequences too long to cut at every byte.
-    pub fn coarse_cuts(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+    pub(crate) fn coarse_cuts(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.mutable.iter().enumerate().flat_map(|(call, &len)| {
             let prefixes: &[usize] = if len == 0 { &[0] } else { &[0, 1, 2] };
             prefixes.iter().map(move |&step| (call, len * step / 2))
@@ -65,7 +64,7 @@ impl SimFlash {
 
     /// Every cut a sequence of calls allows: each call, with every prefix of
     /// the bytes it changes.
-    pub fn cuts(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+    pub(crate) fn cuts(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.mutable
             .iter()
             .enumerate()

@@ -166,6 +166,7 @@ fn frame_len(buf: &[u8]) -> Result<usize, FrameBoundaryError> {
 ///
 /// The Z21 protocol allows multiple frames to be concatenated in one UDP
 /// datagram. This iterator yields each frame's byte slice in order.
+#[derive(Debug)]
 pub struct FrameIter<'a> {
     buf: &'a [u8],
 }

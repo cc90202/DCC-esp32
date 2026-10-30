@@ -94,7 +94,7 @@ pub(crate) struct Window {
 impl Window {
     /// A trial that started at `start`.
     #[must_use]
-    pub const fn new(start: Uptime) -> Self {
+    pub(crate) const fn new(start: Uptime) -> Self {
         Self {
             start,
             healthy_since: None,
@@ -103,7 +103,7 @@ impl Window {
     }
 
     /// Records one reading and decides.
-    pub fn observe(&mut self, now: Uptime, health: Health) -> Decision {
+    pub(crate) fn observe(&mut self, now: Uptime, health: Health) -> Decision {
         if !health.alive || health.outages != self.outages {
             self.healthy_since = None;
         }
@@ -123,7 +123,7 @@ impl Window {
     /// How much of the healthy minute is still to go; `None` while the
     /// system is not healthy, as the minute has not started.
     #[must_use]
-    pub fn left(&self, now: Uptime) -> Option<Duration> {
+    pub(crate) fn left(&self, now: Uptime) -> Option<Duration> {
         self.healthy_since
             .map(|since| HEALTHY_SPAN.saturating_sub(now - since))
     }
@@ -132,7 +132,7 @@ impl Window {
     /// durable commit, after any wait the confirmation needed: an outage in
     /// between shows up as a new outage count.
     #[must_use]
-    pub fn eligible(&self, now: Uptime, health: Health) -> bool {
+    pub(crate) fn eligible(&self, now: Uptime, health: Health) -> bool {
         health.alive
             && health.outages == self.outages
             && now - self.start < DEADLINE

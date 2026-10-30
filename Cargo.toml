@@ -37,6 +37,13 @@ z21              = { path = "crates/z21" }
 # tightening a lint.
 [workspace.lints.rust]
 warnings = "deny"
+missing_debug_implementations = "warn"
+redundant_imports             = "warn"
+redundant_lifetimes           = "warn"
+trivial_numeric_casts         = "warn"
+unreachable_pub               = "warn"
+unused_lifetimes              = "warn"
+unused_qualifications         = "warn"
 
 # Lints beyond the default set; `warnings = "deny"` above makes each an error.
 # Unwrap, expect and panic stay allowed in test code (see clippy.toml).
@@ -47,6 +54,19 @@ expect_used                 = "warn"
 panic                       = "warn"
 unchecked_time_subtraction  = "warn"
 unwrap_used                 = "warn"
+# Unfinished or debugging code.
+dbg_macro                   = "warn"
+todo                        = "warn"
+unimplemented               = "warn"
+# Unsafe: one operation per block, each with its `// SAFETY:` comment.
+multiple_unsafe_ops_per_block = "warn"
+undocumented_unsafe_blocks  = "warn"
+mem_forget                  = "warn"
+# Suppressions: `#[expect(..., reason = "...")]`, never `#[allow]`.
+allow_attributes            = "warn"
+allow_attributes_without_reason = "warn"
+# A new enum variant must reach every match on its enum.
+wildcard_enum_match_arm     = "warn"
 # Parameter passing.
 needless_pass_by_ref_mut    = "warn"
 needless_pass_by_value      = "warn"

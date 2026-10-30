@@ -31,7 +31,7 @@ use crate::dcc::{LOCO_SLOT_CAPACITY, PomResponse};
 use crate::macros::bench_diag;
 use crate::net::client_watchdog::{LeaseRequestSender, LeaseResponseReceiver, LeaseTripReceiver};
 use crate::net::loco_client::reset_for_lease;
-use crate::net::pom_client::{encode_delivery, response_outcome, start_request};
+use crate::net::pom_client::{encode_delivery, release_target, response_outcome, start_request};
 use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
 use crate::net::z21_dispatch::{
@@ -389,6 +389,11 @@ async fn settle_pom(
     io: &Z21LoopIo,
 ) {
     loop {
+        let loco = LocoChannels {
+            request_sender: &io.loco_request_sender,
+            response_receiver: &io.loco_response_receiver,
+            next_request_id: &state.next_loco_request_id,
+        };
         if let Some(delivery) = completion.delivery {
             let response_len = encode_delivery(delivery, send_buf);
             if send_reply(socket, send_buf, response_len, delivery.reply)
@@ -397,6 +402,9 @@ async fn settle_pom(
             {
                 warn!("Z21 UDP send failed");
             }
+        }
+        if let Some(release) = completion.release {
+            release_target(&mut state.loco_slots, &loco, release).await;
         }
         let Some(start) = completion.next else {
             return;
@@ -409,11 +417,6 @@ async fn settle_pom(
                 .complete(start.request_id, PomOutcome::Refused);
             continue;
         }
-        let loco = LocoChannels {
-            request_sender: &io.loco_request_sender,
-            response_receiver: &io.loco_response_receiver,
-            next_request_id: &state.next_loco_request_id,
-        };
         completion = start_request(
             start,
             &mut state.loco_slots,
