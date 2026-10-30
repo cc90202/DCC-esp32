@@ -143,6 +143,11 @@ pub enum LocoRequest {
     EmergencyStop {
         address: DccAddress,
     },
+    /// Ends the refresh a POM read asked for: drops the slot when the read
+    /// created it and nothing has commanded the loco since.
+    ReleasePomRefresh {
+        address: DccAddress,
+    },
 }
 
 impl LocoRequest {
@@ -153,7 +158,8 @@ impl LocoRequest {
             | Self::EnsureRefresh { address, .. }
             | Self::SetSpeed { address, .. }
             | Self::SetFunction { address, .. }
-            | Self::EmergencyStop { address } => address,
+            | Self::EmergencyStop { address }
+            | Self::ReleasePomRefresh { address } => address,
         }
     }
 

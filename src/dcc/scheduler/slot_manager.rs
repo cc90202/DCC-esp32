@@ -65,6 +65,9 @@ struct Slot {
     // True once a SetLocoDrive command has been received for this slot.
     // Speed packets are only included in the cyclic refresh when this is set.
     speed_commanded: bool,
+    // True while the slot exists only to keep a POM read target refreshed.
+    // Any loco command clears it; a cleared slot is never released.
+    pom_refresh_only: bool,
     // Dirty function groups bitmask: bit0=FG1, bit1=FG2A, bit2=FG2B, bit3=FG3, bit4=FG4.
     dirty_function_groups: u8,
     // Remaining immediate retries for each dirty function group. Each group uses
@@ -92,6 +95,7 @@ impl Slot {
             dirty_speed: true,
             dirty_speed_retries: speed_retry_count(speed),
             speed_commanded: true,
+            pom_refresh_only: false,
             dirty_function_groups: 0,
             dirty_function_retries: 0,
             known_groups: 0,
@@ -438,6 +442,7 @@ impl SlotManager {
         let mut slot = Slot::new(address, LogicalSpeed::zero(format), Direction::Forward);
         slot.dirty_speed = false;
         slot.dirty_speed_retries = 0;
+        slot.pom_refresh_only = true;
         matches!(
             self.admit_new_slot(slot, false),
             SlotAdmission::Inserted { .. }
