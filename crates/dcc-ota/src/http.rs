@@ -280,7 +280,7 @@ fn authority(value: &str, ip: Ipv4Addr) -> bool {
 mod tests {
     use super::*;
     const IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
-    fn request(method: &str, path: &str, headers: &str) -> std::string::String {
+    fn request(method: &str, path: &str, headers: &str) -> String {
         std::format!("{method} {path} HTTP/1.1\r\nHost: 192.168.1.20\r\n{headers}\r\n")
     }
     #[test]

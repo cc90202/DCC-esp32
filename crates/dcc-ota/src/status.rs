@@ -148,7 +148,7 @@ impl Snapshot {
     ///
     /// # Errors
     /// Returns [`Error::Internal`] if it does not fit [`JSON_CAPACITY`].
-    pub fn json(&self) -> Result<heapless::String<JSON_CAPACITY>, Error> {
+    pub(crate) fn json(&self) -> Result<heapless::String<JSON_CAPACITY>, Error> {
         let mut json = heapless::String::new();
         self.write(&mut json).map_err(|_| Error::Internal)?;
         Ok(json)

@@ -126,6 +126,7 @@ pub trait ProvisioningFlagStore {
     fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>>;
 }
 
+#[derive(Debug)]
 pub struct WifiConfigStore<F> {
     flash: F,
 }
@@ -422,7 +423,7 @@ fn checksum(bytes: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_storage::nor_flash::{ErrorType, NorFlashError, NorFlashErrorKind};
+    use embedded_storage::nor_flash::{ErrorType, NorFlashErrorKind};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum MockFlashError {

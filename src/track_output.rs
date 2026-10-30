@@ -33,13 +33,13 @@ mod event_ring;
 mod interlock;
 
 #[cfg(any(test, feature = "bench-diag"))]
-pub use event_ring::stats;
-pub use event_ring::{
+pub(crate) use event_ring::stats;
+pub(crate) use event_ring::{
     cutout_event_notify_receiver, drain_cutout_runtime_events, railcom_packet_metadata,
 };
 pub(crate) use interlock::{inhibit_epoch, inhibited, set_inhibited};
 
-pub use crate::cutout_metadata::{CutoutRuntimeEvent, RailcomPacketMetadata};
+pub(crate) use crate::cutout_metadata::{CutoutRuntimeEvent, RailcomPacketMetadata};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +81,7 @@ diagnostic_counters! {
     /// Read only by the bench dump; the counters themselves are maintained in
     /// every build.
     #[cfg(any(test, feature = "bench-diag"))]
-    pub snapshot TrackOutputStats;
+    pub(crate) snapshot TrackOutputStats;
 
     cutout_request_count,
     cutout_started_count,
@@ -159,14 +159,14 @@ struct TrackOutputHw {
 /// [`TrackOutput::new`] builds a handle, so the methods that switch the track
 /// are reachable from the one owner alone; readers use [`is_track_enabled`].
 #[derive(Debug)]
-pub struct TrackOutput {
+pub(crate) struct TrackOutput {
     _private: (),
 }
 
 impl TrackOutput {
     /// Initialize the singleton track-output owner.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         gpio18: esp_hal::peripherals::GPIO18<'static>,
         gpio4: esp_hal::peripherals::GPIO4<'static>,
         timer0: timg::Timer<'static>,
@@ -207,7 +207,7 @@ impl TrackOutput {
 
     /// Turns the track off; never refused, so the result is only checked
     /// in debug builds.
-    pub fn disable(&mut self) {
+    pub(crate) fn disable(&mut self) {
         let disabled = self.set_track_enabled(false);
         debug_assert!(disabled);
     }
@@ -216,11 +216,11 @@ impl TrackOutput {
     ///
     /// Returns false if an enable is refused by the update interlock.
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::needless_pass_by_ref_mut,
         reason = "only the owner of the single track output may switch it"
     )]
-    pub fn set_track_enabled(&mut self, enabled: bool) -> bool {
+    pub(crate) fn set_track_enabled(&mut self, enabled: bool) -> bool {
         critical_section_with(|_| {
             if enabled && inhibited() {
                 return false;
@@ -251,14 +251,14 @@ impl TrackOutput {
     }
 
     #[must_use]
-    pub fn is_track_enabled(&self) -> bool {
+    pub(crate) fn is_track_enabled(&self) -> bool {
         is_track_enabled()
     }
 }
 
 /// Whether the track output is currently enabled, for code without the handle.
 #[must_use]
-pub fn is_track_enabled() -> bool {
+pub(crate) fn is_track_enabled() -> bool {
     TRACK_ENABLED.load(Ordering::Acquire)
 }
 
@@ -268,7 +268,7 @@ pub fn is_track_enabled() -> bool {
 /// belong to the fault manager, but GPIO18 is not left HIGH while a message is
 /// waiting in a queue.
 #[must_use]
-pub fn emergency_disable() -> bool {
+pub(crate) fn emergency_disable() -> bool {
     critical_section_with(|_| {
         TRACK_ENABLED.store(false, Ordering::Release);
         with_hw_mut(|hw| {
@@ -290,11 +290,14 @@ fn with_hw_mut<R>(operation: impl FnOnce(&mut TrackOutputHw) -> R) -> Option<R> 
         if ptr.is_null() {
             return None;
         }
+        // SAFETY: `ptr` is non-null and was published once by the owner of the
+        // `'static` cell, which is never freed.
+        let cell = unsafe { &(*ptr).0 };
         // SAFETY: `TrackOutputHwCell` documents the singleton ownership invariant.
         // `CUTOUT_STATE` remains non-idle until every ISR-side hardware access is
         // complete, preventing RMT from entering while TIMG owns the hardware.
         // The closure boundary prevents the mutable reference from escaping.
-        Some(operation(unsafe { &mut *(*ptr).0.get() }))
+        Some(operation(unsafe { &mut *cell.get() }))
     }
 }
 
@@ -395,6 +398,10 @@ fn close_realtime_window_from_isr(packet_sequence: PacketSequence, channel: Rail
 fn close_stale_window_from_isr(state: CutoutState) {
     let packet_sequence =
         PacketSequence::new(PENDING_CUTOUT_PACKET_SEQUENCE.load(Ordering::Acquire));
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "listing the variants changes the machine code of the RMT interrupt"
+    )]
     match state {
         CutoutState::Ch1Open => {
             close_realtime_window_from_isr(packet_sequence, RailcomChannel::Channel1);
@@ -453,7 +460,7 @@ fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
 }
 
 /// Complete context captured at an RMT packet boundary for one cutout request.
-pub struct CutoutRequest {
+pub(crate) struct CutoutRequest {
     pub packet_boundary_us: u32,
     pub packet_sequence: PacketSequence,
     pub dcc_packet_duration_us: u32,
@@ -468,11 +475,11 @@ pub struct CutoutRequest {
 /// hardware transition required to start the cutout.
 #[inline(always)]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".rwtext"))]
-#[allow(
+#[expect(
     clippy::needless_pass_by_value,
     reason = "the packet-boundary handler hands its request over and keeps nothing"
 )]
-pub fn request_cutout_from_isr(request: CutoutRequest) -> bool {
+pub(crate) fn request_cutout_from_isr(request: CutoutRequest) -> bool {
     let CutoutRequest {
         packet_boundary_us,
         packet_sequence,

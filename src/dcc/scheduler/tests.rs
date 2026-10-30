@@ -81,8 +81,8 @@ fn loco_request_id_preserves_wrapped_counter_values() {
     assert_eq!(id.value(), u32::MAX);
 }
 
-fn permit() -> crate::authority::LeasePermit {
-    crate::authority::LeasePermit::new(crate::authority::LeaseEpoch::new(1), u64::MAX)
+fn permit() -> LeasePermit {
+    LeasePermit::new(LeaseEpoch::new(1), u64::MAX)
 }
 
 #[test]
@@ -1106,6 +1106,10 @@ fn test_f13_f28_dirty_and_refresh() {
     let mut seen_fg3 = false;
     let mut seen_fg4 = false;
     for p in [p1, p2] {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "the test asserts on two packets and ignores the rest"
+        )]
         match p {
             DccPacket::FunctionGroup {
                 address,
@@ -1220,9 +1224,10 @@ fn test_function_refresh_bound_under_12_slots() {
         let packet = mgr
             .build_next_packet_with_function_budget(max_visits)
             .unwrap_or(DccPacket::Idle);
-        let address = match packet {
-            DccPacket::FunctionGroup { address, .. } => Some(address),
-            _ => None,
+        let address = if let DccPacket::FunctionGroup { address, .. } = packet {
+            Some(address)
+        } else {
+            None
         };
 
         if let Some(address) = address {

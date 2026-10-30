@@ -107,11 +107,11 @@ mod tests {
         }
 
         fn save(&mut self, _credentials: &WifiCredentials) -> Result<(), StoreError<Self::Error>> {
-            unimplemented!("not exercised by the boot decision")
+            unreachable!("not exercised by the boot decision")
         }
 
         fn clear(&mut self) -> Result<(), StoreError<Self::Error>> {
-            unimplemented!("not exercised by the boot decision")
+            unreachable!("not exercised by the boot decision")
         }
     }
 

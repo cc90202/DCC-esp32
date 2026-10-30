@@ -8,7 +8,6 @@ mod body;
 mod reply;
 mod requests;
 
-use core::future::Future;
 use dcc_ota::Error;
 use embassy_futures::select::{Either, select};
 use embassy_net::{Stack, tcp::TcpSocket};

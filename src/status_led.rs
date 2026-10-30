@@ -217,7 +217,7 @@ pub async fn provisioning_led_task(
 
 /// Build an output pin configured for status LEDs (active-high).
 #[must_use]
-pub fn new_led_output(pin: impl esp_hal::gpio::OutputPin + 'static) -> Output<'static> {
+pub(crate) fn new_led_output(pin: impl esp_hal::gpio::OutputPin + 'static) -> Output<'static> {
     let output_config = esp_hal::gpio::OutputConfig::default();
     Output::new(pin, Level::Low, output_config)
 }

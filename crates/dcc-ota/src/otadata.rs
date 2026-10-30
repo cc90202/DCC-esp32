@@ -285,7 +285,7 @@ mod tests {
         base.start_log();
         let mut uncut = base.clone();
         select(&mut uncut, Slot::B, EntryState::New).unwrap();
-        let cuts: std::vec::Vec<_> = uncut.cuts().collect();
+        let cuts: Vec<_> = uncut.cuts().collect();
         let new = active(read(&mut uncut).unwrap()).unwrap();
         for (call, prefix) in cuts {
             let mut flash = base.clone();

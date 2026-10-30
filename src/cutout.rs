@@ -112,29 +112,29 @@ impl From<PacketSequence> for u32 {
 /// the cutout window is padding between packets — the following packet then
 /// starts with its full untouched 20-bit preamble, comfortably above the 12
 /// post-cutout sync bits RCN-211 requires.
-pub mod timing {
+pub(crate) mod timing {
     /// Driven first-preamble-half stub emitted after the end bit so the
     /// decoder sees the RCN-217 reference edge. The brake overrides the rail
     /// from `CUTOUT_CONTROL_START_US`, so the stub only needs to outlast it.
-    pub const PREAMBLE_STUB_US: u32 = 32;
+    pub(crate) const PREAMBLE_STUB_US: u32 = 32;
     /// GPIO4 falls at the cutout-start timestamp (RCN-217 Tcs, 26-32 µs
     /// after the reference edge; mid-window for decoder margin).
-    pub const CUTOUT_CONTROL_START_US: u32 = 28;
+    pub(crate) const CUTOUT_CONTROL_START_US: u32 = 28;
     /// GPIO4 rises when RailCom channel 2 ends (454-488 µs after the
     /// reference edge).
-    pub const CUTOUT_CONTROL_END_US: u32 = 454;
+    pub(crate) const CUTOUT_CONTROL_END_US: u32 = 454;
     /// Duration of the active-low GPIO4 control pulse.
-    pub const GPIO4_LOW_DURATION_US: u32 = CUTOUT_CONTROL_END_US - CUTOUT_CONTROL_START_US;
+    pub(crate) const GPIO4_LOW_DURATION_US: u32 = CUTOUT_CONTROL_END_US - CUTOUT_CONTROL_START_US;
     /// Start and end of RailCom channel 1, relative to the final DCC edge.
-    pub const CHANNEL1_START_US: u32 = 80;
-    pub const CHANNEL1_END_US: u32 = 177;
+    pub(crate) const CHANNEL1_START_US: u32 = 80;
+    pub(crate) const CHANNEL1_END_US: u32 = 177;
     /// Start and end of RailCom channel 2, relative to the final DCC edge.
-    pub const CHANNEL2_START_US: u32 = 193;
-    pub const CHANNEL2_END_US: u32 = 454;
+    pub(crate) const CHANNEL2_START_US: u32 = 193;
+    pub(crate) const CHANNEL2_END_US: u32 = 454;
     /// UART capture opens before channel 1; the guard reserves ISR settling time.
-    pub const RX_CAPTURE_START_US: u32 = 40;
-    pub const RX_ISR_GUARD_US: u32 = 40;
-    pub const RX_CHANNEL_SPLIT_US: u32 = 185;
+    pub(crate) const RX_CAPTURE_START_US: u32 = 40;
+    pub(crate) const RX_ISR_GUARD_US: u32 = 40;
+    pub(crate) const RX_CHANNEL_SPLIT_US: u32 = 185;
 
     const _: () = assert!(CUTOUT_CONTROL_START_US >= 26 && CUTOUT_CONTROL_START_US <= 32);
     const _: () = assert!(CUTOUT_CONTROL_END_US >= 454 && CUTOUT_CONTROL_END_US <= 488);
@@ -154,14 +154,14 @@ pub mod timing {
     /// Timeline for one DCC packet followed by a RailCom cutout.
     #[cfg(any(test, target_arch = "riscv32"))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct CutoutTimeline {
+    pub(crate) struct CutoutTimeline {
         dcc_packet_duration_us: u32,
     }
 
     #[cfg(any(test, target_arch = "riscv32"))]
     impl CutoutTimeline {
         #[must_use]
-        pub const fn new(dcc_packet_duration_us: u32) -> Self {
+        pub(crate) const fn new(dcc_packet_duration_us: u32) -> Self {
             Self {
                 dcc_packet_duration_us,
             }
@@ -169,20 +169,20 @@ pub mod timing {
 
         #[must_use]
         #[cfg(test)]
-        pub const fn control_start_from_packet_start_us(self) -> u32 {
+        pub(crate) const fn control_start_from_packet_start_us(self) -> u32 {
             self.reference_edge_from_packet_start_us() + CUTOUT_CONTROL_START_US
         }
 
         /// RCN-217 reference: the zero crossing that closes the fully emitted
         /// end bit and opens the driven preamble stub.
         #[must_use]
-        pub const fn reference_edge_from_packet_start_us(self) -> u32 {
+        pub(crate) const fn reference_edge_from_packet_start_us(self) -> u32 {
             self.dcc_packet_duration_us
         }
 
         #[must_use]
         #[cfg(test)]
-        pub const fn cycle_duration_us(self) -> u32 {
+        pub(crate) const fn cycle_duration_us(self) -> u32 {
             self.reference_edge_from_packet_start_us() + CUTOUT_CONTROL_END_US
         }
     }

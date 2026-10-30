@@ -17,7 +17,7 @@ use crate::diagnostics::diagnostic_counters;
 #[cfg(target_arch = "riscv32")]
 mod actor;
 #[cfg(target_arch = "riscv32")]
-pub use actor::pom_actor_task;
+pub(crate) use actor::pom_actor_task;
 
 diagnostic_counters! {
     #[cfg(target_arch = "riscv32")]
@@ -25,7 +25,9 @@ diagnostic_counters! {
 
     /// Snapshot of POM actor timeout and attribution counters.
     ///
-    pub snapshot PomRuntimeStats;
+    /// Read by the bench dump only.
+    #[cfg(feature = "bench-diag")]
+    pub(crate) snapshot PomRuntimeStats;
 
     tx_start_timeout_count,
     response_timeout_count,
@@ -33,9 +35,9 @@ diagnostic_counters! {
     wrong_target_result_count,
 }
 
-#[cfg(target_arch = "riscv32")]
+#[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
 #[must_use]
-pub fn pom_runtime_stats() -> PomRuntimeStats {
+pub(crate) fn pom_runtime_stats() -> PomRuntimeStats {
     POM.snapshot()
 }
 
@@ -78,7 +80,7 @@ impl From<&PomRequest> for DccPacket {
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum PomResponse {
+pub(crate) enum PomResponse {
     Value { request_id: PomRequestId, value: u8 },
     Ack { request_id: PomRequestId },
     Nack { request_id: PomRequestId },
@@ -100,7 +102,7 @@ impl PomResponse {
 #[cfg(any(test, target_arch = "riscv32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum PomRailcomResult {
+pub(crate) enum PomRailcomResult {
     Window {
         request_id: PomRequestId,
         packet_sequence: PacketSequence,
@@ -114,7 +116,7 @@ pub enum PomRailcomResult {
 #[cfg(target_arch = "riscv32")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub struct PomTxStarted {
+pub(crate) struct PomTxStarted {
     pub request_id: PomRequestId,
     pub packet_sequence: PacketSequence,
 }
@@ -192,7 +194,7 @@ fn match_pom_result(
 ///
 /// [`RailcomRxResult::complete_items`]: crate::railcom::pipeline::RailcomRxResult::complete_items
 #[cfg(any(test, target_arch = "riscv32"))]
-pub fn pom_result_from_railcom_items(
+pub(crate) fn pom_result_from_railcom_items(
     request_id: PomRequestId,
     packet_sequence: PacketSequence,
     target_address: Option<DccAddress>,
@@ -543,7 +545,7 @@ mod tests {
             op: PomOp::Write(6),
         };
         for ack in [0x0f, 0xf0] {
-            let parsed = crate::railcom::parser::parse_channel2(&[ack, 0x3c]).unwrap();
+            let parsed = parse_channel2(&[ack, 0x3c]).unwrap();
             let result = pom_result_from_railcom_items(
                 pom_id(11),
                 seq(50),

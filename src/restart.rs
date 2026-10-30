@@ -31,12 +31,15 @@ pub fn restart() -> ! {
     MODEM_SYSCON::regs()
         .modem_rst_conf()
         .write(|w| unsafe { w.bits(MODEM_SYSCON_RESET_ALL) });
+    // SAFETY: 0 releases every modem block reset requested above.
     MODEM_SYSCON::regs()
         .modem_rst_conf()
         .write(|w| unsafe { w.bits(0) });
+    // SAFETY: as for MODEM_SYSCON, every bit is a modem block reset request.
     MODEM_LPCON::regs()
         .rst_conf()
         .write(|w| unsafe { w.bits(MODEM_LPCON_RESET_ALL) });
+    // SAFETY: 0 releases every modem block reset requested above.
     MODEM_LPCON::regs()
         .rst_conf()
         .write(|w| unsafe { w.bits(0) });

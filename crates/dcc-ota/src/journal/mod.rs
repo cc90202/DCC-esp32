@@ -48,9 +48,10 @@ impl Update {
     /// How the last update ended; `None` while one runs or before the first.
     #[must_use]
     pub const fn ending(self) -> Option<Ending> {
-        match self {
-            Self::Ended(_, ending) => Some(ending),
-            _ => None,
+        if let Self::Ended(_, ending) = self {
+            Some(ending)
+        } else {
+            None
         }
     }
 
@@ -192,9 +193,12 @@ impl Record {
 
     /// The candidate on trial, if it runs from `booted`.
     fn trial_in(&self, booted: Slot) -> Option<ImageId> {
-        match self.update {
-            Update::Trying(candidate) if candidate.slot() == booted => Some(candidate),
-            _ => None,
+        if let Update::Trying(candidate) = self.update
+            && candidate.slot() == booted
+        {
+            Some(candidate)
+        } else {
+            None
         }
     }
 

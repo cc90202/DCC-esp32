@@ -119,7 +119,7 @@ impl Storage for Esp {
 
 impl Feedback for Esp {
     fn show(&self, notice: Notice) {
-        notify::notify(notice);
+        notify(notice);
     }
 
     fn report(&self, event: Event) {

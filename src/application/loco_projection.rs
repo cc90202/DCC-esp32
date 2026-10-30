@@ -106,7 +106,6 @@ impl From<LocoSnapshot> for LocoState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dcc::{Direction, FunctionState, LogicalSpeed, SpeedFormat};
 
     fn address(value: u8) -> DccAddress {
         DccAddress::new_short(value).unwrap()

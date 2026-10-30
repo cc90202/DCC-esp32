@@ -15,7 +15,7 @@
 //! design changes elsewhere should not bypass its invariants.
 
 use core::cell::UnsafeCell;
-use core::mem::{ManuallyDrop, size_of};
+use core::mem::ManuallyDrop;
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -194,7 +194,7 @@ pub(crate) fn timing_stats() -> RmtTimingStats {
 ///
 /// Returns [`InitError`] if the idle waveform is malformed, RMT TX fails
 /// to start, or interrupt registration fails.
-pub fn init(
+pub(crate) fn init(
     channel: RmtChannel<'static, Blocking, Tx>,
     idle_rmt: &[PulseCode],
 ) -> Result<(), InitError> {
@@ -202,9 +202,9 @@ pub fn init(
     let idle_ref = IDLE_DATA_CELL.init(idle_data);
     IDLE_DATA_PTR.store(idle_ref as *const _ as *mut _, Ordering::Release);
 
-    // SAFETY: the RMT interrupt is not bound or enabled yet, so no reader can
-    // access either packet slot while initialization resets them.
     for slot in &PACKET_SLOTS {
+        // SAFETY: the RMT interrupt is not bound or enabled yet, so no reader can
+        // access either packet slot while initialization resets them.
         unsafe { slot.0.get().write(SharedPacket::empty()) };
     }
     PUBLISHED_PACKET_SLOT.store(NO_PACKET_SLOT, Ordering::Release);
@@ -242,7 +242,7 @@ pub fn init(
 /// data overwrites the old; use [`is_consumed`] to enforce ACK-based pacing.
 /// This internal entry point is owned by the normal-context DCC feeder task; it
 /// must not be called from an interrupt handler.
-pub fn submit_packet(
+pub(crate) fn submit_packet(
     data: &[PulseCode],
     dcc_duration_us: u32,
     cutout: CutoutMode,
@@ -289,7 +289,7 @@ pub fn submit_packet(
 
 /// Returns `true` when the ISR has consumed the last submitted packet.
 #[inline(always)]
-pub fn is_consumed() -> bool {
+pub(crate) fn is_consumed() -> bool {
     PUBLISHED_PACKET_SLOT.load(Ordering::Acquire) == NO_PACKET_SLOT
 }
 
@@ -297,7 +297,7 @@ pub fn is_consumed() -> bool {
 ///
 /// The atomic slot state remains authoritative; callers must re-check
 /// [`is_consumed`] after waking because signals are intentionally coalesced.
-pub async fn wait_for_packet_consumed() {
+pub(crate) async fn wait_for_packet_consumed() {
     PACKET_CONSUMED_SIGNAL.wait().await;
 }
 
@@ -306,7 +306,7 @@ pub async fn wait_for_packet_consumed() {
 /// Used by the feeder task as a watchdog: if this value stops advancing,
 /// the ISR is no longer running and a fault should be latched.
 #[inline(always)]
-pub fn isr_heartbeat() -> u32 {
+pub(crate) fn isr_heartbeat() -> u32 {
     ISR_HEARTBEAT.load(Ordering::Relaxed)
 }
 
@@ -461,10 +461,10 @@ fn write_data_to_rmt_ram(data: &[PulseCode], cutout_allowed: bool) {
     for (idx, &pulse) in data.iter().enumerate() {
         // SAFETY: base points to RMT channel 0 RAM at the data offset.
         // Compile-time assertions guarantee idx < MAX_DATA_PULSES < channel RAM size.
-        // The hardware is reading the preamble region (~2.3ms) so no read/write race.
-        unsafe {
-            base.add(idx).write_volatile(pulse);
-        }
+        let slot = unsafe { base.add(idx) };
+        // SAFETY: `slot` is inside channel 0 RAM (above). The hardware is reading
+        // the preamble region (~2.3ms) so no read/write race.
+        unsafe { slot.write_volatile(pulse) };
     }
 
     let end_offset = data.len() + usize::from(cutout_allowed);
@@ -474,8 +474,12 @@ fn write_data_to_rmt_ram(data: &[PulseCode], cutout_allowed: bool) {
         // output low until GPIO4 rises at the RCN-217 channel-2 end. The next
         // loop then continues with a fresh 20-bit preamble, satisfying the
         // RCN-211 sync-bit budget the cutout consumes.
+        // SAFETY: as for the data pulses; the compile-time assertions above keep
+        // the padding entry after MAX_DATA_PULSES inside channel 0 RAM.
+        let padding = unsafe { base.add(data.len()) };
+        // SAFETY: as for the data pulses, the hardware is still in the preamble.
         unsafe {
-            base.add(data.len()).write_volatile(PulseCode::new(
+            padding.write_volatile(PulseCode::new(
                 Level::High,
                 PREAMBLE_STUB_US as u16,
                 Level::Low,
@@ -485,9 +489,9 @@ fn write_data_to_rmt_ram(data: &[PulseCode], cutout_allowed: bool) {
     }
 
     // SAFETY: same as above; optional padding still fits in the channel RAM.
-    unsafe {
-        base.add(end_offset).write_volatile(PulseCode::end_marker());
-    }
+    let end = unsafe { base.add(end_offset) };
+    // SAFETY: same as above; the hardware is still in the preamble.
+    unsafe { end.write_volatile(PulseCode::end_marker()) };
 }
 
 #[inline(always)]

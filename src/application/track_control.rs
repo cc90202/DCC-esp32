@@ -228,7 +228,6 @@ pub(crate) const fn power_on_answer(track_enabled: bool, fault_latched: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::station_status::FaultCause;
 
     const RUNNING: TrackStatus = TrackStatus {
         power_on: true,

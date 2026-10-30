@@ -113,7 +113,7 @@ mod tests {
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::trivially_copy_pass_by_ref,
         reason = "matches the borrowed-reply extractor the correlator takes"
     )]

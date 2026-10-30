@@ -6,18 +6,18 @@ use crate::railcom::pipeline::RailcomRxResult;
 use crate::railcom::{PacketSequence, RailcomChannel};
 
 /// RailCom UART baud rate mandated by the protocol.
-pub const RAILCOM_UART_BAUDRATE: u32 = 250_000;
+pub(crate) const RAILCOM_UART_BAUDRATE: u32 = 250_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RailcomRxOutput {
+pub(crate) enum RailcomRxOutput {
     WindowProcessed(RailcomRxResult),
     WindowError(RailcomUartWindowError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum RailcomUartWindowError {
+pub(crate) enum RailcomUartWindowError {
     WindowTooLong {
         packet_sequence: PacketSequence,
         channel: RailcomChannel,
@@ -59,7 +59,7 @@ pub(crate) type RailcomRxOutputReceiver =
 
 #[cfg(target_arch = "riscv32")]
 #[must_use]
-pub fn railcom_uart_rx_config() -> Config {
+pub(crate) fn railcom_uart_rx_config() -> Config {
     Config::default()
         .with_baudrate(RAILCOM_UART_BAUDRATE)
         .with_parity(Parity::None)

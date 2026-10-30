@@ -24,7 +24,7 @@ use crate::cutout_metadata::{
 /// Returns a copy of the current cutout statistics.
 #[must_use]
 #[cfg(any(test, feature = "bench-diag"))]
-pub fn stats() -> TrackOutputStats {
+pub(crate) fn stats() -> TrackOutputStats {
     CUTOUT.snapshot()
 }
 
@@ -33,7 +33,9 @@ pub fn stats() -> TrackOutputStats {
 /// Returns `None` when the slot was never written, is being written, was
 /// read torn, or has already been reused by a later packet.
 #[must_use]
-pub fn railcom_packet_metadata(packet_sequence: PacketSequence) -> Option<RailcomPacketMetadata> {
+pub(crate) fn railcom_packet_metadata(
+    packet_sequence: PacketSequence,
+) -> Option<RailcomPacketMetadata> {
     let packet_sequence = packet_sequence.value();
     let slot = packet_sequence as usize % RAILCOM_PACKET_META_CAPACITY;
     let [recorded_sequence, metadata_raw, pom_request_id] =
@@ -49,7 +51,7 @@ pub fn railcom_packet_metadata(packet_sequence: PacketSequence) -> Option<Railco
 ///
 /// The counters use wrapping arithmetic because overflowing `u32` is expected
 /// during long-running operation. Per-slot generations reject torn snapshots.
-pub fn drain_cutout_runtime_events(
+pub(crate) fn drain_cutout_runtime_events(
     next_read: &mut u32,
     out: &mut Vec<CutoutRuntimeEvent, CUTOUT_EVENT_RING_CAPACITY>,
 ) {
@@ -88,6 +90,6 @@ pub fn drain_cutout_runtime_events(
 /// pushes a cutout event; the events themselves are read with
 /// [`drain_cutout_runtime_events`].
 #[must_use]
-pub fn cutout_event_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1> {
+pub(crate) fn cutout_event_notify_receiver() -> Receiver<'static, CriticalSectionRawMutex, u8, 1> {
     CUTOUT_EVENT_NOTIFY.receiver()
 }

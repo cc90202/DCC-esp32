@@ -31,7 +31,7 @@ diagnostic_counters! {
     /// counters keep being maintained in every build, only this reading side
     /// follows its consumers.
     #[cfg(any(test, feature = "bench-diag"))]
-    pub snapshot RailcomSchedulerStats;
+    pub(crate) snapshot RailcomSchedulerStats;
 
     @test reset;
 
@@ -118,7 +118,7 @@ pub(super) fn record_track_search_throttled() {
 /// Returns a copy of the scheduler-side RailCom decision counters.
 #[must_use]
 #[cfg(any(test, all(target_arch = "riscv32", feature = "bench-diag")))]
-pub fn railcom_scheduler_stats() -> RailcomSchedulerStats {
+pub(crate) fn railcom_scheduler_stats() -> RailcomSchedulerStats {
     RAILCOM_SCHEDULER.snapshot()
 }
 

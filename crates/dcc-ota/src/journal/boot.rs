@@ -141,7 +141,9 @@ impl Record {
             }
             Update::Trying(_) if cause == ResetCause::External => self.withdraw_trial(),
             Update::Trying(_) => self.roll_back(),
-            _ => self.end_transfer(Ending::Aborted),
+            Update::None | Update::Receiving(_) | Update::Ready(_) | Update::Ended(..) => {
+                self.end_transfer(Ending::Aborted)
+            }
         };
         restored.map(BootAction::Restore)
     }
@@ -172,7 +174,11 @@ impl Record {
         // before recording its trial.
         let trying = match self.update {
             Update::Trying(candidate) if candidate.slot() == booted => self,
-            _ => self.start_trial(booted)?,
+            Update::None
+            | Update::Receiving(_)
+            | Update::Ready(_)
+            | Update::Trying(_)
+            | Update::Ended(..) => self.start_trial(booted)?,
         };
         match blame {
             Blame::Candidate => trying.roll_back().ok(),

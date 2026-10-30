@@ -150,7 +150,9 @@ impl Notice {
                 left: None,
             }),
             lifecycle if lifecycle.is_running() && track_held => Some(Self::TrackOff),
-            _ => None,
+            Lifecycle::Starting | Lifecycle::Running | Lifecycle::Armed | Lifecycle::Recovery => {
+                None
+            }
         }
     }
 

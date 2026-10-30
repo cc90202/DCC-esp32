@@ -57,7 +57,7 @@ pub(crate) type ProvisioningRequestReceiver =
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum ProvisioningRequest {
+pub(crate) enum ProvisioningRequest {
     Requested,
 }
 
@@ -80,7 +80,7 @@ impl ButtonLevel {
 ///
 /// Returns immediately with `false` when the button is not pressed at
 /// decision time, so a normal boot never waits.
-pub async fn wait_for_boot_provisioning_override(button: &mut Input<'static>) -> bool {
+pub(crate) async fn wait_for_boot_provisioning_override(button: &mut Input<'static>) -> bool {
     if button.is_high() {
         return false;
     }
@@ -223,7 +223,7 @@ pub async fn resume_button_task(
 
 /// Build an input pin configured for active-low button usage.
 #[must_use]
-pub fn new_button_input(pin: impl esp_hal::gpio::InputPin + 'static) -> Input<'static> {
+pub(crate) fn new_button_input(pin: impl esp_hal::gpio::InputPin + 'static) -> Input<'static> {
     let input_config = InputConfig::default().with_pull(Pull::Up);
     Input::new(pin, input_config)
 }

@@ -84,7 +84,7 @@ fn access_point_mode_config(credentials: &WifiCredentials) -> ModeConfig {
     )
 }
 
-#[allow(
+#[expect(
     clippy::default_trait_access,
     reason = "the DNS list is embassy-net's own heapless Vec, a version this crate does not depend on"
 )]
@@ -99,7 +99,7 @@ fn provisioning_net_config() -> Config {
 /// Starts provisioning SoftAP mode and keeps the AP stack alive.
 ///
 /// This safe setup mode does not start DCC, RailCom, Z21, or track output.
-pub async fn run_provisioning_ap<S>(
+pub(crate) async fn run_provisioning_ap<S>(
     spawner: Spawner,
     wifi_peripheral: esp_hal::peripherals::WIFI<'static>,
     mut store: S,

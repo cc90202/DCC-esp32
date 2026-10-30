@@ -11,7 +11,7 @@ use super::{DIRTY_STOP_RETRY_COUNT, Slot, SlotAdmission, SlotManager, speed_retr
 impl SlotManager {
     /// Return a copy of the scheduler-owned state for one locomotive.
     #[must_use]
-    pub fn loco_snapshot(&self, address: DccAddress) -> Option<LocoSnapshot> {
+    pub(crate) fn loco_snapshot(&self, address: DccAddress) -> Option<LocoSnapshot> {
         self.slot_index(address)
             .map(|index| self.slots[index].snapshot())
     }
@@ -134,7 +134,7 @@ impl SlotManager {
     /// replace a slot. If no stopped slot is safe to replace, the request returns
     /// [`LocoRequestResult::Full`] without mutation.
     #[must_use]
-    pub fn handle_loco_request(&mut self, request: LocoRequest) -> LocoRequestResult {
+    pub(crate) fn handle_loco_request(&mut self, request: LocoRequest) -> LocoRequestResult {
         match request {
             LocoRequest::GetState { address } => self
                 .loco_snapshot(address)
@@ -209,7 +209,7 @@ impl SlotManager {
     /// Used by the tests only; production goes through `handle_loco_request`.
     #[cfg(test)]
     #[must_use]
-    pub fn set_speed(
+    pub(crate) fn set_speed(
         &mut self,
         address: DccAddress,
         speed: LogicalSpeed,
@@ -228,7 +228,7 @@ impl SlotManager {
 
     #[cfg(test)]
     #[must_use]
-    pub fn set_speed_with_format(
+    pub(crate) fn set_speed_with_format(
         &mut self,
         address: DccAddress,
         speed: LogicalSpeed,
@@ -239,7 +239,7 @@ impl SlotManager {
     }
 
     /// Request global emergency stop.
-    pub fn request_emergency_stop_all(&mut self) {
+    pub(crate) fn request_emergency_stop_all(&mut self) {
         let stopped_since = self
             .slots
             .iter()
@@ -287,7 +287,7 @@ impl SlotManager {
 
     /// Request emergency stop for a single locomotive.
     #[must_use]
-    pub fn request_emergency_stop(&mut self, address: DccAddress) -> bool {
+    pub(crate) fn request_emergency_stop(&mut self, address: DccAddress) -> bool {
         let Some(index) = self.slot_index(address) else {
             return false;
         };

@@ -44,13 +44,13 @@ mod runtime;
 mod slot_manager;
 
 #[cfg(any(test, all(target_arch = "riscv32", feature = "bench-diag")))]
-pub use railcom_policy::{RailcomSchedulerStats, railcom_scheduler_stats};
+pub(crate) use railcom_policy::{RailcomSchedulerStats, railcom_scheduler_stats};
 #[cfg(target_arch = "riscv32")]
 pub use runtime::packet_scheduler_task;
 #[cfg(any(test, target_arch = "riscv32"))]
 pub(crate) use slot_manager::PENDING_POM_CAPACITY;
 #[cfg(test)]
-pub use slot_manager::SlotManager;
+pub(crate) use slot_manager::SlotManager;
 // The speed and function types live in `dcc_protocol`; re-exported so the
 // `crate::dcc::scheduler::` and `super::` paths keep resolving.
 pub use dcc_protocol::function::{FunctionIndex, FunctionState, InvalidFunctionIndex};

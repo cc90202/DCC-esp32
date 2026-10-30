@@ -11,7 +11,7 @@ use crate::dcc::{DccAddress, PomRequestId};
 /// Cutout event published by the track-output interrupt to the RailCom tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub enum CutoutRuntimeEvent {
+pub(crate) enum CutoutRuntimeEvent {
     /// A cutout window opened after the packet with `packet_sequence`.
     Opened {
         /// Sequence number of the packet that preceded the cutout.
@@ -27,7 +27,7 @@ pub enum CutoutRuntimeEvent {
 
 /// Metadata recorded for the cutout that follows one DCC packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RailcomPacketMetadata {
+pub(crate) struct RailcomPacketMetadata {
     /// Decoder addressed by the packet, if it carried one.
     pub target_address: Option<DccAddress>,
     /// Kind of answer expected in the cutout.

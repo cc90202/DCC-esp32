@@ -21,7 +21,7 @@ const REBOOT_DELAY: Duration = Duration::from_millis(500);
 static HTTP_RX_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
 static HTTP_TX_BUFFER: StaticCell<[u8; 1536]> = StaticCell::new();
 
-pub async fn run_http_server<S>(stack: Stack<'static>, store: &mut S) -> !
+pub(super) async fn run_http_server<S>(stack: Stack<'static>, store: &mut S) -> !
 where
     S: WifiCredentialsStore,
 {

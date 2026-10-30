@@ -272,7 +272,6 @@ impl Manifest {
 mod tests {
     use super::*;
     use crate::testing::{manifest, signed, signing_key};
-    use ed25519_dalek::SigningKey;
 
     #[test]
     fn only_a_signed_canonical_header_authenticates() {

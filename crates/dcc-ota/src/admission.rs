@@ -85,7 +85,7 @@ impl Admission {
     /// [`Refusal::PendingVerify`] during a trial, [`Refusal::BootNotReady`]
     /// before arming, [`Refusal::Busy`] while locked or backing off, and for
     /// an update [`Refusal::TrackOn`] while the track is powered.
-    pub fn check(&self, now: Uptime, operation: Operation) -> Result<(), Refusal> {
+    pub(crate) fn check(&self, now: Uptime, operation: Operation) -> Result<(), Refusal> {
         match self.lifecycle {
             Lifecycle::Recovery => return Err(Refusal::Recovery),
             Lifecycle::Trial => return Err(Refusal::PendingVerify),

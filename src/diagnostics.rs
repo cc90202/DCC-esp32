@@ -87,7 +87,7 @@ macro_rules! diagnostic_counters {
         impl $counters {
             /// Loads every counter in the group into a plain snapshot.
             #[must_use]
-            $pvis fn snapshot(&self) -> $stats {
+            pub(crate) fn snapshot(&self) -> $stats {
                 $stats {
                     $(
                         $field: self

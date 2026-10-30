@@ -280,8 +280,8 @@ fn split_once_byte(bytes: &[u8], needle: u8) -> Option<(&[u8], &[u8])> {
 mod tests {
     use super::*;
 
-    fn save_request(body: &str) -> heapless::String<512> {
-        let mut request = heapless::String::new();
+    fn save_request(body: &str) -> String<512> {
+        let mut request = String::new();
         core::write!(
             &mut request,
             "POST /save HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{}",

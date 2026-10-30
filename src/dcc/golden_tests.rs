@@ -13,8 +13,6 @@
 //!
 //! The expected-bytes column is fixed: never edit it to make a test pass.
 
-use std::vec::Vec;
-
 use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::dcc::scheduler::{
     FunctionChange, FunctionIndex, LocoRequest, LocoRequestResult, LogicalSpeed, SchedulerCommand,

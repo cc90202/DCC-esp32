@@ -251,7 +251,7 @@ mod tests {
         base.start_log();
         let mut uncut = base.clone();
         let aborted = abort(&mut uncut, ready, Slot::A, Ending::Aborted).unwrap();
-        let cuts: std::vec::Vec<_> = uncut.coarse_cuts().collect();
+        let cuts: Vec<_> = uncut.coarse_cuts().collect();
         assert!(matches!(
             next_boot(&mut uncut, &aborted),
             Ok(BootAction::Restore(_) | BootAction::RunStopped(_))
@@ -292,7 +292,7 @@ mod tests {
     ) {
         let mut uncut = base.clone();
         step(&mut uncut);
-        let cuts: std::vec::Vec<_> = uncut.coarse_cuts().collect();
+        let cuts: Vec<_> = uncut.coarse_cuts().collect();
         for (call, prefix) in cuts {
             let mut flash = base.clone();
             flash.cut = Some((call, prefix));

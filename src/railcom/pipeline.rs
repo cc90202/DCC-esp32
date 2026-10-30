@@ -337,7 +337,6 @@ fn record_parsed_items(items: &[RailcomItem]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::railcom::RailcomDatagram;
     use crate::railcom::parser::{ACK_1_CODE, ACK_2_CODE, BUSY_CODE};
     use std::sync::Mutex;
 
