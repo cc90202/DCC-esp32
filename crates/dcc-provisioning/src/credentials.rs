@@ -11,11 +11,15 @@ const PASSWORD_MAX_LEN: usize = 63;
 
 /// Validation error for WiFi station credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CredentialError {
+    /// The network name is empty.
     EmptySsid,
+    /// The network name is longer than the 32 bytes Wi-Fi allows.
     SsidTooLong,
+    /// The passphrase is shorter than WPA2 allows; open networks are refused.
     PasswordTooShort,
+    /// The passphrase is longer than a WPA2 passphrase can be.
     PasswordTooLong,
 }
 

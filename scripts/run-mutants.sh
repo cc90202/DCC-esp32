@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Mutation testing of the host-compiled code: the dcc-esp32, dcc-protocol and
-# z21 library tests and the dcc-ota and dcc-ota-format tests, on x86_64. It
+# Mutation testing of the host-compiled code: the dcc-esp32, dcc-protocol,
+# dcc-provisioning and z21 library tests and the dcc-ota and dcc-ota-format
+# tests, on x86_64. It
 # takes minutes, so it is not part of scripts/check-all.sh or CI.
 #
 # --all-features is required for dcc-esp32: without bench-diag a plain host
@@ -74,8 +75,9 @@ run() {
     (cd "$root" && cargo mutants --cargo-arg=--target=x86_64-unknown-linux-gnu \
         --output "$out/$name" "$@") 2>&1 | tee "$out/$name/mutants.log" || status=$?
 }
-run firmware --package dcc-esp32 --package dcc-protocol --package z21 \
-    --test-package dcc-esp32 --test-package dcc-protocol --test-package z21 \
+run firmware --package dcc-esp32 --package dcc-protocol --package dcc-provisioning --package z21 \
+    --test-package dcc-esp32 --test-package dcc-protocol --test-package dcc-provisioning \
+    --test-package z21 \
     --all-features --exclude crates/dcc-protocol/src/validator.rs \
     --exclude-re 'FunctionState::from_bits( |$)' "$@" -- --lib -- --test-threads=1
 run ota --package dcc-ota --package dcc-ota-format "$@"

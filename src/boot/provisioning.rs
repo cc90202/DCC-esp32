@@ -6,9 +6,8 @@ use esp_storage::FlashStorage;
 
 use crate::control_buttons::{ProvisioningRequest, ProvisioningRequestReceiver};
 use crate::flash::FlashGuard;
-use crate::net::wifi_config::{
-    EspWifiConfigStore, ProvisioningFlagStore, wifi_config_store_from_partition,
-};
+use crate::net::wifi_config::{EspWifiConfigStore, wifi_config_store_from_partition};
+use dcc_provisioning::ProvisioningFlagStore;
 
 use super::{BootError, WifiConfigInitError};
 

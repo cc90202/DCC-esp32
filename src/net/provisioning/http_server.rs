@@ -8,11 +8,10 @@ use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use static_cell::StaticCell;
 
-use crate::net::wifi_config::WifiCredentialsStore;
-
-use super::html::{INVALID_FORM_PAGE, SAVE_ERROR_PAGE, SAVE_OK_PAGE, SETUP_PAGE};
-use super::http_parser::{MAX_REQUEST_BYTES, ParseError, ParsedRequest, parse_request};
-use super::net_config::SETUP_URL;
+use dcc_provisioning::WifiCredentialsStore;
+use dcc_provisioning::html::{INVALID_FORM_PAGE, SAVE_ERROR_PAGE, SAVE_OK_PAGE, SETUP_PAGE};
+use dcc_provisioning::http_parser::{MAX_REQUEST_BYTES, ParseError, ParsedRequest, parse_request};
+use dcc_provisioning::net_config::SETUP_URL;
 
 const HTTP_PORT: u16 = 80;
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);

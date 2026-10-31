@@ -4,11 +4,11 @@
 //! `decide_provisioning` policy, and clears the flag once it has been
 //! observed. Generic over the store traits so it stays host-testable.
 
-use super::credentials::WifiCredentials;
-use super::provisioning_policy::{
+use crate::credentials::WifiCredentials;
+use crate::provisioning_policy::{
     ProvisioningDecision, StoredCredentialsState, decide_provisioning,
 };
-use super::store::{ProvisioningFlagStore, StoreError, WifiCredentialsStore};
+use crate::store::{ProvisioningFlagStore, StoreError, WifiCredentialsStore};
 
 /// What a boot does with the persistent "enter setup" flag once read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +80,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::wifi_config::ProvisioningReason;
+    use crate::ProvisioningReason;
     use embedded_storage::nor_flash::NorFlashErrorKind;
 
     #[derive(Default)]

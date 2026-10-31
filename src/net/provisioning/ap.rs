@@ -16,12 +16,12 @@ use static_cell::StaticCell;
 
 use crate::net::radio::{self, WifiBringupError};
 use crate::net::wifi::wifi_runner_task;
-use crate::net::wifi_config::{CredentialError, WifiCredentials, WifiCredentialsStore};
 use crate::system_status::{DisplayEvent, PROVISIONING_SSID_LEN, ProvisioningSsid};
 
 use super::dhcp_server::run_dhcp_server;
 use super::http_server::run_http_server;
-use super::net_config::{PREFIX_LEN, SERVER_IP, SETUP_URL};
+use dcc_provisioning::net_config::{PREFIX_LEN, SERVER_IP, SETUP_URL};
+use dcc_provisioning::{CredentialError, WifiCredentials, WifiCredentialsStore};
 
 const AP_SSID_PREFIX: &str = "DCC-Setup-";
 // The name is the prefix plus four hex digits of the MAC address.

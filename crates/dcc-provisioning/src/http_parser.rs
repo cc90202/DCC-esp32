@@ -6,36 +6,57 @@ use core::str;
 use core::fmt::Write as _;
 use heapless::String;
 
-use crate::net::wifi_config::WifiCredentials;
+use crate::WifiCredentials;
 
 // Limits sized for real phone browsers: Chrome/Safari send 15-25 headers
 // (client hints included) totalling 600-900 bytes, with User-Agent lines
 // well over 128 bytes. Tighter values bounce legitimate requests with 431.
-pub(crate) const MAX_REQUEST_BYTES: usize = 2048;
-pub(crate) const MAX_HEADER_BYTES: usize = MAX_REQUEST_BYTES - MAX_BODY_BYTES;
-pub(crate) const MAX_BODY_BYTES: usize = 256;
-pub(crate) const MAX_REQUEST_LINE_BYTES: usize = 256;
-pub(crate) const MAX_HEADER_LINE_BYTES: usize = 512;
-pub(crate) const MAX_HEADER_COUNT: usize = 32;
+/// Largest request accepted, headers and body together.
+pub const MAX_REQUEST_BYTES: usize = 2048;
+/// Largest header section, request line included.
+pub const MAX_HEADER_BYTES: usize = MAX_REQUEST_BYTES - MAX_BODY_BYTES;
+/// Largest form body.
+pub const MAX_BODY_BYTES: usize = 256;
+/// Longest request line.
+pub const MAX_REQUEST_LINE_BYTES: usize = 256;
+/// Longest single header line.
+pub const MAX_HEADER_LINE_BYTES: usize = 512;
+/// Most header lines accepted.
+pub const MAX_HEADER_COUNT: usize = 32;
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ParsedRequest {
+/// A request the setup server serves.
+pub enum ParsedRequest {
+    /// `GET /`: show the setup form.
     GetRoot,
+    /// `POST /save` with a valid form.
     SaveCredentials(WifiCredentials),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ParseError {
+/// Why a request was refused; the server maps each to an HTTP status.
+pub enum ParseError {
+    /// Malformed request line, header or form.
     BadRequest,
+    /// The bytes end before the request does: read more and parse again.
     EarlyEof,
+    /// The header section is over [`MAX_HEADER_BYTES`] or a limit on its lines.
     HeaderTooLarge,
+    /// A method other than `GET` or `POST`.
     MethodNotAllowed,
+    /// A path the server does not serve.
     NotFound,
+    /// The body or the whole request is over its limit.
     PayloadTooLarge,
+    /// The request line is over [`MAX_REQUEST_LINE_BYTES`].
     RequestLineTooLong,
+    /// A form not sent as `application/x-www-form-urlencoded`.
     UnsupportedContentType,
+    /// A protocol version other than HTTP/1.0 or HTTP/1.1.
     UnsupportedVersion,
+    /// A form without `Content-Length`.
     LengthRequired,
+    /// The form is well formed but its credentials fail validation.
     InvalidCredentials,
 }
 
@@ -63,7 +84,13 @@ struct RequestMetadata<'a> {
     body_start: usize,
 }
 
-pub(crate) fn parse_request(bytes: &[u8]) -> Result<ParsedRequest, ParseError> {
+/// Parses one complete request of the setup page.
+///
+/// # Errors
+///
+/// [`ParseError::EarlyEof`] while `bytes` holds only part of the request; any
+/// other variant refuses it.
+pub fn parse_request(bytes: &[u8]) -> Result<ParsedRequest, ParseError> {
     if bytes.len() > MAX_REQUEST_BYTES {
         return Err(ParseError::PayloadTooLarge);
     }

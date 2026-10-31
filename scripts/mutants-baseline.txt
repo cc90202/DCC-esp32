@@ -456,15 +456,15 @@ src/net/provisioning/ap.rs:59:9: replace <impl core::error::Error for Provisioni
 src/net/provisioning/ap.rs:68:5: replace provisioning_ssid -> Result<String<14>, ProvisioningApError> with Ok(Default::default())
 src/net/provisioning/ap.rs:76:5: replace access_point_mode_config -> ModeConfig with Default::default()
 src/net/provisioning/ap.rs:90:5: replace provisioning_net_config -> Config with Default::default()
-src/net/provisioning/dhcp_codec.rs:20:42: replace / with %
-src/net/provisioning/dhcp_codec.rs:20:42: replace / with *
-src/net/provisioning/dhcp_codec.rs:21:43: replace * with +
-src/net/provisioning/dhcp_codec.rs:21:43: replace * with /
-src/net/provisioning/dhcp_codec.rs:21:47: replace / with %
-src/net/provisioning/dhcp_codec.rs:21:47: replace / with *
-src/net/provisioning/dhcp_codec.rs:82:20: replace < with <= in build_reply
-src/net/provisioning/dhcp_codec.rs:97:49: replace && with || in request_targets_this_server
-src/net/provisioning/http_parser.rs:249:51: replace | with ^ in decode_form_value
+crates/dcc-provisioning/src/dhcp_codec.rs:20:42: replace / with %
+crates/dcc-provisioning/src/dhcp_codec.rs:20:42: replace / with *
+crates/dcc-provisioning/src/dhcp_codec.rs:21:43: replace * with +
+crates/dcc-provisioning/src/dhcp_codec.rs:21:43: replace * with /
+crates/dcc-provisioning/src/dhcp_codec.rs:21:47: replace / with %
+crates/dcc-provisioning/src/dhcp_codec.rs:21:47: replace / with *
+crates/dcc-provisioning/src/dhcp_codec.rs:82:20: replace < with <= in build_reply
+crates/dcc-provisioning/src/dhcp_codec.rs:97:49: replace && with || in request_targets_this_server
+crates/dcc-provisioning/src/http_parser.rs:249:51: replace | with ^ in decode_form_value
 src/net/provisioning/http_server.rs:119:5: replace read_request -> RequestOutcome with Default::default()
 src/net/provisioning/http_server.rs:121:35: replace + with * in read_request
 src/net/provisioning/http_server.rs:121:35: replace + with - in read_request
@@ -607,12 +607,12 @@ src/net/wifi_config/esp_flash_store.rs:44:9: replace <impl core::error::Error fo
 src/net/wifi_config/esp_flash_store.rs:55:5: replace wifi_config_store_from_partition -> Result<EspWifiConfigStore<'a, 'd>, EspFlashStoreError> with Ok(Default::default())
 src/net/wifi_config/esp_flash_store.rs:59:44: replace == with != in wifi_config_store_from_partition
 src/net/wifi_config/esp_flash_store.rs:62:33: replace != with == in wifi_config_store_from_partition
-src/net/wifi_config/store.rs:27:44: replace + with *
-src/net/wifi_config/store.rs:28:48: replace + with *
-src/net/wifi_config/store.rs:29:44: replace + with *
-src/net/wifi_config/store.rs:329:61: replace < with <= in is_same_or_newer_generation
-src/net/wifi_config/store.rs:370:21: replace < with > in decode_record
-src/net/wifi_config/store.rs:389:48: replace > with >= in decode_record
+crates/dcc-provisioning/src/store.rs:27:44: replace + with *
+crates/dcc-provisioning/src/store.rs:28:48: replace + with *
+crates/dcc-provisioning/src/store.rs:29:44: replace + with *
+crates/dcc-provisioning/src/store.rs:329:61: replace < with <= in is_same_or_newer_generation
+crates/dcc-provisioning/src/store.rs:370:21: replace < with > in decode_record
+crates/dcc-provisioning/src/store.rs:389:48: replace > with >= in decode_record
 src/net/z21_dispatch.rs:101:5: replace route_command -> usize with 0
 src/net/z21_dispatch.rs:101:5: replace route_command -> usize with 1
 src/net/z21_dispatch.rs:118:16: delete ! in route_command

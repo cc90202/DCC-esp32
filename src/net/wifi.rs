@@ -17,10 +17,10 @@ use esp_radio::wifi::{
 use static_cell::StaticCell;
 
 use super::radio::{self, WifiBringupError};
-use crate::net::wifi_config::WifiCredentials;
 use crate::station_status::SystemStatusEvent;
 use crate::system_status::DisplayEvent;
 use crate::system_status::channels::{DisplaySender, SystemStatusSender};
+use dcc_provisioning::WifiCredentials;
 
 static NET_RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
 

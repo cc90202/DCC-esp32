@@ -64,10 +64,7 @@ use crate::net::client_watchdog::{
 };
 use crate::net::provisioning::run_provisioning_ap;
 use crate::net::udp_control::NetTaskChannels;
-use crate::net::wifi_config::{
-    EspWifiConfigStoreError, ProvisioningDecision, SetupFlag, WifiCredentials,
-    load_wifi_credentials_and_decision,
-};
+use crate::net::wifi_config::EspWifiConfigStoreError;
 use crate::railcom::pom_dispatch::pom_cutout_monitor_task;
 use crate::railcom::runtime_dispatch::railcom_uart_runtime_dispatch_task;
 use crate::railcom::uart_reader::RailcomUartRuntimeResultChannel;
@@ -80,6 +77,9 @@ use crate::system_status::channels::{
 };
 use crate::system_status::{BootStep, CriticalTask, DisplayEvent};
 use crate::track_output::TrackOutput;
+use dcc_provisioning::{
+    ProvisioningDecision, SetupFlag, WifiCredentials, load_wifi_credentials_and_decision,
+};
 
 // Static channels/signals shared across Embassy tasks.
 static DCC_CHANNEL: StaticCell<DccPacketChannel> = StaticCell::new();

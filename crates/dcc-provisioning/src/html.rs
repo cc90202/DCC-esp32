@@ -1,6 +1,7 @@
 //! Embedded provisioning HTML pages.
 
-pub(super) const SETUP_PAGE: &str = r#"<!doctype html>
+/// The form asking for network name and passphrase.
+pub const SETUP_PAGE: &str = r#"<!doctype html>
 <html lang="it">
 <head>
 <meta charset="utf-8">
@@ -38,8 +39,11 @@ input:focus{border-color:var(--accent);box-shadow:0 0 0 4px #0f6b4f22}
 </body>
 </html>"#;
 
-pub(super) const INVALID_FORM_PAGE: &str = r#"<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configura WiFi DCC</title><style>body{font-family:Georgia,"Times New Roman",serif;background:#eef3ed;color:#172019;padding:24px}main{max-width:430px;margin:auto;background:#fffdf7;border-radius:24px;padding:24px}.error{border-left:4px solid #a62626;background:#fff1ee;color:#6e1616;padding:12px;border-radius:12px}a{color:#0f6b4f;font-weight:700}</style></head><body><main><p class="error">Credenziali non valide. SSID obbligatorio, password WPA2 tra 8 e 63 caratteri.</p><p><a href="/">Torna al modulo</a></p></main></body></html>"#;
+/// Answer to a submitted form whose credentials fail validation.
+pub const INVALID_FORM_PAGE: &str = r#"<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configura WiFi DCC</title><style>body{font-family:Georgia,"Times New Roman",serif;background:#eef3ed;color:#172019;padding:24px}main{max-width:430px;margin:auto;background:#fffdf7;border-radius:24px;padding:24px}.error{border-left:4px solid #a62626;background:#fff1ee;color:#6e1616;padding:12px;border-radius:12px}a{color:#0f6b4f;font-weight:700}</style></head><body><main><p class="error">Credenziali non valide. SSID obbligatorio, password WPA2 tra 8 e 63 caratteri.</p><p><a href="/">Torna al modulo</a></p></main></body></html>"#;
 
-pub(super) const SAVE_OK_PAGE: &str = r#"<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WiFi salvato</title><style>body{font-family:Georgia,"Times New Roman",serif;background:#eef3ed;color:#172019;padding:24px}main{max-width:430px;margin:auto;background:#fffdf7;border-radius:24px;padding:24px}h1{font-size:36px;line-height:1}</style></head><body><main><h1>Credenziali salvate</h1><p>La rete WiFi e' stata salvata in flash. La centrale si riavvia e usera' queste credenziali al prossimo avvio.</p></main></body></html>"#;
+/// Answer after the credentials were saved, just before the restart.
+pub const SAVE_OK_PAGE: &str = r#"<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WiFi salvato</title><style>body{font-family:Georgia,"Times New Roman",serif;background:#eef3ed;color:#172019;padding:24px}main{max-width:430px;margin:auto;background:#fffdf7;border-radius:24px;padding:24px}h1{font-size:36px;line-height:1}</style></head><body><main><h1>Credenziali salvate</h1><p>La rete WiFi e' stata salvata in flash. La centrale si riavvia e usera' queste credenziali al prossimo avvio.</p></main></body></html>"#;
 
-pub(super) const SAVE_ERROR_PAGE: &str = r#"<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Errore salvataggio</title><style>body{font-family:Georgia,"Times New Roman",serif;background:#eef3ed;color:#172019;padding:24px}main{max-width:430px;margin:auto;background:#fffdf7;border-radius:24px;padding:24px}.error{border-left:4px solid #a62626;background:#fff1ee;color:#6e1616;padding:12px;border-radius:12px}</style></head><body><main><p class="error">Salvataggio non riuscito. Le credenziali non sono state modificate.</p><p><a href="/">Riprova</a></p></main></body></html>"#;
+/// Answer when saving to flash failed; the old credentials are untouched.
+pub const SAVE_ERROR_PAGE: &str = r#"<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Errore salvataggio</title><style>body{font-family:Georgia,"Times New Roman",serif;background:#eef3ed;color:#172019;padding:24px}main{max-width:430px;margin:auto;background:#fffdf7;border-radius:24px;padding:24px}.error{border-left:4px solid #a62626;background:#fff1ee;color:#6e1616;padding:12px;border-radius:12px}</style></head><body><main><p class="error">Salvataggio non riuscito. Le credenziali non sono state modificate.</p><p><a href="/">Riprova</a></p></main></body></html>"#;

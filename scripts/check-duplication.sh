@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Duplicated code and unused dependencies.
 #
-# - jscpd over src/, crates/dcc-protocol/src/ and crates/z21/src/ (Rust, clones
-#   of 50 tokens or more) fails when the share of duplicated lines rises above
+# - jscpd over src/, crates/dcc-protocol/src/, crates/dcc-provisioning/src/ and
+#   crates/z21/src/ (Rust, clones of 50 tokens or more) fails when the share of duplicated lines rises above
 #   max_percentage. Lower the value when a change removes duplication; never
 #   raise it.
 # - cargo machete fails on a dependency that no crate of the workspace uses.
@@ -45,7 +45,7 @@ else
     exit 1
 fi
 
-(cd "$root" && "${jscpd[@]}" src crates/dcc-protocol/src crates/z21/src --format rust --min-tokens 50 --silent \
+(cd "$root" && "${jscpd[@]}" src crates/dcc-protocol/src crates/dcc-provisioning/src crates/z21/src --format rust --min-tokens 50 --silent \
     --reporters console,json --output "$tmp")
 [[ -f "$tmp/jscpd-report.json" ]] || { echo "check-duplication: jscpd wrote no report" >&2; exit 1; }
 

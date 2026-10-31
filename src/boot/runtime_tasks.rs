@@ -21,12 +21,12 @@ use crate::dcc::scheduler::channels::{
 };
 use crate::dcc_runtime::dcc_engine_task;
 use crate::net::udp_control::{NetTaskChannels, net_task};
-use crate::net::wifi_config::WifiCredentials;
 use crate::railcom::uart_reader::RailcomRxOutputSender;
 use crate::system_status::channels::{
     BootReadySender, DisplayReceiver, DisplaySender, FaultEventSender,
 };
 use crate::system_status::{BootReadyEvent, announce_ready};
+use dcc_provisioning::WifiCredentials;
 
 use super::CriticalTaskInit;
 

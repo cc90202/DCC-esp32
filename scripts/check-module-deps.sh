@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Module dependency rules for the firmware crate, checked on the module graph
 # of both targets (host and riscv32): much of the crate only exists on one.
-# The HAL-free crates it is built on (crates/dcc-protocol, crates/z21) are
+# The HAL-free crates it is built on (crates/dcc-protocol, crates/dcc-provisioning,
+# crates/z21) are
 # checked the same way, with all their features on, and may have no cycle at
 # all: the allowlist is the firmware's.
 #
@@ -55,7 +56,7 @@ forbidden_crates=(
 targets=(x86_64-unknown-linux-gnu:host riscv32imac-unknown-none-elf:riscv32)
 
 # HAL-free workspace crates checked with an empty cycle list.
-crates=(dcc-protocol z21)
+crates=(dcc-protocol dcc-provisioning z21)
 
 base_ref="${CYCLE_BASE_REF:-origin/main}"
 
