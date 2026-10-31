@@ -8,7 +8,7 @@ mod correlated;
 mod loco_client;
 #[cfg(target_arch = "riscv32")]
 mod pom_client;
-#[cfg(any(test, target_arch = "riscv32"))]
+#[cfg(target_arch = "riscv32")]
 pub(crate) mod provisioning;
 #[cfg(target_arch = "riscv32")]
 mod radio;
@@ -26,6 +26,7 @@ mod wifi;
 pub use wifi::{NetInitError, UdpBindError};
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod update_http;
+#[cfg(target_arch = "riscv32")]
 pub mod wifi_config;
 #[cfg(target_arch = "riscv32")]
 mod z21_context;

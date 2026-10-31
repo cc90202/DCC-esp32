@@ -414,7 +414,7 @@ pub async fn display_task(
 
 #[cfg(test)]
 mod tests {
-    use crate::net::provisioning::net_config::SETUP_URL;
+    use dcc_provisioning::net_config::SETUP_URL;
 
     use super::*;
 

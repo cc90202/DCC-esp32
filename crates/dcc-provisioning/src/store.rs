@@ -6,7 +6,7 @@
 
 use core::fmt;
 
-use super::credentials::WifiCredentials;
+use crate::credentials::WifiCredentials;
 use embedded_storage::nor_flash::{NorFlash, NorFlashError, ReadNorFlash};
 
 const MAGIC: &[u8; 7] = b"DCCWIFI";
@@ -17,7 +17,7 @@ const SSID_MAX_LEN: usize = 32;
 const PASSWORD_MAX_LEN: usize = 64;
 const SECTOR_SIZE: usize = 4096;
 /// Bytes from the start of the region that the two slots occupy.
-pub(crate) const STORE_SPAN: usize = 2 * SECTOR_SIZE;
+pub const STORE_SPAN: usize = 2 * SECTOR_SIZE;
 const _: () = assert!(slot_offset(ConfigSlot::B) as usize + SECTOR_SIZE == STORE_SPAN);
 
 // Record layout, shared by `encode_record` and `decode_record`.
@@ -37,13 +37,19 @@ const CHECKSUM_OFFSET: usize = RECORD_LEN - 4;
 const _: () = assert!(RECORD_LEN.is_multiple_of(4));
 const _: () = assert!(RECORD_LEN <= SECTOR_SIZE);
 
+/// Failure of a [`WifiConfigStore`] operation; `E` is the flash backend error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StoreError<E> {
+    /// Reading a slot failed.
     FlashRead(E),
+    /// Erasing a slot failed.
     FlashErase(E),
+    /// Writing a slot failed.
     FlashWrite(E),
+    /// A slot holds data that is not a valid record.
     Corrupt,
+    /// The flag cannot be changed because no credentials are stored.
     MissingCredentials,
 }
 
@@ -106,10 +112,24 @@ impl ConfigSlot {
     }
 }
 
+/// Persistent storage of the station credentials.
 pub trait WifiCredentialsStore {
+    /// Error of the flash backend.
     type Error: NorFlashError;
 
+    /// Returns the stored credentials, or `None` when nothing is stored.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Corrupt`] when the newest record fails its checks, or
+    /// the backend error of a failed read.
     fn load(&mut self) -> Result<Option<WifiCredentials>, StoreError<Self::Error>>;
+    /// Stores `credentials` and clears the persistent setup flag, so the next
+    /// boot joins the new network.
+    ///
+    /// # Errors
+    ///
+    /// The backend error of a failed read, erase or write.
     fn save(&mut self, credentials: &WifiCredentials) -> Result<(), StoreError<Self::Error>>;
     /// Forgets the stored credentials.
     ///
@@ -118,14 +138,38 @@ pub trait WifiCredentialsStore {
     fn clear(&mut self) -> Result<(), StoreError<Self::Error>>;
 }
 
+/// Persistent "open setup on the next boot" flag, kept beside the credentials.
 pub trait ProvisioningFlagStore {
+    /// Error of the flash backend.
     type Error: NorFlashError;
 
+    /// Whether the next boot must open setup; `false` when nothing is stored.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Corrupt`] when the newest record fails its checks, or
+    /// the backend error of a failed read.
     fn force_on_next_boot(&mut self) -> Result<bool, StoreError<Self::Error>>;
+    /// Sets the flag.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::MissingCredentials`] when no record exists to carry it,
+    /// [`StoreError::Corrupt`], or the backend error of a failed access.
     fn set_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>>;
+    /// Clears the flag; with no stored record this does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Corrupt`], or the backend error of a failed access.
     fn clear_force_on_next_boot(&mut self) -> Result<(), StoreError<Self::Error>>;
 }
 
+/// Credentials and setup flag in two alternating flash sectors.
+///
+/// Every write goes to the slot not holding the newest record, with a higher
+/// generation, so a power cut during a write leaves the previous record
+/// readable. The region handed in must span at least [`STORE_SPAN`] bytes.
 #[derive(Debug)]
 pub struct WifiConfigStore<F> {
     flash: F,
@@ -156,6 +200,7 @@ enum LatestRecord {
 }
 
 impl<F> WifiConfigStore<F> {
+    /// Wraps the flash region that holds the two slots.
     pub const fn new(flash: F) -> Self {
         Self { flash }
     }

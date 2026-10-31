@@ -5,11 +5,11 @@ use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{Duration, Timer};
 
-use super::dhcp_codec::{
+use dcc_provisioning::dhcp_codec::{
     BROADCAST_IP, DHCP_CLIENT_PORT, DHCP_PACKET_BUFFER_SIZE, DHCP_SERVER_PORT,
     DhcpReplyDestination, build_reply,
 };
-use super::net_config::CLIENT_IP;
+use dcc_provisioning::net_config::CLIENT_IP;
 
 #[embassy_executor::task]
 pub(crate) async fn run_dhcp_server(stack: Stack<'static>) -> ! {

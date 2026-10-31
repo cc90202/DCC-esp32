@@ -6,7 +6,7 @@ rust-version.workspace = true
 version                = "0.1.0"
 
 [workspace]
-members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "crates/dcc-protocol", "crates/z21", "tools/ota-pack"]
+members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "crates/dcc-protocol", "crates/dcc-provisioning", "crates/z21", "tools/ota-pack"]
 default-members = ["."]
 resolver        = "3"
 
@@ -23,6 +23,7 @@ rust-version = "1.88"
 dcc-ota          = { path = "crates/dcc-ota" }
 dcc-ota-format   = { path = "crates/dcc-ota-format" }
 dcc-protocol     = { path = "crates/dcc-protocol" }
+dcc-provisioning = { path = "crates/dcc-provisioning" }
 defmt            = "1.0.1"
 ed25519-dalek    = { version = "2.2", default-features = false }
 embedded-storage = "0.3.1"
@@ -119,10 +120,10 @@ path = "./src/bin/main.rs"
 dcc-ota          = { workspace = true }
 dcc-ota-format   = { workspace = true }
 dcc-protocol     = { workspace = true }
+dcc-provisioning = { workspace = true }
 heapless         = { workspace = true }
 embedded-storage = { workspace = true }
 z21              = { workspace = true }
-smoltcp          = { version = "0.12.0", default-features = false, features = ["medium-ethernet", "proto-dhcpv4", "socket-dhcpv4"] }
 
 [target.'cfg(not(target_arch = "riscv32"))'.dependencies]
 critical-section = { version = "1.2.0", features = ["std"] }
@@ -136,6 +137,7 @@ ssd1306 = { version = "0.10", features = ["async"] }
 embedded-graphics = "0.8"
 heapless = { workspace = true, features = ["defmt"] }
 dcc-protocol = { workspace = true, features = ["defmt"] }
+dcc-provisioning = { workspace = true, features = ["defmt"] }
 z21 = { workspace = true, features = ["defmt"] }
 
 esp-rtos = { version = "0.2.0", features = [

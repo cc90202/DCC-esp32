@@ -1,0 +1,20 @@
+[package]
+edition.workspace      = true
+name                   = "dcc-provisioning"
+publish.workspace      = true
+rust-version.workspace = true
+version                = "0.1.0"
+description            = "Wi-Fi provisioning logic of the DCC command station (setup form, DHCP replies, stored credentials, boot decision), free of any HAL."
+
+[lints]
+workspace = true
+
+[features]
+# `defmt::Format` for the error and decision types, so the firmware can log them.
+defmt = ["dep:defmt"]
+
+[dependencies]
+defmt            = { workspace = true, optional = true }
+embedded-storage = { workspace = true }
+heapless         = { workspace = true }
+smoltcp          = { version = "0.12.0", default-features = false, features = ["medium-ethernet", "proto-dhcpv4", "socket-dhcpv4"] }

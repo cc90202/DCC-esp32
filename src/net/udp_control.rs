@@ -31,7 +31,6 @@ use crate::macros::bench_diag;
 use crate::net::client_watchdog::{LeaseRequestSender, LeaseResponseReceiver, LeaseTripReceiver};
 use crate::net::loco_client::reset_for_lease;
 use crate::net::pom_client::{encode_delivery, release_target, response_outcome, start_request};
-use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
 use crate::net::z21_dispatch::{
     LeaseClassification, classify_lease_activity, encode_system_state, handle_command,
@@ -41,6 +40,7 @@ use crate::system_status::channels::{
     NetStatusReceiver, SystemStatusSender,
 };
 use crate::system_status::{BootReadyEvent, announce_ready};
+use dcc_provisioning::WifiCredentials;
 use z21 as z21_proto;
 #[cfg(feature = "bench-diag")]
 use z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};

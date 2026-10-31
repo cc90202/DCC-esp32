@@ -1,49 +1,65 @@
 //! Host-testable DHCPv4 reply builder for provisioning SoftAP mode.
 
-#[cfg(target_arch = "riscv32")]
 use smoltcp::wire::{
     DHCP_CLIENT_PORT as SMOLTCP_DHCP_CLIENT_PORT, DHCP_SERVER_PORT as SMOLTCP_DHCP_SERVER_PORT,
 };
 use smoltcp::wire::{DhcpMessageType, DhcpPacket, DhcpRepr, Ipv4Address};
 
-use super::net_config::{CLIENT_IP, SERVER_IP, SUBNET_MASK};
-#[cfg(target_arch = "riscv32")]
-pub(crate) const BROADCAST_IP: Ipv4Address = Ipv4Address::BROADCAST;
-pub(crate) const UNSPECIFIED_IP: Ipv4Address = Ipv4Address::UNSPECIFIED;
-#[cfg(target_arch = "riscv32")]
-pub(crate) const DHCP_SERVER_PORT: u16 = SMOLTCP_DHCP_SERVER_PORT;
-#[cfg(target_arch = "riscv32")]
-pub(crate) const DHCP_CLIENT_PORT: u16 = SMOLTCP_DHCP_CLIENT_PORT;
-pub(crate) const DHCP_PACKET_BUFFER_SIZE: usize = 576;
+use crate::net_config::{CLIENT_IP, SERVER_IP, SUBNET_MASK};
+/// Destination of a [`DhcpReplyDestination::Broadcast`] reply.
+pub const BROADCAST_IP: Ipv4Address = Ipv4Address::BROADCAST;
+/// The all-zero address a client uses before it has a lease.
+pub const UNSPECIFIED_IP: Ipv4Address = Ipv4Address::UNSPECIFIED;
+/// UDP port the server listens on.
+pub const DHCP_SERVER_PORT: u16 = SMOLTCP_DHCP_SERVER_PORT;
+/// UDP port replies are sent to.
+pub const DHCP_CLIENT_PORT: u16 = SMOLTCP_DHCP_CLIENT_PORT;
+/// Buffer for one DHCP message: the 576 bytes every IPv4 host must accept.
+pub const DHCP_PACKET_BUFFER_SIZE: usize = 576;
 
 const LEASE_SECONDS: u32 = 3600;
 const RENEW_SECONDS: u32 = LEASE_SECONDS / 2;
 const REBIND_SECONDS: u32 = LEASE_SECONDS * 7 / 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
-pub(crate) enum DhcpReplyError {
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+/// Why no reply could be built.
+pub enum DhcpReplyError {
+    /// The request is not a valid DHCP message.
     InvalidPacket,
+    /// The reply buffer cannot hold the reply.
     BufferTooSmall,
+    /// smoltcp refused to encode the reply.
     Emit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DhcpReplyDestination {
+/// Where a reply is sent.
+pub enum DhcpReplyDestination {
+    /// To [`BROADCAST_IP`]: the client has no address yet or asked for it.
     Broadcast,
+    /// To the client's leased address.
     Unicast(Ipv4Address),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DhcpReply {
-    pub(crate) len: usize,
-    pub(crate) destination: DhcpReplyDestination,
+/// A reply written into the caller's buffer.
+pub struct DhcpReply {
+    /// Bytes of the buffer the reply fills.
+    pub len: usize,
+    /// Where to send it.
+    pub destination: DhcpReplyDestination,
 }
 
-pub(crate) fn build_reply(
-    request: &[u8],
-    reply: &mut [u8],
-) -> Result<Option<DhcpReply>, DhcpReplyError> {
+/// Answers a DISCOVER with an offer and a REQUEST for this lease with an
+/// acknowledgement, leasing [`CLIENT_IP`]; returns `None` for any other
+/// message, which needs no reply.
+///
+/// # Errors
+///
+/// [`DhcpReplyError`] when `request` is not a DHCP message or the reply
+/// cannot be written into `reply`.
+pub fn build_reply(request: &[u8], reply: &mut [u8]) -> Result<Option<DhcpReply>, DhcpReplyError> {
     let packet = DhcpPacket::new_checked(request).map_err(|_| DhcpReplyError::InvalidPacket)?;
     let request = DhcpRepr::parse(&packet).map_err(|_| DhcpReplyError::InvalidPacket)?;
 

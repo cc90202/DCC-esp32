@@ -7,7 +7,7 @@ use esp_bootloader_esp_idf::partitions::{
 };
 use esp_storage::FlashStorage;
 
-use super::store::{STORE_SPAN, StoreError, WifiConfigStore};
+use dcc_provisioning::{STORE_SPAN, StoreError, WifiConfigStore};
 
 pub(crate) const DCC_CFG_PARTITION_LABEL: &str = dcc_ota::layout::DCC_CFG.name;
 // 3 x 4 KiB sectors: slot A + slot B used by `WifiConfigStore`, plus one

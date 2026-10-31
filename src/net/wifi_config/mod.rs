@@ -1,23 +1,11 @@
-//! Host-testable WiFi provisioning policy.
+//! Wi-Fi configuration storage on the ESP32 flash.
 //!
-//! This module owns validation and boot decisions only. It deliberately does
-//! not depend on `esp-radio`, flash/NVS, GPIO, HTTP, or display code.
+//! The record format, the boot decision and the validation live in
+//! `dcc_provisioning`; this module only opens the partition that holds them.
 
-mod boot_decision;
-mod credentials;
-#[cfg(target_arch = "riscv32")]
 mod esp_flash_store;
-mod provisioning_policy;
-mod store;
 
-pub use boot_decision::{SetupFlag, load_wifi_credentials_and_decision};
-pub use credentials::{CredentialError, WifiCredentials};
-#[cfg(target_arch = "riscv32")]
 pub use esp_flash_store::{
     EspFlashStoreError, EspWifiConfigStore, EspWifiConfigStoreError,
     wifi_config_store_from_partition,
 };
-pub use provisioning_policy::{
-    ProvisioningDecision, ProvisioningReason, StoredCredentialsState, decide_provisioning,
-};
-pub use store::{ProvisioningFlagStore, StoreError, WifiConfigStore, WifiCredentialsStore};

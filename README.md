@@ -187,6 +187,7 @@ Commit messages follow Conventional Commits and are validated with `cocogitto`.
 - `src/ota/`: firmware side of the WiFi update: flash, watchdog, track interlock and display
 - `crates/dcc-protocol/`: DCC packets, their pulse encoding and timing, and the RailCom and logon data, with no hardware access
 - `crates/z21/`: pure Z21 wire protocol, independent of transport
+- `crates/dcc-provisioning/`: WiFi provisioning with no hardware access: setup page parser, DHCP replies, stored credentials and the boot decision
 - `crates/dcc-ota/`: update logic with no hardware access: journal, trial, rollback and status page data
 - `crates/dcc-ota-format/`: signed package and firmware image formats
 - `docs/specs/`: protocol and standards references

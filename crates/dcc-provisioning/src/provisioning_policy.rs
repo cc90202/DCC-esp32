@@ -2,28 +2,37 @@
 
 /// State returned by the persistent credential store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StoredCredentialsState {
+    /// A valid record holds credentials.
     Present,
+    /// Nothing was ever saved, or the record was cleared.
     Missing,
+    /// A record is there but fails its checks.
     Invalid,
 }
 
 /// Boot mode decision for WiFi startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ProvisioningDecision {
+    /// Join the stored network.
     StationMode,
+    /// Open the setup access point instead of starting the station.
     ProvisioningMode(ProvisioningReason),
 }
 
 /// Reason for entering provisioning mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ProvisioningReason {
+    /// No credentials are stored.
     MissingCredentials,
+    /// The setup button was held at boot.
     ButtonOverride,
+    /// The persistent flag in flash asked for setup on this boot.
     PersistentOverride,
+    /// The stored record is corrupt.
     InvalidStoredCredentials,
 }
 
