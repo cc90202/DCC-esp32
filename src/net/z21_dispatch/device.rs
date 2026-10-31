@@ -2,7 +2,7 @@
 
 use z21 as z21_proto;
 
-use super::encoded_len;
+use crate::net::reply::encoded_len;
 
 /// Arbitrary device serial reported to Z21 apps (no hardware identity exists).
 const DEFAULT_Z21_SERIAL_NUMBER: u32 = 0xC0FF_EE01;

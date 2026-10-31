@@ -33,6 +33,8 @@ use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::dcc::PomRequestId;
 use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
 
+#[cfg(target_arch = "riscv32")]
+pub(crate) mod channels;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod core;
 #[cfg(target_arch = "riscv32")]

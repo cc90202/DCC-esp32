@@ -6,6 +6,7 @@ use dcc_ota::{
     http::{Head, Route, Status},
     notice::Notice,
     pacing::{self, Pacing},
+    page::PAGE,
     runtime::{Admitted, Restart},
     writer::{Buffers, Writer},
 };
@@ -23,7 +24,6 @@ use crate::{
     ota::{self, UpdateGuard},
 };
 
-const PAGE: &str = include_str!("page.html");
 /// Head and package header must arrive within this time.
 const HEAD_TIMEOUT: Duration = Duration::from_secs(2);
 /// Bytes moved from the socket to flash per step.

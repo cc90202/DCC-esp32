@@ -9,7 +9,7 @@ use crate::net::railcom_lookup::{latest_railcom_sighting, railcom_sighting_for_a
 use crate::railcom::loco_tracker::RailcomLocoSighting;
 use z21::{self as z21_proto, RailcomRequestType};
 
-use super::encoded_len;
+use crate::net::reply::encoded_len;
 
 static RAILCOM_GETDATA_NO_DATA_COUNT: AtomicU32 = AtomicU32::new(0);
 

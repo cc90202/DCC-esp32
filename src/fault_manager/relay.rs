@@ -8,7 +8,7 @@ use embassy_sync::signal::Signal;
 
 #[cfg(target_arch = "riscv32")]
 use crate::{
-    dcc::{SchedulerCommand, channels::SchedulerCommandSender},
+    dcc::{SchedulerCommand, scheduler::channels::SchedulerCommandSender},
     station_status::{FaultCause, SystemStatusEvent},
     system_status::DisplayEvent,
     system_status::channels::{

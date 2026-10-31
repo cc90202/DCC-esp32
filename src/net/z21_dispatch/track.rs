@@ -8,7 +8,7 @@ use crate::application::track_control::{
 use crate::net::z21_context::Z21Ctx;
 use z21 as z21_proto;
 
-use super::encoded_len;
+use crate::net::reply::encoded_len;
 
 pub(super) fn encode_current_system_state(status_model: StatusModel, out: &mut [u8]) -> usize {
     encode_system_state(TrackStatus::from_model(status_model), out)

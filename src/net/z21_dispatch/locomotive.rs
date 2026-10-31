@@ -17,7 +17,7 @@ use crate::net::loco_client::request_loco;
 use crate::net::z21_context::Z21Ctx;
 use z21::{self as z21_proto, FunctionAction};
 
-use super::encoded_len;
+use crate::net::reply::encoded_len;
 
 static LOCO_COMMAND_REJECTED_COUNT: AtomicU32 = AtomicU32::new(0);
 

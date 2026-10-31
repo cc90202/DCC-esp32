@@ -10,7 +10,8 @@ use embassy_net::{IpAddress, IpEndpoint};
 use crate::application::LeasePermit;
 use crate::application::StatusModel;
 use crate::application::pom::PomSession;
-use crate::dcc::channels::{LocoRequestSender, LocoResponseReceiver, PomRequestSender};
+use crate::dcc::cv::channels::PomRequestSender;
+use crate::dcc::scheduler::channels::{LocoRequestSender, LocoResponseReceiver};
 use crate::system_status::channels::FaultEventSender;
 
 /// POM requests keyed by client host address; replies go to the full endpoint

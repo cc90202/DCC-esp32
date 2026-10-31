@@ -13,10 +13,12 @@ use {
 
 use super::error::CriticalTaskInitSender;
 use crate::dcc::channels::{
-    DccFrameReceiver, DccFrameSender, LocoRequestReceiver, LocoResponseSender, PowerFenceAckSender,
-    PowerQuiesceReceiver, SchedulerCommandReceiver,
+    DccFrameReceiver, DccFrameSender, PowerFenceAckSender, PowerQuiesceReceiver,
 };
 use crate::dcc::packet_scheduler_task;
+use crate::dcc::scheduler::channels::{
+    LocoRequestReceiver, LocoResponseSender, SchedulerCommandReceiver,
+};
 use crate::dcc_runtime::dcc_engine_task;
 use crate::net::udp_control::{NetTaskChannels, net_task};
 use crate::net::wifi_config::WifiCredentials;

@@ -63,14 +63,6 @@ pub(super) const fn classify_lease_activity(command: Z21Command) -> LeaseClassif
     }
 }
 
-pub(in crate::net) fn encoded_len(result: Option<usize>) -> usize {
-    let Some(len) = result else {
-        warn!("Z21 response buffer too short or response input invalid");
-        return 0;
-    };
-    len
-}
-
 /// Route one already parsed Z21 command and build any immediate response.
 pub(super) async fn handle_command(
     command: Z21Command,

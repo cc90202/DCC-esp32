@@ -2,7 +2,7 @@
 //! the device may answer with; this keeps both in step with the update
 //! crates.
 
-use dcc_ota::{Error, FlashError, Refusal, RequestError};
+use crate::{Error, FlashError, Refusal, RequestError};
 use dcc_ota_format::{
     ImageLen,
     image::ImageError,
@@ -10,7 +10,7 @@ use dcc_ota_format::{
 };
 use embedded_storage::nor_flash::NorFlashErrorKind;
 
-const PAGE: &str = include_str!("page.html");
+use super::PAGE;
 
 /// Every error the update service can report, one per distinct code path.
 fn every_error() -> impl Iterator<Item = Error> {
