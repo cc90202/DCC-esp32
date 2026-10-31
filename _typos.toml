@@ -3,7 +3,7 @@
 [files]
 extend-exclude = [
     # Italian user interface pages served by the firmware.
-    "src/net/update_http/page.html",
+    "crates/dcc-ota/src/page.html",
     "src/net/provisioning/html.rs",
 ]
 

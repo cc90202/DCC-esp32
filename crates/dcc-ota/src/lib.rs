@@ -16,6 +16,7 @@
 //! - [`admission`], [`trial`], [`status`] and [`notice`] hold the policies the
 //!   runtime applies: who may start an update, when a trial is confirmed, what
 //!   the status page and the display show;
+//! - [`page`] is the upload page itself;
 //! - [`runtime`] runs them in order on a [`runtime::Device`]: boot check,
 //!   trial, transfer and the way back to a trusted image.
 //!
@@ -34,6 +35,7 @@ pub mod layout;
 pub mod notice;
 mod otadata;
 pub mod pacing;
+pub mod page;
 pub mod runtime;
 mod sequence;
 pub mod status;
