@@ -4,11 +4,11 @@ use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Instant, with_timeout};
 
-use crate::dcc::channels::{
+use super::channels::{
     PomRailcomResultReceiver, PomRequestReceiver, PomResponseSender, PomTxStartedReceiver,
-    SchedulerCommandSender,
 };
 use crate::dcc::scheduler::SchedulerCommand;
+use crate::dcc::scheduler::channels::SchedulerCommandSender;
 use dcc_protocol::packet::DccPacket;
 
 use super::{POM, PomMismatch, PomOp, PomRequest, PomResponse, drain_channel, match_pom_result};

@@ -8,7 +8,8 @@ use defmt::{info, warn};
 
 #[cfg(feature = "bench-diag")]
 use crate::cutout::CutoutMode;
-use crate::dcc::channels::{PomRailcomResultSender, SchedulerCommandSender};
+use crate::dcc::cv::channels::PomRailcomResultSender;
+use crate::dcc::scheduler::channels::SchedulerCommandSender;
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
 use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::{FragmentWindow, RailcomLocoSighting};

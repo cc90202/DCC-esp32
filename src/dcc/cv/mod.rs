@@ -6,6 +6,8 @@
 //! transport.
 
 mod pom;
+#[cfg(target_arch = "riscv32")]
+pub(crate) use pom::channels;
 #[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
 pub(crate) use pom::pom_runtime_stats;
 #[cfg(target_arch = "riscv32")]

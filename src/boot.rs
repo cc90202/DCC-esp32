@@ -45,11 +45,15 @@ use crate::control_buttons::{
     wait_for_boot_provisioning_override,
 };
 use crate::dcc::channels::{
-    DccFrameSender, DccPacketChannel, LocoRequestChannel, LocoResponseChannel,
+    DccFrameSender, DccPacketChannel, PowerFenceAckChannel, PowerQuiesceChannel,
+};
+use crate::dcc::cv::channels::{
     PomRailcomResultChannel, PomRequestChannel, PomResponseChannel, PomTxStartedChannel,
-    PowerFenceAckChannel, PowerQuiesceChannel, SchedulerCommandChannel,
 };
 use crate::dcc::pom_actor_task;
+use crate::dcc::scheduler::channels::{
+    LocoRequestChannel, LocoResponseChannel, SchedulerCommandChannel,
+};
 use crate::fault_manager::{
     FaultEffectsSignal, FaultEffectsTaskContext, FaultManagerTaskContext, fault_effects_task,
     fault_manager_task,

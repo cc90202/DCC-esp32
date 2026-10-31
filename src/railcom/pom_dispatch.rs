@@ -6,7 +6,7 @@
 //! POM exchange and forwards matching results.
 
 use crate::cutout::CutoutMode;
-use crate::dcc::channels::PomTxStartedSender;
+use crate::dcc::cv::channels::PomTxStartedSender;
 use crate::dcc::{PomRailcomResult, PomTxStarted, pom_result_from_railcom_items};
 use crate::railcom::{PacketSequence, RailcomChannel, RailcomItem};
 use crate::track_output::{CutoutRuntimeEvent, RailcomPacketMetadata};

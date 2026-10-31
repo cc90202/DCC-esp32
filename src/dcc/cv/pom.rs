@@ -17,6 +17,8 @@ use crate::diagnostics::diagnostic_counters;
 #[cfg(target_arch = "riscv32")]
 mod actor;
 #[cfg(target_arch = "riscv32")]
+pub(crate) mod channels;
+#[cfg(target_arch = "riscv32")]
 pub(crate) use actor::pom_actor_task;
 
 diagnostic_counters! {

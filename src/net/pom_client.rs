@@ -20,11 +20,11 @@ use crate::application::pom::{
 };
 use crate::application::{LeasePermit, LocoSlots};
 use crate::dcc::PomCv;
-use crate::dcc::channels::PomRequestSender;
+use crate::dcc::cv::channels::PomRequestSender;
 use crate::dcc::{LocoRequest, PomOp, PomRequest, PomResponse};
 use crate::net::loco_client::request_loco;
+use crate::net::reply::encoded_len;
 use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
-use crate::net::z21_dispatch::encoded_len;
 use z21 as z21_proto;
 
 // Covers the single bounded POM actor attempt: TX-start waits + the

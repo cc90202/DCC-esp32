@@ -24,9 +24,8 @@ use crate::application::track_control::{
     StatusBroadcast, StatusBroadcastPlan, TrackStatus, plan_resync_broadcast, plan_status_broadcast,
 };
 use crate::authority::policy::{LeaseRequest, LeaseVerdict, lease_verdict};
-use crate::dcc::channels::{
-    LocoRequestSender, LocoResponseReceiver, PomRequestSender, PomResponseReceiver,
-};
+use crate::dcc::cv::channels::{PomRequestSender, PomResponseReceiver};
+use crate::dcc::scheduler::channels::{LocoRequestSender, LocoResponseReceiver};
 use crate::dcc::{LOCO_SLOT_CAPACITY, PomResponse};
 use crate::macros::bench_diag;
 use crate::net::client_watchdog::{LeaseRequestSender, LeaseResponseReceiver, LeaseTripReceiver};
@@ -35,7 +34,7 @@ use crate::net::pom_client::{encode_delivery, release_target, response_outcome, 
 use crate::net::wifi_config::WifiCredentials;
 use crate::net::z21_context::{LocoChannels, Z21Ctx, Z21PomSession};
 use crate::net::z21_dispatch::{
-    LeaseClassification, classify_lease_activity, encode_system_state, encoded_len, handle_command,
+    LeaseClassification, classify_lease_activity, encode_system_state, handle_command,
 };
 use crate::system_status::channels::{
     BootReadySender, DisplaySender, FaultEventSender, FaultStateWatch, NET_STATUS_OVERFLOWED,
@@ -46,7 +45,7 @@ use z21 as z21_proto;
 #[cfg(feature = "bench-diag")]
 use z21::{HEADER_SYSTEMSTATE_GETDATA, HEADER_XBUS};
 
-use super::reply::send_reply;
+use super::reply::{encoded_len, send_reply};
 use super::wifi::{NetInitError, start_network_stack};
 
 const Z21_PORT: u16 = 21105;

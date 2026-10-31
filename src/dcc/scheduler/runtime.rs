@@ -3,12 +3,10 @@
 use embassy_futures::yield_now;
 use embassy_time::Instant;
 
+use super::channels::{LocoRequestReceiver, LocoResponseSender, SchedulerCommandReceiver};
 use crate::cutout::CutoutMode;
 use crate::dcc::DccFrame;
-use crate::dcc::channels::{
-    DccFrameSender, LocoRequestReceiver, LocoResponseSender, PowerQuiesceReceiver,
-    SchedulerCommandReceiver,
-};
+use crate::dcc::channels::{DccFrameSender, PowerQuiesceReceiver};
 use crate::system_status::DisplayEvent;
 use crate::system_status::channels::DisplaySender;
 
