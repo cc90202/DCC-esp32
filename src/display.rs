@@ -9,9 +9,11 @@ use crate::system_status::channels::{BootReadySender, DisplayReceiver};
 #[cfg(target_arch = "riscv32")]
 use crate::system_status::{BootReadyEvent, OptionalPeripheralInit, announce_ready};
 #[cfg(target_arch = "riscv32")]
-use defmt::warn;
+use core::convert::Infallible;
 #[cfg(target_arch = "riscv32")]
-use embassy_time::{Duration, Instant, Timer, with_timeout};
+use defmt::{info, warn};
+#[cfg(target_arch = "riscv32")]
+use embassy_time::{Duration, Instant, Timer, with_deadline, with_timeout};
 #[cfg(target_arch = "riscv32")]
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
@@ -41,6 +43,41 @@ const THROBBER_FRAMES: [u8; 10] = [
 
 #[cfg(target_arch = "riscv32")]
 const THROBBER_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Longest one transfer to the panel may take before it is abandoned.
+///
+/// A full frame is 1 KiB, about 25 ms at 400 kHz. Without a limit, a transfer
+/// that never completes parks the task forever and the screen freezes on its
+/// last frame while the rest of the station keeps running.
+#[cfg(target_arch = "riscv32")]
+const TRANSFER_DEADLINE: Duration = Duration::from_millis(100);
+
+/// Pause between attempts to bring the panel back after a failed transfer.
+#[cfg(target_arch = "riscv32")]
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Why a transfer to the panel failed.
+#[cfg(target_arch = "riscv32")]
+#[derive(Clone, Copy, Debug, defmt::Format)]
+enum TransferError {
+    /// The I2C driver reported an error (no acknowledge, lost arbitration).
+    Bus,
+    /// The transfer did not finish within [`TRANSFER_DEADLINE`].
+    Timeout,
+}
+
+/// Run one panel transfer under [`TRANSFER_DEADLINE`].
+///
+/// Dropping an unfinished esp-hal I2C future resets the controller and clears
+/// the bus, so abandoning a stuck transfer leaves the driver usable.
+#[cfg(target_arch = "riscv32")]
+async fn transfer<E>(operation: impl Future<Output = Result<(), E>>) -> Result<(), TransferError> {
+    match with_timeout(TRANSFER_DEADLINE, operation).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(TransferError::Bus),
+        Err(_) => Err(TransferError::Timeout),
+    }
+}
 
 /// Top-left corner of the throbber, next to the state label.
 #[cfg(target_arch = "riscv32")]
@@ -262,7 +299,11 @@ async fn drain_degraded(
 }
 
 #[cfg(target_arch = "riscv32")]
-async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
+async fn render(
+    display: &mut Oled,
+    model: &DisplayModel,
+    throbber_frame: u8,
+) -> Result<(), TransferError> {
     use core::fmt::Write;
 
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
@@ -287,8 +328,7 @@ async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
             let _ = Text::new("Save and restart", Point::new(0, 56), style).draw(display);
         }
 
-        let _ = display.flush().await;
-        return;
+        return transfer(display.flush()).await;
     }
 
     // Yellow zone (pixels 0-15): title
@@ -323,7 +363,7 @@ async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
 
     let _ = Text::new(model.footer(), Point::new(0, 63), style).draw(display);
 
-    let _ = display.flush().await;
+    transfer(display.flush()).await
 }
 
 /// Redraw only the throbber area and flush that window.
@@ -332,12 +372,12 @@ async fn render(display: &mut Oled, model: &DisplayModel, throbber_frame: u8) {
 /// a throbber tick costs a few bytes on the I2C bus instead of the whole
 /// frame buffer that [`render`] sends.
 #[cfg(target_arch = "riscv32")]
-async fn render_throbber(display: &mut Oled, throbber_frame: u8) {
+async fn render_throbber(display: &mut Oled, throbber_frame: u8) -> Result<(), TransferError> {
     let _ = Rectangle::new(THROBBER_ORIGIN, THROBBER_SIZE)
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
         .draw(display);
     draw_throbber(display, THROBBER_ORIGIN, throbber_mask(throbber_frame));
-    let _ = display.flush().await;
+    transfer(display.flush()).await
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -347,7 +387,7 @@ fn throbber_mask(throbber_frame: u8) -> u8 {
 
 /// Embassy task: receives display events, updates local state, redraws the
 /// OLED. A model change redraws the whole frame; a throbber tick redraws the
-/// throbber alone.
+/// throbber alone. A failed transfer re-initializes the panel and redraws it.
 #[cfg(target_arch = "riscv32")]
 pub async fn display_task(
     i2c: Option<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
@@ -370,25 +410,51 @@ pub async fn display_task(
     let interface = I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306Async::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
-    if display.init().await.is_err() {
-        warn!("display: SSD1306 init failed, draining display events");
-        drain_degraded(receiver, ready_sender, OptionalPeripheralInit::DisplayInit).await;
-    }
-
-    announce_ready(ready_sender, BootReadyEvent::DisplayReady).await;
 
     let mut model = DisplayModel::new();
     let mut throbber_frame: u8 = 0;
 
-    // Initial render (shows "PeripheralsInit" boot step).
-    render(&mut display, &model, throbber_frame).await;
+    // Initial render shows the "PeripheralsInit" boot step.
+    let connected = match transfer(display.init()).await {
+        Ok(()) => {
+            announce_ready(ready_sender, BootReadyEvent::DisplayReady).await;
+            render(&mut display, &model, throbber_frame).await
+        }
+        Err(error) => {
+            warn!("display: SSD1306 init failed ({}), retrying", error);
+            announce_ready(
+                ready_sender,
+                BootReadyEvent::DisplayDegraded(OptionalPeripheralInit::DisplayInit),
+            )
+            .await;
+            Err(error)
+        }
+    };
+    if connected.is_err() {
+        reconnect(&mut display, &mut model, &receiver, throbber_frame).await;
+    }
 
     loop {
+        let Err(error) = drive(&mut display, &mut model, &receiver, &mut throbber_frame).await;
+        warn!("display: transfer failed ({}), re-initializing", error);
+        reconnect(&mut display, &mut model, &receiver, throbber_frame).await;
+    }
+}
+
+/// Apply display events and redraw until a transfer to the panel fails.
+#[cfg(target_arch = "riscv32")]
+async fn drive(
+    display: &mut Oled,
+    model: &mut DisplayModel,
+    receiver: &DisplayReceiver,
+    throbber_frame: &mut u8,
+) -> Result<Infallible, TransferError> {
+    loop {
         if model.state != LedState::Running {
-            throbber_frame = 0;
+            *throbber_frame = 0;
             let event = receiver.receive().await;
             model.apply(event);
-            render(&mut display, &model, throbber_frame).await;
+            render(display, model, *throbber_frame).await?;
             continue;
         }
 
@@ -396,18 +462,50 @@ pub async fn display_task(
         while model.state == LedState::Running {
             let now = Instant::now();
             if now >= next_throbber_tick {
-                advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
-                render_throbber(&mut display, throbber_frame).await;
+                advance_throbber(throbber_frame, &mut next_throbber_tick);
+                render_throbber(display, *throbber_frame).await?;
                 continue;
             }
 
             if let Ok(event) = with_timeout(next_throbber_tick - now, receiver.receive()).await {
                 model.apply(event);
-                render(&mut display, &model, throbber_frame).await;
+                render(display, model, *throbber_frame).await?;
             } else {
-                advance_throbber(&mut throbber_frame, &mut next_throbber_tick);
-                render_throbber(&mut display, throbber_frame).await;
+                advance_throbber(throbber_frame, &mut next_throbber_tick);
+                render_throbber(display, *throbber_frame).await?;
             }
+        }
+    }
+}
+
+/// Re-initialize the panel once per [`RECONNECT_INTERVAL`] until it accepts a
+/// full frame again.
+///
+/// Events keep being applied meanwhile, so their senders never block on a full
+/// channel and the first frame after recovery shows the current state.
+#[cfg(target_arch = "riscv32")]
+async fn reconnect(
+    display: &mut Oled,
+    model: &mut DisplayModel,
+    receiver: &DisplayReceiver,
+    throbber_frame: u8,
+) {
+    let mut attempts: u32 = 0;
+    loop {
+        let retry_at = Instant::now() + RECONNECT_INTERVAL;
+        while let Ok(event) = with_deadline(retry_at, receiver.receive()).await {
+            model.apply(event);
+        }
+
+        attempts += 1;
+        // `init` clears the frame buffer, so the render that follows sends
+        // the whole frame rather than only the pixels changed since the
+        // failed transfer.
+        if transfer(display.init()).await.is_ok()
+            && render(display, model, throbber_frame).await.is_ok()
+        {
+            info!("display: panel back after {} attempt(s)", attempts);
+            return;
         }
     }
 }
