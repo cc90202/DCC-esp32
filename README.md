@@ -58,7 +58,7 @@ on its own.
 
 Read this before wiring or powering anything:
 
-- [Command-station board](hardware/pcb/) — KiCad project and fabrication files of the printed board (rev A)
+- [Command-station board](hardware/pcb/) — KiCad project and fabrication files of the printed board (rev B)
 - [Breadboard wiring](docs/hardware/wiring.md) — what is connected to what, and why
 - [Components inventory](docs/hardware/components-inventory.md) — mounted, in the drawer, left the design, to buy
 
