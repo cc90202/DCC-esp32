@@ -561,9 +561,10 @@ impl LogonPairing {
         match channel {
             RailcomChannel::Channel1 => {
                 // The capture window keeps the UART's break-frame tail.
-                if let [first, second] = *strip_channel1_break_tail(raw_bytes) {
-                    self.pending_channel1 = Some((packet_sequence, [first, second]));
-                }
+                self.pending_channel1 = match *strip_channel1_break_tail(raw_bytes) {
+                    [first, second] => Some((packet_sequence, [first, second])),
+                    _ => None,
+                };
                 None
             }
             RailcomChannel::Channel2 => {
@@ -1269,10 +1270,6 @@ mod tests {
         );
     }
 
-    fn sequence(value: u32) -> PacketSequence {
-        PacketSequence::new(value)
-    }
-
     #[test]
     fn logon_pairing_reads_channel1_behind_break_tail() {
         let payload = (u64::from(0x0D_u16) << 32) | 0x12_34_56_78;
@@ -1281,14 +1278,14 @@ mod tests {
 
         assert_eq!(
             pairing.observe(
-                sequence(9),
+                PacketSequence::new(9),
                 RailcomChannel::Channel1,
                 &[0xff, raw[0], raw[1]]
             ),
             None
         );
         assert_eq!(
-            pairing.observe(sequence(9), RailcomChannel::Channel2, &raw[2..]),
+            pairing.observe(PacketSequence::new(9), RailcomChannel::Channel2, &raw[2..]),
             Some(RailcomLogonResponse::DecoderId(RailcomLogonId {
                 manufacturer_id: 0x0D,
                 decoder_id: 0x12_34_56_78,
@@ -1327,11 +1324,11 @@ mod tests {
 
         let mut pairing = LogonPairing::default();
         assert_eq!(
-            pairing.observe(sequence(3), RailcomChannel::Channel1, &channel1),
+            pairing.observe(PacketSequence::new(3), RailcomChannel::Channel1, &channel1),
             None
         );
         assert_eq!(
-            pairing.observe(sequence(3), RailcomChannel::Channel2, &channel2),
+            pairing.observe(PacketSequence::new(3), RailcomChannel::Channel2, &channel2),
             Some(RailcomLogonResponse::DecoderId(RailcomLogonId {
                 manufacturer_id: 0x001,
                 decoder_id: 0x0020_4000,

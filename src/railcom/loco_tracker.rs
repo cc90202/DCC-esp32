@@ -513,7 +513,7 @@ pub fn record_identified_address(
     critical_section::with(|cs| {
         let mut state = TRACKER_STATE.borrow_ref_mut(cs);
         // The runtime dispatch skips the identification pass for a window that
-        // completes a logon answer, so this is the only count it gets.
+        // completes a logon answer, so a select answer is counted here only.
         state.count_window();
         state.record_identified(packet_sequence, address)
     })

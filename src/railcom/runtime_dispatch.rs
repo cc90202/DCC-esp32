@@ -6,7 +6,6 @@
 
 use defmt::{info, warn};
 
-#[cfg(feature = "bench-diag")]
 use crate::cutout::CutoutMode;
 use crate::dcc::cv::channels::PomRailcomResultSender;
 use crate::dcc::scheduler::channels::SchedulerCommandSender;
@@ -229,6 +228,14 @@ fn log_pom_window(
     }
 }
 
+/// Logon packets go to the broadcast address 254 and open a telemetry cutout,
+/// so a window after a locomotive packet or a POM never holds a logon answer.
+fn may_carry_logon_answer(packet_metadata: Option<RailcomPacketMetadata>) -> bool {
+    packet_metadata.is_some_and(|metadata| {
+        metadata.target_address.is_none() && metadata.cutout == CutoutMode::Telemetry
+    })
+}
+
 fn dispatch_processed_window(
     state: &mut LogonDispatchState,
     result: &RailcomRxResult,
@@ -240,11 +247,15 @@ fn dispatch_processed_window(
         crate::track_output::railcom_packet_metadata(result.window.packet_sequence);
 
     state.forget_fragment_across_lost_windows();
-    let logon_response = state.logon_pairing.observe(
-        result.window.packet_sequence,
-        result.window.channel,
-        result.window.raw_slice(),
-    );
+    let logon_response = if may_carry_logon_answer(packet_metadata) {
+        state.logon_pairing.observe(
+            result.window.packet_sequence,
+            result.window.channel,
+            result.window.raw_slice(),
+        )
+    } else {
+        None
+    };
     // A window that completes a logon answer carries a decoder identity, not
     // address datagrams, even when its symbols also parse as an address pair.
     match logon_response {

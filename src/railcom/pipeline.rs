@@ -132,11 +132,6 @@ impl RailcomRxWindow {
     }
 
     #[must_use]
-    pub const fn raw_len(&self) -> usize {
-        self.raw_len as usize
-    }
-
-    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.raw_len == 0
     }
