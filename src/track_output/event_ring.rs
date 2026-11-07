@@ -50,7 +50,8 @@ pub(crate) fn railcom_packet_metadata(
 /// events are dropped and counted in diagnostics.
 ///
 /// The counters use wrapping arithmetic because overflowing `u32` is expected
-/// during long-running operation. Per-slot generations reject torn snapshots.
+/// during long-running operation. Per-slot generations reject torn snapshots,
+/// and the stored write count rejects a slot reused by a later lap.
 pub(crate) fn drain_cutout_runtime_events(
     next_read: &mut u32,
     out: &mut Vec<CutoutRuntimeEvent, CUTOUT_EVENT_RING_CAPACITY>,
@@ -70,7 +71,11 @@ pub(crate) fn drain_cutout_runtime_events(
         .min(CUTOUT_EVENT_RING_CAPACITY as u32);
     while remaining > 0 && out.len() < CUTOUT_EVENT_RING_CAPACITY {
         let slot = *next_read as usize % CUTOUT_EVENT_RING_CAPACITY;
-        let Some([sequence, metadata_raw, pom_request_id]) = CUTOUT_EVENT_SLOTS[slot].snapshot()
+        // A later position means the interrupt lapped this reader after it
+        // loaded the write count, and the event it wanted is gone.
+        let Some([sequence, metadata_raw, pom_request_id, _]) = CUTOUT_EVENT_SLOTS[slot]
+            .snapshot()
+            .filter(|&[.., position]| position == *next_read)
         else {
             CUTOUT
                 .cutout_event_dropped_count
