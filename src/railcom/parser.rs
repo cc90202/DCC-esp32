@@ -2,7 +2,7 @@ use core::fmt;
 
 use heapless::Vec;
 
-use crate::cutout::RailcomChannel;
+use crate::cutout::{PacketSequence, RailcomChannel};
 use crate::dcc::DccAddress;
 use dcc_protocol::railcom_data::{ExtPayload, RailcomDatagram, RailcomItem};
 
@@ -538,6 +538,45 @@ pub fn parse_logon_response_48(
         .ok_or(ParseError::InvalidLogonAddress(raw_address))?;
 
     Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
+}
+
+/// Joins the two halves of an RCN-218 logon answer across one cutout.
+///
+/// The 48-bit answer puts two symbols in channel 1 and six in channel 2 of the
+/// same cutout. The channel-1 half is held until channel 2 of that cutout
+/// arrives, then the pair goes to [`parse_logon_response_48`].
+#[derive(Debug, Default)]
+pub struct LogonPairing {
+    pending_channel1: Option<(PacketSequence, [u8; 2])>,
+}
+
+impl LogonPairing {
+    /// Feeds one receive window; returns the logon answer it completes, if any.
+    pub fn observe(
+        &mut self,
+        packet_sequence: PacketSequence,
+        channel: RailcomChannel,
+        raw_bytes: &[u8],
+    ) -> Option<RailcomLogonResponse> {
+        match channel {
+            RailcomChannel::Channel1 => {
+                // The capture window keeps the UART's break-frame tail.
+                self.pending_channel1 = match *strip_channel1_break_tail(raw_bytes) {
+                    [first, second] => Some((packet_sequence, [first, second])),
+                    _ => None,
+                };
+                None
+            }
+            RailcomChannel::Channel2 => {
+                let (pending_sequence, channel1_raw) = self.pending_channel1?;
+                if pending_sequence != packet_sequence {
+                    return None;
+                }
+                self.pending_channel1 = None;
+                parse_logon_response_48(&channel1_raw, raw_bytes).ok()
+            }
+        }
+    }
 }
 
 /// The extended datagram: the one identifier whose size is not fixed.
@@ -1228,6 +1267,72 @@ mod tests {
                 expected: 0x43,
                 actual: 0x44,
             }
+        );
+    }
+
+    #[test]
+    fn logon_pairing_reads_channel1_behind_break_tail() {
+        let payload = (u64::from(0x0D_u16) << 32) | 0x12_34_56_78;
+        let raw = encode_48_bit_for_test(15, payload);
+        let mut pairing = LogonPairing::default();
+
+        assert_eq!(
+            pairing.observe(
+                PacketSequence::new(9),
+                RailcomChannel::Channel1,
+                &[0xff, raw[0], raw[1]]
+            ),
+            None
+        );
+        assert_eq!(
+            pairing.observe(PacketSequence::new(9), RailcomChannel::Channel2, &raw[2..]),
+            Some(RailcomLogonResponse::DecoderId(RailcomLogonId {
+                manufacturer_id: 0x0D,
+                decoder_id: 0x12_34_56_78,
+            }))
+        );
+    }
+
+    #[test]
+    fn logon_channel2_half_can_also_read_as_an_address_pair() {
+        // A decoder identity whose last six symbols happen to spell
+        // app:adr_high 0, app:adr_low 4, app:pom 0. Read on its own, this
+        // channel-2 window names locomotive 4; only the pairing tells it is
+        // the tail of a logon answer.
+        let channel1 = [encode_data6_for_test(0b11_1100), encode_data6_for_test(0)];
+        let adr_high = encode_12_bit_for_test(1, 0x00);
+        let adr_low = encode_12_bit_for_test(2, 0x04);
+        let cv_data = encode_12_bit_for_test(0, 0x00);
+        let channel2 = [
+            adr_high[0],
+            adr_high[1],
+            adr_low[0],
+            adr_low[1],
+            cv_data[0],
+            cv_data[1],
+        ];
+
+        let alone = parse_channel2(&channel2).expect("tail parses as datagrams");
+        assert_eq!(
+            alone.items.as_slice(),
+            &[
+                RailcomItem::Datagram(RailcomDatagram::AdrHigh(0x00)),
+                RailcomItem::Datagram(RailcomDatagram::AdrLow(0x04)),
+                RailcomItem::Datagram(RailcomDatagram::CvData(0x00)),
+            ]
+        );
+
+        let mut pairing = LogonPairing::default();
+        assert_eq!(
+            pairing.observe(PacketSequence::new(3), RailcomChannel::Channel1, &channel1),
+            None
+        );
+        assert_eq!(
+            pairing.observe(PacketSequence::new(3), RailcomChannel::Channel2, &channel2),
+            Some(RailcomLogonResponse::DecoderId(RailcomLogonId {
+                manufacturer_id: 0x001,
+                decoder_id: 0x0020_4000,
+            }))
         );
     }
 

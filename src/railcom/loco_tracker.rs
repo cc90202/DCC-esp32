@@ -512,11 +512,8 @@ pub fn record_identified_address(
     let packet_sequence = packet_sequence.into();
     critical_section::with(|cs| {
         let mut state = TRACKER_STATE.borrow_ref_mut(cs);
-        // The logon answer is normally a window of its own, which no
-        // identification pass has counted. Nothing enforces that: a channel-2
-        // logon window whose bytes also parse as an address fragment would be
-        // counted twice. Rare enough to accept, not rare enough to claim it
-        // cannot happen.
+        // The runtime dispatch skips the identification pass for a window that
+        // completes a logon answer, so a select answer is counted here only.
         state.count_window();
         state.record_identified(packet_sequence, address)
     })

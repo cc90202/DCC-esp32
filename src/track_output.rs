@@ -97,7 +97,9 @@ diagnostic_counters! {
 }
 
 pub(crate) const CUTOUT_EVENT_RING_CAPACITY: usize = 32;
-static CUTOUT_EVENT_SLOTS: [SeqSlot<3>; CUTOUT_EVENT_RING_CAPACITY] =
+/// Packet sequence, packed metadata, POM request id and the write count of the
+/// event: the write count tells a lapped reader that the slot was reused.
+static CUTOUT_EVENT_SLOTS: [SeqSlot<4>; CUTOUT_EVENT_RING_CAPACITY] =
     [const { SeqSlot::new() }; CUTOUT_EVENT_RING_CAPACITY];
 static CUTOUT_EVENT_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -445,6 +447,7 @@ fn push_cutout_event_from_isr(event: CutoutRuntimeEvent) {
         packet_sequence.value(),
         metadata.raw(),
         pom_request_id.map_or(0, PomRequestId::value),
+        write_count,
     ]);
 
     CUTOUT_EVENT_WRITE_COUNT.store(write_count.wrapping_add(1), Ordering::Release);

@@ -6,14 +6,13 @@
 
 use defmt::{info, warn};
 
-#[cfg(feature = "bench-diag")]
 use crate::cutout::CutoutMode;
 use crate::dcc::cv::channels::PomRailcomResultSender;
 use crate::dcc::scheduler::channels::SchedulerCommandSender;
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
 use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::{FragmentWindow, RailcomLocoSighting};
-use crate::railcom::parser::{RailcomLogonResponse, parse_logon_response_48};
+use crate::railcom::parser::{LogonPairing, RailcomLogonResponse};
 use crate::railcom::pipeline::{
     RailcomRxResult, record_pom_result_dropped, record_pom_result_forwarded, rx_overflow_total,
 };
@@ -24,7 +23,7 @@ use crate::track_output::RailcomPacketMetadata;
 
 #[derive(Default)]
 struct LogonDispatchState {
-    pending_channel1: Option<(PacketSequence, [u8; 2])>,
+    logon_pairing: LogonPairing,
     /// [`rx_overflow_total`] when the last window was dispatched.
     overflows_seen: u32,
     /// Windows still to dispatch that may predate a lost one.
@@ -53,26 +52,6 @@ impl LogonDispatchState {
         if self.suspect_windows > 0 {
             self.suspect_windows -= 1;
             crate::railcom::loco_tracker::forget_pending_fragment();
-        }
-    }
-
-    fn observe_window(&mut self, result: &RailcomRxResult) -> Option<RailcomLogonResponse> {
-        match result.window.channel {
-            RailcomChannel::Channel1 if result.window.raw_len() == 2 => {
-                let raw = result.window.raw_slice();
-                self.pending_channel1 = Some((result.window.packet_sequence, [raw[0], raw[1]]));
-                None
-            }
-            RailcomChannel::Channel2 => {
-                let (packet_sequence, channel1_raw) = self.pending_channel1?;
-                if packet_sequence != result.window.packet_sequence {
-                    return None;
-                }
-
-                self.pending_channel1 = None;
-                parse_logon_response_48(&channel1_raw, result.window.raw_slice()).ok()
-            }
-            RailcomChannel::Channel1 => None,
         }
     }
 
@@ -249,6 +228,14 @@ fn log_pom_window(
     }
 }
 
+/// Logon packets go to the broadcast address 254 and open a telemetry cutout,
+/// so a window after a locomotive packet or a POM never holds a logon answer.
+fn may_carry_logon_answer(packet_metadata: Option<RailcomPacketMetadata>) -> bool {
+    packet_metadata.is_some_and(|metadata| {
+        metadata.target_address.is_none() && metadata.cutout == CutoutMode::Telemetry
+    })
+}
+
 fn dispatch_processed_window(
     state: &mut LogonDispatchState,
     result: &RailcomRxResult,
@@ -260,10 +247,22 @@ fn dispatch_processed_window(
         crate::track_output::railcom_packet_metadata(result.window.packet_sequence);
 
     state.forget_fragment_across_lost_windows();
-    record_loco_sighting(result, packet_metadata, complete_items);
-
-    if let Some(response) = state.observe_window(result) {
-        state.dispatch_response(result.window.packet_sequence, response, scheduler_sender);
+    let logon_response = if may_carry_logon_answer(packet_metadata) {
+        state.logon_pairing.observe(
+            result.window.packet_sequence,
+            result.window.channel,
+            result.window.raw_slice(),
+        )
+    } else {
+        None
+    };
+    // A window that completes a logon answer carries a decoder identity, not
+    // address datagrams, even when its symbols also parse as an address pair.
+    match logon_response {
+        Some(response) => {
+            state.dispatch_response(result.window.packet_sequence, response, scheduler_sender);
+        }
+        None => record_loco_sighting(result, packet_metadata, complete_items),
     }
 
     forward_pom_result(result, packet_metadata, complete_items, pom_result_sender);

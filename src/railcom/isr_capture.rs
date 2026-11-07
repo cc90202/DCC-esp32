@@ -33,6 +33,10 @@ static CAPTURE_WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 static CAPTURE_READY: AtomicBool = AtomicBool::new(false);
 static CAPTURE_GENERATIONS: [AtomicU32; CAPTURE_RING_CAPACITY] =
     [const { AtomicU32::new(0) }; CAPTURE_RING_CAPACITY];
+/// Write count of the window each slot holds, so a reader that the ISR lapped
+/// sees that the slot now holds a later window.
+static CAPTURE_POSITIONS: [AtomicU32; CAPTURE_RING_CAPACITY] =
+    [const { AtomicU32::new(0) }; CAPTURE_RING_CAPACITY];
 static CAPTURE_SEQUENCES: [AtomicU32; CAPTURE_RING_CAPACITY] =
     [const { AtomicU32::new(0) }; CAPTURE_RING_CAPACITY];
 static CAPTURE_CHANNELS: [AtomicU8; CAPTURE_RING_CAPACITY] =
@@ -143,6 +147,8 @@ pub(crate) fn open_window_from_isr() {
 // snapshot only when both reads return the same even value. The global write
 // counter publishes availability, while the per-slot generation prevents a
 // slow consumer from combining fields from two different ring revolutions.
+// The generation cannot tell which revolution a stable slot belongs to: the
+// position stored with the payload does.
 #[inline(always)]
 pub(crate) fn close_window_from_isr(packet_sequence: PacketSequence, channel: RailcomChannel) {
     let write_count = CAPTURE_WRITE_COUNT.load(Ordering::Relaxed);
@@ -155,6 +161,7 @@ pub(crate) fn close_window_from_isr(packet_sequence: PacketSequence, channel: Ra
         .wrapping_add(1)
         | 1;
     CAPTURE_GENERATIONS[slot].store(updating_generation, Ordering::SeqCst);
+    CAPTURE_POSITIONS[slot].store(write_count, Ordering::Relaxed);
     CAPTURE_SEQUENCES[slot].store(packet_sequence.value(), Ordering::Relaxed);
     CAPTURE_CHANNELS[slot].store(u8::from(channel), Ordering::Relaxed);
     CAPTURE_LENS[slot].store(fifo_len.min(u8::MAX as usize) as u8, Ordering::Relaxed);
@@ -206,9 +213,16 @@ fn take_captured_window(next_read: &mut u32) -> Option<CapturedWindow> {
             bytes[index] = CAPTURE_BYTES[slot][index].load(Ordering::Acquire);
         }
         let packet_sequence = PacketSequence::new(CAPTURE_SEQUENCES[slot].load(Ordering::Acquire));
+        let position = CAPTURE_POSITIONS[slot].load(Ordering::Acquire);
         let generation_after = CAPTURE_GENERATIONS[slot].load(Ordering::SeqCst);
 
-        if generation_before == generation_after && generation_after & 1 == 0 {
+        // A later position means the ISR lapped this reader after it loaded
+        // the write count: the window it wanted is gone, and the one in the
+        // slot is delivered when the reader reaches its own position.
+        if generation_before == generation_after
+            && generation_after & 1 == 0
+            && position == *next_read
+        {
             *next_read = next_read.wrapping_add(1);
             return Some(CapturedWindow {
                 packet_sequence,
