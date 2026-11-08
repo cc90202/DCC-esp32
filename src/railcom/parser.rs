@@ -180,7 +180,8 @@ pub enum ParseError {
         expected: u8,
         actual: u8,
     },
-    InvalidLogonAddress(u16),
+    /// The short info names no locomotive address; the raw address bytes.
+    InvalidLogonAddress([u8; 2]),
     UnsupportedDatagramId(u8),
     TooManyItems,
 }
@@ -217,9 +218,10 @@ impl fmt::Display for ParseError {
                 formatter,
                 "invalid RailCom logon CRC: expected {expected:#04x}, received {actual:#04x}"
             ),
-            Self::InvalidLogonAddress(address) => {
-                write!(formatter, "invalid RailCom logon address {address}")
-            }
+            Self::InvalidLogonAddress([high, low]) => write!(
+                formatter,
+                "invalid RailCom logon address bytes {high:#04x} {low:#04x}"
+            ),
             Self::UnsupportedDatagramId(id) => {
                 write!(formatter, "unsupported RailCom datagram identifier {id}")
             }
@@ -466,6 +468,11 @@ pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError
     items_from_symbols(&symbols, RailcomChannel::Channel1)
 }
 
+/// Top two bits of the first short-info byte.
+const SHORT_INFO_MARKER_MASK: u8 = 0xc0;
+/// Their value in a short info: bit 7 set, bit 6 reserved as 0.
+const SHORT_INFO_MARKER: u8 = 0x80;
+
 pub fn parse_logon_response_48(
     channel1_raw: &[u8],
     channel2_raw: &[u8],
@@ -516,10 +523,6 @@ pub fn parse_logon_response_48(
         ((useful_bits >> 8) & 0xff) as u8,
         (useful_bits & 0xff) as u8,
     ];
-    if bytes[0] & 0x80 == 0 {
-        return Err(ParseError::UnsupportedDatagramId(id));
-    }
-
     let expected_crc = dcc_protocol::logon::crc8_dallas_maxim(&bytes[..5]);
     let actual_crc = bytes[5];
     if expected_crc != actual_crc {
@@ -529,13 +532,18 @@ pub fn parse_logon_response_48(
         });
     }
 
+    // Checked after the CRC, so a corrupted frame reads as corrupted.
+    // RCN-218 §5.1: the short info starts with bits 10. ID13, the answer to
+    // a logon assign, starts with 11 and carries a valid CRC too.
+    if bytes[0] & SHORT_INFO_MARKER_MASK != SHORT_INFO_MARKER {
+        return Err(ParseError::UnsupportedDatagramId(id));
+    }
+
     // Not the two-byte address form [`DccAddress::from_address_fragments`]
-    // reads: bit 7 is the frame's own marker, required a few lines above, and
-    // the six bits below it are the RCN-218 annex D prefix.
+    // reads: below the marker sit the RCN-218 annex D prefix and A7..A0.
     let address_bytes = [bytes[0], bytes[1]];
-    let address = dcc_protocol::logon::decode_address(address_bytes).ok_or_else(|| {
-        ParseError::InvalidLogonAddress(u16::from_be_bytes([bytes[0] & 0x3f, bytes[1]]))
-    })?;
+    let address = dcc_protocol::logon::decode_address(address_bytes)
+        .ok_or(ParseError::InvalidLogonAddress(address_bytes))?;
 
     Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
 }
@@ -1190,12 +1198,20 @@ mod tests {
         );
     }
 
-    /// A short-info answer whose first two bytes are `address`, with the
-    /// remaining capability bytes zero and its CRC.
-    fn short_info_for_test(address: [u8; 2]) -> [u8; 8] {
+    /// The six bytes of a short-info answer whose first two bytes are
+    /// `address`, with the capability bytes zero and its CRC.
+    fn short_info_bytes_for_test(address: [u8; 2]) -> [u8; 6] {
         let mut bytes = [address[0], address[1], 0, 0, 0, 0];
         bytes[5] = dcc_protocol::logon::crc8_dallas_maxim(&bytes[..5]);
+        bytes
+    }
+
+    fn encode_bytes_for_test(bytes: [u8; 6]) -> [u8; 8] {
         encode_48_data_for_test(bytes.iter().fold(0, |acc, &b| (acc << 8) | u64::from(b)))
+    }
+
+    fn short_info_for_test(address: [u8; 2]) -> [u8; 8] {
+        encode_bytes_for_test(short_info_bytes_for_test(address))
     }
 
     #[test]
@@ -1220,19 +1236,28 @@ mod tests {
 
         assert_eq!(
             parse_logon_response_48(&raw[..2], &raw[2..]),
-            Err(ParseError::InvalidLogonAddress(100))
+            Err(ParseError::InvalidLogonAddress([0x80, 100]))
         );
     }
 
     #[test]
+    fn test_parse_logon_response_select_requires_the_short_info_marker() {
+        // The short info starts with bits 10; a frame starting with 11 is
+        // another answer, whatever its CRC.
+        for (first, id) in [(0xC3, 12), (0xD3, 13)] {
+            let raw = short_info_for_test([first, 0xE9]);
+
+            assert_eq!(
+                parse_logon_response_48(&raw[..2], &raw[2..]),
+                Err(ParseError::UnsupportedDatagramId(id)),
+                "first byte {first:#04x}"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_logon_response_select_long_address() {
-        let payload = (u64::from(0x83_u8) << 40)
-            | (u64::from(0xE9_u8) << 32)
-            | (u64::from(0_u8) << 24)
-            | (u64::from(0_u8) << 16)
-            | (u64::from(0_u8) << 8)
-            | u64::from(0x5F_u8);
-        let raw = encode_48_data_for_test(payload);
+        let raw = short_info_for_test([0x83, 0xE9]);
         let parsed =
             parse_logon_response_48(&raw[..2], &raw[2..]).expect("select parse must succeed");
 
@@ -1265,10 +1290,11 @@ mod tests {
 
     #[test]
     fn test_parse_logon_response_select_rejects_bad_crc() {
-        let expected = dcc_protocol::logon::crc8_dallas_maxim(&[0xB8, 3, 0, 0, 0]);
+        let mut bytes = short_info_bytes_for_test([0xB8, 3]);
+        let expected = bytes[5];
         let actual = expected ^ 0x01;
-        let payload = (u64::from(0xB8_u8) << 40) | (u64::from(3_u8) << 32) | u64::from(actual);
-        let raw = encode_48_data_for_test(payload);
+        bytes[5] = actual;
+        let raw = encode_bytes_for_test(bytes);
         let err =
             parse_logon_response_48(&raw[..2], &raw[2..]).expect_err("bad crc must be rejected");
 
