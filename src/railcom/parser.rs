@@ -530,12 +530,12 @@ pub fn parse_logon_response_48(
     }
 
     // Not the two-byte address form [`DccAddress::from_address_fragments`]
-    // reads: here bit 7 is the frame's own marker — required a few lines above,
-    // and so set for short and long alike — which leaves magnitude as the only
-    // thing that can tell the two apart in this frame.
-    let raw_address = ((u16::from(bytes[0] & 0x3f)) << 8) | u16::from(bytes[1]);
-    let address = DccAddress::from_magnitude(raw_address)
-        .ok_or(ParseError::InvalidLogonAddress(raw_address))?;
+    // reads: bit 7 is the frame's own marker, required a few lines above, and
+    // the six bits below it are the RCN-218 annex D prefix.
+    let address_bytes = [bytes[0], bytes[1]];
+    let address = dcc_protocol::logon::decode_address(address_bytes).ok_or_else(|| {
+        ParseError::InvalidLogonAddress(u16::from_be_bytes([bytes[0] & 0x3f, bytes[1]]))
+    })?;
 
     Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
 }
@@ -1190,23 +1190,37 @@ mod tests {
         );
     }
 
+    /// A short-info answer whose first two bytes are `address`, with the
+    /// remaining capability bytes zero and its CRC.
+    fn short_info_for_test(address: [u8; 2]) -> [u8; 8] {
+        let mut bytes = [address[0], address[1], 0, 0, 0, 0];
+        bytes[5] = dcc_protocol::logon::crc8_dallas_maxim(&bytes[..5]);
+        encode_48_data_for_test(bytes.iter().fold(0, |acc, &b| (acc << 8) | u64::from(b)))
+    }
+
     #[test]
     fn test_parse_logon_response_select_short_address() {
-        let payload = (u64::from(0x80_u8) << 40)
-            | (u64::from(3_u8) << 32)
-            | (u64::from(0_u8) << 24)
-            | (u64::from(0_u8) << 16)
-            | (u64::from(0_u8) << 8)
-            | u64::from(0x43_u8);
-        let raw = encode_48_data_for_test(payload);
+        // RCN-218 annex D: frame marker 0x80 plus prefix 0x38, then A6..A0.
+        let raw = short_info_for_test([0xB8, 4]);
         let parsed =
             parse_logon_response_48(&raw[..2], &raw[2..]).expect("select parse must succeed");
 
         assert_eq!(
             parsed,
             RailcomLogonResponse::Select(RailcomLogonSelect {
-                address: DccAddress::new_short(3).unwrap(),
+                address: DccAddress::new_short(4).unwrap(),
             })
+        );
+    }
+
+    #[test]
+    fn test_parse_logon_response_select_rejects_long_address_below_128() {
+        // Read as a plain number this was short address 100.
+        let raw = short_info_for_test([0x80, 100]);
+
+        assert_eq!(
+            parse_logon_response_48(&raw[..2], &raw[2..]),
+            Err(ParseError::InvalidLogonAddress(100))
         );
     }
 
@@ -1251,23 +1265,14 @@ mod tests {
 
     #[test]
     fn test_parse_logon_response_select_rejects_bad_crc() {
-        let payload = (u64::from(0x80_u8) << 40)
-            | (u64::from(3_u8) << 32)
-            | (u64::from(0_u8) << 24)
-            | (u64::from(0_u8) << 16)
-            | (u64::from(0_u8) << 8)
-            | u64::from(0x44_u8);
+        let expected = dcc_protocol::logon::crc8_dallas_maxim(&[0xB8, 3, 0, 0, 0]);
+        let actual = expected ^ 0x01;
+        let payload = (u64::from(0xB8_u8) << 40) | (u64::from(3_u8) << 32) | u64::from(actual);
         let raw = encode_48_data_for_test(payload);
         let err =
             parse_logon_response_48(&raw[..2], &raw[2..]).expect_err("bad crc must be rejected");
 
-        assert_eq!(
-            err,
-            ParseError::InvalidLogonCrc {
-                expected: 0x43,
-                actual: 0x44,
-            }
-        );
+        assert_eq!(err, ParseError::InvalidLogonCrc { expected, actual });
     }
 
     #[test]
