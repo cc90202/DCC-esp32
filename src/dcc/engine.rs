@@ -3,6 +3,7 @@
 use crate::dcc::channels::{DccFrameReceiver, PowerFenceAckSender};
 use crate::dcc::timing::{IDLE_RMT_SIZE, RMT_CLOCK_HZ};
 use crate::dcc::{DccPacket, encode_dcc_packet};
+use crate::macros::bench_diag;
 use crate::rmt_dcc as rmt_driver;
 use crate::station_status::{FaultCause, FaultEvent};
 use crate::system_status::channels::FaultEventSender;
@@ -150,6 +151,9 @@ pub(crate) async fn dcc_engine_task(
         }
 
         let frame = receiver.receive().await;
+        bench_diag! {
+            frame_queue_stats::record(frame, receiver.len());
+        }
         if let Some(generation) = frame.fence_generation() {
             // The feeder only receives after the RMT slot is consumed, and the
             // fence was appended after every preceding scheduler frame.
@@ -177,6 +181,74 @@ pub(crate) async fn dcc_engine_task(
             frame.pom_request_id(),
         );
         crate::liveness::beat(crate::liveness::Task::Dcc);
+    }
+}
+
+/// Bench diagnostic: how long frames wait between the scheduler picking them
+/// and the engine taking them, and how close the queue comes to running dry.
+///
+/// A new command waits as long as any frame picked at the same moment, so the
+/// longest wait is the delay a speed change or an emergency stop can see
+/// before reaching the RMT driver. The lowest fill level after a take shows
+/// how much of the queue depth the scheduler actually needs as a reserve.
+#[cfg(feature = "bench-diag")]
+pub(crate) mod frame_queue_stats {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    use embassy_time::Instant;
+
+    use crate::dcc::DccFrame;
+
+    static WAIT_MAX_US: AtomicU32 = AtomicU32::new(0);
+    static WAIT_TOTAL_US: AtomicU32 = AtomicU32::new(0);
+    static FRAMES: AtomicU32 = AtomicU32::new(0);
+    /// `u32::MAX` until a frame is taken in the current period.
+    static LOWEST_FILL: AtomicU32 = AtomicU32::new(u32::MAX);
+    static DRAINED: AtomicU32 = AtomicU32::new(0);
+
+    /// Queue figures since the previous [`take`].
+    #[derive(Debug, Clone, Copy, defmt::Format)]
+    pub(crate) struct FrameQueueStats {
+        pub wait_max_us: u32,
+        pub wait_avg_us: u32,
+        pub frames: u32,
+        /// Frames still queued behind the one just taken, at the lowest.
+        pub lowest_fill: Option<u32>,
+        /// Takes that left the queue empty.
+        pub drained: u32,
+    }
+
+    /// Frames the scheduler did not stamp (the boot sequence, power fences)
+    /// are left out, so the boot burst does not read as a drained queue.
+    pub(super) fn record(frame: DccFrame, queued_behind: usize) {
+        let Some(picked_at) = frame.picked_at() else {
+            return;
+        };
+        let wait_us =
+            u32::try_from(Instant::now().duration_since(picked_at).as_micros()).unwrap_or(u32::MAX);
+        let queued_behind = u32::try_from(queued_behind).unwrap_or(u32::MAX);
+        WAIT_MAX_US.fetch_max(wait_us, Ordering::Relaxed);
+        WAIT_TOTAL_US.fetch_add(wait_us, Ordering::Relaxed);
+        FRAMES.fetch_add(1, Ordering::Relaxed);
+        LOWEST_FILL.fetch_min(queued_behind, Ordering::Relaxed);
+        if queued_behind == 0 {
+            DRAINED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns the figures of the period that ends now and starts a new one.
+    #[must_use]
+    pub(crate) fn take() -> FrameQueueStats {
+        let frames = FRAMES.swap(0, Ordering::Relaxed);
+        let wait_total_us = WAIT_TOTAL_US.swap(0, Ordering::Relaxed);
+        FrameQueueStats {
+            wait_max_us: WAIT_MAX_US.swap(0, Ordering::Relaxed),
+            wait_avg_us: wait_total_us.checked_div(frames).unwrap_or(0),
+            frames,
+            lowest_fill: Some(LOWEST_FILL.swap(u32::MAX, Ordering::Relaxed))
+                .filter(|&fill| fill != u32::MAX),
+            drained: DRAINED.swap(0, Ordering::Relaxed),
+        }
     }
 }
 

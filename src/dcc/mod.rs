@@ -52,6 +52,10 @@ pub struct DccFrame {
     railcom_target_address: Option<DccAddress>,
     pom_request_id: Option<PomRequestId>,
     fence_generation: Option<PowerGeneration>,
+    /// Bench diagnostic: when the scheduler picked this frame, so the engine
+    /// can tell how long it waited in the frame queue.
+    #[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+    picked_at: Option<embassy_time::Instant>,
 }
 
 /// Monotonic identifier for a request to drain all earlier DCC frames before
@@ -104,6 +108,8 @@ impl DccFrame {
             railcom_target_address: packet.railcom_target_address(),
             pom_request_id: None,
             fence_generation: None,
+            #[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+            picked_at: None,
         }
     }
 
@@ -115,6 +121,8 @@ impl DccFrame {
             railcom_target_address: None,
             pom_request_id: None,
             fence_generation: Some(generation),
+            #[cfg(feature = "bench-diag")]
+            picked_at: None,
         }
     }
 
@@ -148,6 +156,19 @@ impl DccFrame {
     pub(crate) const fn with_pom_request_id(mut self, request_id: PomRequestId) -> Self {
         self.pom_request_id = Some(request_id);
         self
+    }
+
+    #[must_use]
+    #[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+    pub(crate) const fn with_picked_at(mut self, picked_at: embassy_time::Instant) -> Self {
+        self.picked_at = Some(picked_at);
+        self
+    }
+
+    #[must_use]
+    #[cfg(all(target_arch = "riscv32", feature = "bench-diag"))]
+    pub(crate) const fn picked_at(self) -> Option<embassy_time::Instant> {
+        self.picked_at
     }
 
     #[must_use]

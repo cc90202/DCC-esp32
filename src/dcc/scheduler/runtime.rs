@@ -7,6 +7,7 @@ use super::channels::{LocoRequestReceiver, LocoResponseSender, SchedulerCommandR
 use crate::cutout::CutoutMode;
 use crate::dcc::DccFrame;
 use crate::dcc::channels::{DccFrameSender, PowerQuiesceReceiver};
+use crate::macros::bench_diag;
 use crate::system_status::DisplayEvent;
 use crate::system_status::channels::DisplaySender;
 
@@ -36,7 +37,8 @@ pub async fn packet_scheduler_task(
             sender.send(DccFrame::fence(generation)).await;
         }
 
-        // Commands are processed with at most one packet interval (~8 ms) of latency.
+        // Commands are picked up within one packet interval (~8 ms), and the
+        // frame they produce waits behind at most one queued frame.
         while let Ok(command) = command_receiver.try_receive() {
             if let SchedulerCommand::ProgramOnMain { permit, .. } = command
                 && !crate::track_authority::accepts_current(permit)
@@ -139,6 +141,9 @@ pub async fn packet_scheduler_task(
         let mut frame = DccFrame::new(packet, cutout);
         if let Some((request_id, _)) = pom_context {
             frame = frame.with_pom_request_id(request_id);
+        }
+        bench_diag! {
+            frame = frame.with_picked_at(now);
         }
 
         // POM authority is rechecked on every retry while waiting for engine capacity.
