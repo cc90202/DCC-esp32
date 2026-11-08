@@ -7,6 +7,7 @@ use super::channels::{LocoRequestReceiver, LocoResponseSender, SchedulerCommandR
 use crate::cutout::CutoutMode;
 use crate::dcc::DccFrame;
 use crate::dcc::channels::{DccFrameSender, PowerQuiesceReceiver};
+use crate::macros::bench_diag;
 use crate::system_status::DisplayEvent;
 use crate::system_status::channels::DisplaySender;
 
@@ -140,6 +141,9 @@ pub async fn packet_scheduler_task(
         let mut frame = DccFrame::new(packet, cutout);
         if let Some((request_id, _)) = pom_context {
             frame = frame.with_pom_request_id(request_id);
+        }
+        bench_diag! {
+            frame = frame.with_picked_at(now);
         }
 
         // POM authority is rechecked on every retry while waiting for engine capacity.

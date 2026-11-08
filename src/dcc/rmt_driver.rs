@@ -147,8 +147,11 @@ impl core::error::Error for InitError {}
 
 /// Timing observed inside the RMT packet-boundary interrupt.
 ///
-/// These are diagnostic maxima in microseconds. They describe software
-/// service time, not the hardware-generated DCC or GPIO4 waveform.
+/// The maxima are in microseconds and describe software service time, not
+/// the hardware-generated DCC or GPIO4 waveform. `idle_fallbacks` counts the
+/// packet boundaries at which nothing had been published and the interrupt
+/// sent the prebuilt idle packet instead: every one is a turn the scheduler
+/// and the engine missed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 #[cfg_attr(
@@ -158,6 +161,7 @@ impl core::error::Error for InitError {}
 pub(crate) struct RmtTimingStats {
     pub max_isr_duration_us: u32,
     pub max_cutout_request_latency_us: u32,
+    pub idle_fallbacks: u32,
 }
 
 static PACKET_SLOTS: [PacketSlot; PACKET_SLOT_COUNT] = [PacketSlot::new(), PacketSlot::new()];
@@ -166,6 +170,7 @@ static PACKET_CONSUMED_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new
 static ISR_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
 static RMT_ISR_MAX_DURATION_US: AtomicU32 = AtomicU32::new(0);
 static RMT_CUTOUT_REQUEST_MAX_LATENCY_US: AtomicU32 = AtomicU32::new(0);
+static RMT_IDLE_FALLBACKS: AtomicU32 = AtomicU32::new(0);
 // Read-only after init, so no Mutex is needed, ISR reads directly via raw pointer.
 static IDLE_DATA_CELL: StaticCell<SharedPacket> = StaticCell::new();
 static IDLE_DATA_PTR: AtomicPtr<SharedPacket> = AtomicPtr::new(core::ptr::null_mut());
@@ -182,6 +187,7 @@ pub(crate) fn timing_stats() -> RmtTimingStats {
     RmtTimingStats {
         max_isr_duration_us: RMT_ISR_MAX_DURATION_US.load(Ordering::Acquire),
         max_cutout_request_latency_us: RMT_CUTOUT_REQUEST_MAX_LATENCY_US.load(Ordering::Acquire),
+        idle_fallbacks: RMT_IDLE_FALLBACKS.load(Ordering::Relaxed),
     }
 }
 
@@ -212,6 +218,7 @@ pub(crate) fn init(
     ISR_HEARTBEAT.store(0, Ordering::Relaxed);
     RMT_ISR_MAX_DURATION_US.store(0, Ordering::Relaxed);
     RMT_CUTOUT_REQUEST_MAX_LATENCY_US.store(0, Ordering::Relaxed);
+    RMT_IDLE_FALLBACKS.store(0, Ordering::Relaxed);
 
     let tx = channel
         .transmit_continuously(idle_rmt, LoopMode::InfiniteWithInterrupt(1))
@@ -383,6 +390,7 @@ fn rmt_interrupt() {
 
         write_data_to_rmt_ram(data, cutout_allowed);
     } else {
+        RMT_IDLE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
         // IDLE_DATA is read-only after init, so no critical section is needed.
         let idle_ptr = IDLE_DATA_PTR.load(Ordering::Relaxed);
         if !idle_ptr.is_null() {
