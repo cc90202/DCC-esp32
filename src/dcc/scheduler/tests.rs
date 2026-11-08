@@ -2,10 +2,11 @@ use super::core::handle_loco_request_message;
 use super::railcom_policy::{
     PacketClass, RAILCOM_MIN_PACKET_GAP, RailcomCutoutBudget, reset_railcom_scheduler_stats,
 };
+use super::slot_manager::same_address_different_packet;
 use super::slot_manager::{
     DIRTY_FUNCTION_RETRY_COUNT, DIRTY_STOP_RETRY_COUNT, MAX_FUNCTION_REFRESH_MS,
-    allowed_slot_visits_without_function, pom_cutout, scheduler_invariant_recovery_count,
-    scheduler_tick_ms_for_slot_count,
+    STOPPED_REFRESH_PERIOD_TURNS, allowed_slot_visits_without_function, pom_cutout,
+    scheduler_invariant_recovery_count, scheduler_tick_ms_for_slot_count,
 };
 use super::*;
 use crate::dcc::CutoutMode;
@@ -70,7 +71,8 @@ fn drain_pending_slot_transmissions(manager: &mut SlotManager) {
         if !manager.has_pending_slot_transmissions_for_test() {
             return;
         }
-        assert!(manager.build_next_packet().is_some());
+        // An empty turn is the idle gap a blocked command waits for.
+        let _ = manager.build_next_packet();
     }
     panic!("slot transmissions did not quiesce within the bounded test budget");
 }
@@ -892,6 +894,12 @@ fn test_dirty_priority() {
 
     let _ = mgr.set_speed(addr(2), ls(25, SpeedFormat::Speed28), Direction::Forward);
 
+    // The last packet went to loco 2, so its new speed waits one turn, which
+    // goes to loco 1's refresh.
+    assert!(matches!(
+        mgr.build_next_packet(),
+        Some(DccPacket::Speed28 { address, .. }) if address == addr(1)
+    ));
     let p = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 { address, speed, .. } = p else {
         panic!("expected Speed28, got {p:?}");
@@ -972,6 +980,7 @@ fn test_dirty_cleared_after_build() {
     assert_eq!(address, addr(1));
 
     let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Reverse);
+    assert_eq!(mgr.build_next_packet(), None);
     let p3 = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 {
         speed, direction, ..
@@ -989,12 +998,14 @@ fn test_set_function_generates_function_packets() {
     assert!(set_function(&mut mgr, addr(3), 0, true)); // FL
     assert!(set_function(&mut mgr, addr(3), 5, true)); // F5
 
-    // Speed is dirty first (slot default).
-    let _ = mgr.build_next_packet().unwrap();
-
-    // Then function dirty groups should be emitted.
-    let p = mgr.build_next_packet().unwrap();
-    assert!(matches!(p, DccPacket::FunctionGroup { .. }));
+    // A function-only slot has no dirty speed: the two dirty groups go out
+    // with an idle turn between them.
+    let p1 = mgr.build_next_packet().unwrap();
+    assert!(matches!(p1, DccPacket::FunctionGroup { .. }));
+    assert_eq!(mgr.build_next_packet(), None);
+    let p2 = mgr.build_next_packet().unwrap();
+    assert!(matches!(p2, DccPacket::FunctionGroup { .. }));
+    assert_ne!(p1, p2);
 }
 
 #[test]
@@ -1003,13 +1014,14 @@ fn test_function_refresh_fairness_speed_then_function() {
     let _ = mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward);
     let _ = set_function(&mut mgr, addr(1), 1, true);
 
-    // Drain dirty speed + dirty function groups.
-    for _ in 0..=usize::from(DIRTY_FUNCTION_RETRY_COUNT) {
-        let _ = mgr.build_next_packet();
-    }
+    drain_pending_slot_transmissions(&mut mgr);
 
-    // Refresh should alternate speed/function for slot with active functions.
+    // Refresh should alternate speed/function for slot with active functions,
+    // with an idle turn between the two different packets (the first one
+    // after the drained function copies included).
+    assert_eq!(mgr.build_next_packet(), None);
     let p1 = mgr.build_next_packet().unwrap();
+    assert_eq!(mgr.build_next_packet(), None);
     let p2 = mgr.build_next_packet().unwrap();
     assert!(matches!(
         p1,
@@ -1076,8 +1088,10 @@ fn test_recovery_after_emergency_stop() {
     let p = mgr.build_next_packet().unwrap();
     assert!(matches!(p, DccPacket::EmergencyStop { .. }));
 
-    // New command after e-stop should be emitted as dirty speed update.
+    // New command after e-stop should be emitted as dirty speed update, one
+    // idle turn after the e-stop packet to the same address.
     let _ = mgr.set_speed(addr(1), ls(12, SpeedFormat::Speed28), Direction::Reverse);
+    assert_eq!(mgr.build_next_packet(), None);
     let p2 = mgr.build_next_packet().unwrap();
     let DccPacket::Speed28 {
         address,
@@ -1099,8 +1113,10 @@ fn test_f13_f28_dirty_and_refresh() {
     assert!(set_function(&mut mgr, addr(3), 25, true)); // F25 in FG4
 
     // No dirty speed when slot is created by function-only command.
-    // First two packets should be dirty function groups FG3 and FG4.
+    // The dirty function groups FG3 and FG4 go out with an idle turn between
+    // them, as they are different packets to the same address.
     let p1 = mgr.build_next_packet().unwrap();
+    assert_eq!(mgr.build_next_packet(), None);
     let p2 = mgr.build_next_packet().unwrap();
 
     let mut seen_fg3 = false;
@@ -1162,6 +1178,9 @@ fn every_dirty_function_group_is_repeated_the_full_retry_count_in_rotation() {
 
     for _ in 0..DIRTY_FUNCTION_RETRY_COUNT {
         for expected in one_round {
+            // Every packet differs from the previous one to this address, the
+            // drained speed included, so each waits one idle turn.
+            assert_eq!(mgr.build_next_packet(), None);
             assert_eq!(function_group_of(mgr.build_next_packet()), expected);
         }
     }
@@ -1175,10 +1194,15 @@ fn function_refresh_rotates_through_every_active_group() {
     assert!(set_function(&mut mgr, addr(3), 13, true));
     drain_pending_slot_transmissions(&mut mgr);
 
+    // Each refresh group differs from the previous packet to this address.
+    assert_eq!(mgr.build_next_packet(), None);
     let first = function_group_of(mgr.build_next_packet()).0;
+    assert_eq!(mgr.build_next_packet(), None);
     let second = function_group_of(mgr.build_next_packet()).0;
     assert_ne!(first, second);
+    assert_eq!(mgr.build_next_packet(), None);
     assert_eq!(function_group_of(mgr.build_next_packet()).0, first);
+    assert_eq!(mgr.build_next_packet(), None);
     assert_eq!(function_group_of(mgr.build_next_packet()).0, second);
 }
 
@@ -1394,6 +1418,9 @@ fn test_dirty_speed_retries_stop_longer() {
 
     let _ = mgr.set_speed(addr(3), ls(0, SpeedFormat::Speed28), Direction::Forward);
 
+    // One idle turn after the speed packet to the same address, then the
+    // identical stop copies back to back.
+    assert_eq!(mgr.build_next_packet(), None);
     for i in 0..=DIRTY_STOP_RETRY_COUNT {
         let packet = mgr.build_next_packet().expect("expected stop speed packet");
         let DccPacket::Speed28 { address, speed, .. } = packet else {
@@ -1455,6 +1482,8 @@ fn test_program_on_main_emits_once_before_normal_traffic() {
         .expect("expected programming packet");
     assert!(matches!(packet, DccPacket::PomReadByte { cv, .. } if cv.value() == 29));
 
+    // The speed command to the same address waits one idle turn after the POM.
+    assert_eq!(mgr.build_next_packet(), None);
     let next = mgr
         .build_next_packet()
         .expect("expected normal packet after pom");
@@ -2054,4 +2083,300 @@ fn pom_cutout_maps_read_and_write() {
     assert_eq!(pom_cutout(read), Some(CutoutMode::PomRead));
     assert_eq!(pom_cutout(write), Some(CutoutMode::PomWrite));
     assert_eq!(pom_cutout(speed), None);
+}
+
+// Same-address spacing and reduced refresh rate for stopped locomotives.
+
+fn next_or_idle(manager: &mut SlotManager) -> DccPacket {
+    manager.build_next_packet().unwrap_or(DccPacket::Idle)
+}
+
+fn assert_spaced(sequence: &[DccPacket]) {
+    for (index, pair) in sequence.windows(2).enumerate() {
+        assert!(
+            !same_address_different_packet(pair[0], pair[1]),
+            "turn {}: {:?} followed by {:?} to the same address",
+            index + 1,
+            pair[0],
+            pair[1]
+        );
+    }
+}
+
+fn packets_to(sequence: &[DccPacket], address: DccAddress) -> usize {
+    sequence
+        .iter()
+        .filter(|packet| packet.railcom_target_address() == Some(address))
+        .count()
+}
+
+fn add_loco(manager: &mut SlotManager, address: DccAddress, speed: u8) {
+    assert!(manager.set_speed(
+        address,
+        ls(speed, SpeedFormat::Speed128),
+        Direction::Forward
+    ));
+}
+
+fn add_moving_loco_with_light(manager: &mut SlotManager, address: DccAddress) {
+    add_loco(manager, address, 40);
+    assert!(set_function(manager, address, 0, true));
+}
+
+fn add_stopped_loco_with_light(manager: &mut SlotManager, address: DccAddress) {
+    add_loco(manager, address, 0);
+    assert!(set_function(manager, address, 0, true));
+}
+
+/// The packets of the next `N` turns, idle for an empty turn.
+fn collect_turns<const N: usize>(manager: &mut SlotManager) -> heapless::Vec<DccPacket, N> {
+    let mut sequence = heapless::Vec::new();
+    for _ in 0..N {
+        sequence.push(next_or_idle(manager)).unwrap();
+    }
+    sequence
+}
+
+#[test]
+fn no_two_different_packets_in_a_row_to_one_address_under_mixed_traffic() {
+    let mut mgr = SlotManager::new();
+    for value in 1..=3 {
+        add_moving_loco_with_light(&mut mgr, addr(value));
+    }
+
+    let mut sequence = heapless::Vec::<DccPacket, 400>::new();
+    for turn in 0..400u16 {
+        match turn % 23 {
+            5 => assert!(mgr.set_speed(
+                addr(1),
+                ls((turn % 120) as u8, SpeedFormat::Speed128),
+                Direction::Forward
+            )),
+            9 => assert!(set_function(&mut mgr, addr(2), 1, turn % 2 == 0)),
+            13 => assert!(mgr.set_speed(addr(3), ls(0, SpeedFormat::Speed128), Direction::Reverse)),
+            17 => assert!(set_function(&mut mgr, addr(3), 14, true)),
+            _ => {}
+        }
+        sequence.push(next_or_idle(&mut mgr)).unwrap();
+    }
+
+    assert_spaced(&sequence);
+}
+
+#[test]
+fn a_different_command_right_after_a_packet_to_the_same_address_waits_one_turn() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.set_speed(addr(1), ls(20, SpeedFormat::Speed28), Direction::Forward));
+    assert!(matches!(
+        mgr.build_next_packet(),
+        Some(DccPacket::Speed28 { address, .. }) if address == addr(1)
+    ));
+
+    assert!(set_function(&mut mgr, addr(1), 1, true));
+    assert_eq!(mgr.build_next_packet(), None);
+    assert!(matches!(
+        mgr.build_next_packet(),
+        Some(DccPacket::FunctionGroup { address, .. }) if address == addr(1)
+    ));
+}
+
+#[test]
+fn a_pom_pair_is_never_split_and_the_refresh_of_that_address_waits() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    drain_pending_slot_transmissions(&mut mgr);
+    assert!(mgr.program_on_main(
+        pom_id(2),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(1),
+        }
+    ));
+    assert!(mgr.program_on_main(
+        pom_id(2),
+        DccPacket::PomReadByte {
+            address: addr(3),
+            cv: pom_cv(29),
+        }
+    ));
+
+    assert!(matches!(
+        mgr.build_next_packet(),
+        Some(DccPacket::PomReadByte { cv, .. }) if cv.value() == 1
+    ));
+    assert!(matches!(
+        mgr.build_next_packet(),
+        Some(DccPacket::PomReadByte { cv, .. }) if cv.value() == 29
+    ));
+    assert_eq!(mgr.build_next_packet(), None);
+    assert!(matches!(
+        mgr.build_next_packet(),
+        Some(DccPacket::Speed128 { address, .. }) if address == addr(3)
+    ));
+}
+
+#[test]
+fn a_blocked_command_gives_its_turn_to_another_slot_instead_of_idle() {
+    let mut mgr = SlotManager::new();
+    add_moving_loco_with_light(&mut mgr, addr(1));
+    add_moving_loco_with_light(&mut mgr, addr(2));
+    drain_pending_slot_transmissions(&mut mgr);
+
+    while next_or_idle(&mut mgr).railcom_target_address() != Some(addr(1)) {}
+    assert!(set_function(&mut mgr, addr(1), 2, true));
+
+    let other = mgr.build_next_packet().expect("the turn goes to loco 2");
+    assert_eq!(other.railcom_target_address(), Some(addr(2)));
+    assert!(matches!(
+        mgr.build_next_packet(),
+        Some(DccPacket::FunctionGroup { address, .. }) if address == addr(1)
+    ));
+}
+
+#[test]
+fn stopped_slot_is_refreshed_once_per_period_beside_a_moving_slot() {
+    let mut mgr = SlotManager::new();
+    add_loco(&mut mgr, addr(1), 40);
+    add_stopped_loco_with_light(&mut mgr, addr(2));
+    drain_pending_slot_transmissions(&mut mgr);
+
+    const TURNS: usize = 4 * STOPPED_REFRESH_PERIOD_TURNS as usize;
+    let sequence = collect_turns::<TURNS>(&mut mgr);
+
+    assert!(
+        !sequence.contains(&DccPacket::Idle),
+        "a speed-only moving slot never leaves a gap"
+    );
+    assert_eq!(packets_to(&sequence, addr(2)), 4);
+    assert_eq!(packets_to(&sequence, addr(1)), TURNS - 4);
+}
+
+#[test]
+fn stopped_slot_fills_the_turn_a_blocked_moving_slot_leaves_empty() {
+    let mut mgr = SlotManager::new();
+    add_moving_loco_with_light(&mut mgr, addr(1));
+    add_loco(&mut mgr, addr(2), 0);
+    drain_pending_slot_transmissions(&mut mgr);
+
+    let sequence = collect_turns::<40>(&mut mgr);
+
+    assert_spaced(&sequence);
+    assert!(!sequence.contains(&DccPacket::Idle));
+    assert_eq!(packets_to(&sequence, addr(1)), 20);
+    assert_eq!(packets_to(&sequence, addr(2)), 20);
+}
+
+#[test]
+fn stopped_slots_keep_their_function_refresh_within_the_limit_beside_moving_slots() {
+    let mut mgr = SlotManager::new();
+    for value in 1..=3 {
+        add_moving_loco_with_light(&mut mgr, addr(value));
+    }
+    for value in 4..=12 {
+        add_stopped_loco_with_light(&mut mgr, addr(value));
+        assert!(set_function(&mut mgr, addr(value), 13, true));
+    }
+    drain_pending_slot_transmissions(&mut mgr);
+
+    // Same packet-time model as the function budget: 10 ms with a full table.
+    let max_gap_turns = (MAX_FUNCTION_REFRESH_MS / scheduler_tick_ms_for_slot_count(12)) as usize;
+    let mut last_function_turn = [None; 12];
+    for turn in 0..2000usize {
+        if let DccPacket::FunctionGroup { address, .. } = next_or_idle(&mut mgr) {
+            let index = usize::from(address.value()) - 1;
+            if let Some(previous) = last_function_turn[index] {
+                assert!(
+                    turn - previous <= max_gap_turns,
+                    "addr {} waited {} turns for a function packet",
+                    address.value(),
+                    turn - previous
+                );
+            }
+            last_function_turn[index] = Some(turn);
+        }
+    }
+    assert!(last_function_turn.iter().all(Option::is_some));
+}
+
+#[test]
+fn moving_slots_take_most_refresh_turns_when_most_slots_are_stopped() {
+    let mut mgr = SlotManager::new();
+    for value in 1..=3 {
+        add_moving_loco_with_light(&mut mgr, addr(value));
+    }
+    for value in 4..=12 {
+        add_stopped_loco_with_light(&mut mgr, addr(value));
+    }
+    drain_pending_slot_transmissions(&mut mgr);
+
+    let sequence = collect_turns::<400>(&mut mgr);
+
+    assert_spaced(&sequence);
+    assert!(!sequence.contains(&DccPacket::Idle));
+    // Plain round robin would give each slot 33 of 400 turns.
+    for value in 1..=3 {
+        assert!(
+            packets_to(&sequence, addr(value)) >= 60,
+            "moving loco {value} starved"
+        );
+    }
+    for value in 4..=12 {
+        assert!(
+            packets_to(&sequence, addr(value)) >= 10,
+            "stopped loco {value} forgotten"
+        );
+    }
+}
+
+#[test]
+fn all_stopped_table_keeps_the_plain_round_robin() {
+    let mut mgr = SlotManager::new();
+    for value in 1..=4 {
+        add_loco(&mut mgr, addr(value), 0);
+    }
+    drain_pending_slot_transmissions(&mut mgr);
+
+    let sequence = collect_turns::<8>(&mut mgr);
+    for value in 1..=4 {
+        assert_eq!(packets_to(&sequence, addr(value)), 2);
+    }
+}
+
+#[test]
+fn pom_refresh_only_slot_is_refreshed_every_round_beside_a_moving_slot() {
+    let mut mgr = SlotManager::new();
+    assert!(mgr.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
+    assert!(matches!(
+        ensure_refresh(&mut mgr, addr(7)),
+        LocoRequestResult::Inserted(_)
+    ));
+    drain_pending_slot_transmissions(&mut mgr);
+
+    let sequence = collect_turns::<10>(&mut mgr);
+    assert_eq!(packets_to(&sequence, addr(7)), 5);
+    assert_eq!(packets_to(&sequence, addr(3)), 5);
+}
+
+#[test]
+fn filler_turns_rotate_among_the_stopped_slots() {
+    let mut mgr = SlotManager::new();
+    add_moving_loco_with_light(&mut mgr, addr(1));
+    for value in 2..=4 {
+        add_loco(&mut mgr, addr(value), 0);
+    }
+    drain_pending_slot_transmissions(&mut mgr);
+
+    // The moving loco alternates speed and light, so every other turn is free
+    // for a stopped one: those turns must be shared, not taken by one slot.
+    let sequence = collect_turns::<60>(&mut mgr);
+    assert!(!sequence.contains(&DccPacket::Idle));
+    // One due visit of a stopped slot may take a moving turn at the start.
+    assert!(packets_to(&sequence, addr(1)) >= 29);
+    for value in 2..=4 {
+        let count = packets_to(&sequence, addr(value));
+        assert!(
+            (9..=11).contains(&count),
+            "stopped loco {value} got {count}"
+        );
+    }
 }

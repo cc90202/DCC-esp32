@@ -137,6 +137,12 @@ impl SchedulerCore {
             )
     }
 
+    /// Report the packet that was really handed to the track output.
+    #[cfg(target_arch = "riscv32")]
+    pub(super) fn packet_emitted(&mut self, packet: DccPacket) {
+        self.slots.note_emitted(packet);
+    }
+
     pub(super) fn discard_pom(
         &mut self,
         request_id: PomRequestId,
