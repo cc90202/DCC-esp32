@@ -19,6 +19,8 @@ mod emission;
 mod locomotives;
 mod pom;
 
+#[cfg(test)]
+pub(super) use emission::same_address_different_packet;
 pub(super) use pom::pom_cutout;
 
 /// Scheduler target period to revisit one slot in normal conditions.
@@ -39,6 +41,13 @@ const _: () = assert!(GROUP_LAYOUTS.len() * 3 <= u16::BITS as usize);
 
 /// Additional immediate retransmissions after a stop command.
 pub(super) const DIRTY_STOP_RETRY_COUNT: u8 = 4;
+/// Refresh turns between two due visits of a stopped locomotive while another
+/// one is moving. Visits alternate a function group and the zero speed, so a
+/// stopped locomotive hears a function packet within twice this many packets:
+/// 320 ms at the 10 ms per packet of `scheduler_tick_ms_for_slot_count` with a
+/// full table, inside `MAX_FUNCTION_REFRESH_MS`. With several active groups the
+/// groups rotate across those packets, as they do for moving locomotives.
+pub(super) const STOPPED_REFRESH_PERIOD_TURNS: u32 = 16;
 /// Small bounded queue for programming-on-main packet sequences.
 ///
 /// POM read needs at least two CV-access packets: the command itself and a
@@ -76,12 +85,48 @@ struct Slot {
     // Tracks which function groups have ever been explicitly addressed.
     // Ensures groups are still refreshed after all functions in them are off.
     known_groups: u8,
-    refresh_speed_next: bool,
-    refresh_turns_since_function: u8,
-    next_function_group: u8,
+    rotation: RefreshRotation,
+    /// Refresh turn from which this slot, while stopped beside a moving one,
+    /// is due for its next refresh visit.
+    stopped_refresh_due: u32,
     last_sent: u32,
     #[cfg(test)]
     deadline_enforced_refreshes: u32,
+}
+
+/// Where a slot stands in its speed/function refresh cycle.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+struct RefreshRotation {
+    speed_next: bool,
+    turns_since_function: u8,
+    /// Group the next function packet, dirty or refresh, starts looking from.
+    next_function_group: u8,
+}
+
+/// The refresh packet a slot would send next and the bookkeeping that goes
+/// with it, computed without touching the slot so the manager can still
+/// choose another slot.
+struct RefreshPlan {
+    packet: Option<DccPacket>,
+    rotation: RefreshRotation,
+    #[cfg(test)]
+    deadline_enforced: bool,
+    invariant_recovered: bool,
+}
+
+impl RefreshPlan {
+    /// Plan the slot's next active function group as the packet, if it has
+    /// one, and move the group rotation past it.
+    fn take_function(&mut self, slot: &Slot) -> bool {
+        let Some(group) = slot.next_group_in(slot.active_function_group_mask()) else {
+            return false;
+        };
+        self.packet = Some(slot.function_packet_for_group(group));
+        self.rotation.next_function_group = (group + 1) % GROUP_COUNT;
+        self.rotation.turns_since_function = 0;
+        true
+    }
 }
 
 impl Slot {
@@ -99,9 +144,12 @@ impl Slot {
             dirty_function_groups: 0,
             dirty_function_retries: 0,
             known_groups: 0,
-            refresh_speed_next: true,
-            refresh_turns_since_function: 0,
-            next_function_group: 0,
+            rotation: RefreshRotation {
+                speed_next: true,
+                turns_since_function: 0,
+                next_function_group: 0,
+            },
+            stopped_refresh_due: 0,
             last_sent: 0,
             #[cfg(test)]
             deadline_enforced_refreshes: 0,
@@ -158,92 +206,102 @@ impl Slot {
         DccPacket::function_group(self.address, kind, group_bits(self.functions, kind))
     }
 
-    fn next_dirty_function_packet(&mut self) -> Option<DccPacket> {
-        if self.dirty_function_groups == 0 {
-            return None;
-        }
-
-        for offset in 0..GROUP_COUNT {
-            let group = (self.next_function_group + offset) % GROUP_COUNT;
-            let bit = 1u8 << group;
-            if (self.dirty_function_groups & bit) != 0 {
-                let retries = self.dirty_retries(group);
-                if retries <= 1 {
-                    self.dirty_function_groups &= !bit;
-                    self.set_dirty_retries(group, 0);
-                } else {
-                    self.set_dirty_retries(group, retries - 1);
-                }
-                self.next_function_group = (group + 1) % GROUP_COUNT;
-                return Some(self.function_packet_for_group(group));
-            }
-        }
-        None
+    /// Whether the locomotive is currently moving (a non-zero speed was set).
+    fn is_moving(&self) -> bool {
+        self.stopped_since.is_none()
     }
 
+    /// First group at or after the rotation cursor whose bit is set in `mask`.
+    fn next_group_in(&self, mask: u8) -> Option<u8> {
+        (0..GROUP_COUNT)
+            .map(|offset| (self.rotation.next_function_group + offset) % GROUP_COUNT)
+            .find(|&group| mask & (1u8 << group) != 0)
+    }
+
+    /// The dirty group whose packet goes out next, in rotation order.
+    fn next_dirty_group(&self) -> Option<u8> {
+        self.next_group_in(self.dirty_function_groups)
+    }
+
+    /// Count one transmission of a dirty group and move the rotation past it.
+    fn consume_dirty_group(&mut self, group: u8) {
+        let retries = self.dirty_retries(group);
+        if retries <= 1 {
+            self.dirty_function_groups &= !(1u8 << group);
+            self.set_dirty_retries(group, 0);
+        } else {
+            self.set_dirty_retries(group, retries - 1);
+        }
+        self.rotation.next_function_group = (group + 1) % GROUP_COUNT;
+    }
+
+    #[cfg(test)]
     fn next_refresh_packet_with_budget(
         &mut self,
         max_slot_visits_without_function: u8,
     ) -> Option<DccPacket> {
+        let plan = self.plan_refresh(max_slot_visits_without_function);
+        self.commit_refresh(&plan);
+        plan.packet
+    }
+
+    /// Decide the next refresh packet without changing the slot.
+    fn plan_refresh(&self, max_slot_visits_without_function: u8) -> RefreshPlan {
+        let mut plan = RefreshPlan {
+            packet: None,
+            rotation: self.rotation,
+            #[cfg(test)]
+            deadline_enforced: false,
+            invariant_recovered: false,
+        };
+
         if !self.speed_commanded {
-            if !self.has_any_functions() {
-                return None;
+            if self.has_any_functions() && !plan.take_function(self) {
+                plan.invariant_recovered = true;
             }
-            let packet = self.next_active_function_packet();
-            if packet.is_none() {
-                record_scheduler_invariant_recovery();
-            }
-            return packet;
+            return plan;
         }
 
         if !self.has_any_functions() {
-            return self.speed_packet();
+            plan.packet = self.speed_packet();
+            return plan;
         }
 
         let must_send_function =
-            self.refresh_turns_since_function + 1 >= max_slot_visits_without_function.max(1);
-
-        if must_send_function && let Some(packet) = self.next_active_function_packet() {
-            self.refresh_turns_since_function = 0;
-            self.refresh_speed_next = true;
+            self.rotation.turns_since_function + 1 >= max_slot_visits_without_function.max(1);
+        if must_send_function && plan.take_function(self) {
+            plan.rotation.speed_next = true;
             #[cfg(test)]
             {
-                self.deadline_enforced_refreshes = self.deadline_enforced_refreshes.wrapping_add(1);
+                plan.deadline_enforced = true;
             }
-            return Some(packet);
+            return plan;
         }
 
-        if !self.refresh_speed_next {
-            self.refresh_speed_next = true;
-            if let Some(packet) = self.next_active_function_packet() {
-                self.refresh_turns_since_function = 0;
-                return Some(packet);
+        if !self.rotation.speed_next {
+            plan.rotation.speed_next = true;
+            if plan.take_function(self) {
+                return plan;
             }
-            record_scheduler_invariant_recovery();
-            self.refresh_turns_since_function = self.refresh_turns_since_function.saturating_add(1);
-            return self.speed_packet();
+            plan.invariant_recovered = true;
+        } else {
+            plan.rotation.speed_next = false;
         }
-
-        self.refresh_speed_next = false;
-        self.refresh_turns_since_function = self.refresh_turns_since_function.saturating_add(1);
-        self.speed_packet()
+        plan.rotation.turns_since_function = self.rotation.turns_since_function.saturating_add(1);
+        plan.packet = self.speed_packet();
+        plan
     }
 
-    fn next_active_function_packet(&mut self) -> Option<DccPacket> {
-        let active_groups = self.active_function_group_mask();
-        if active_groups == 0 {
-            return None;
+    /// Apply the bookkeeping of a refresh plan that is being transmitted.
+    fn commit_refresh(&mut self, plan: &RefreshPlan) {
+        self.rotation = plan.rotation;
+        if plan.invariant_recovered {
+            record_scheduler_invariant_recovery();
         }
-
-        for offset in 0..GROUP_COUNT {
-            let group = (self.next_function_group + offset) % GROUP_COUNT;
-            let bit = 1u8 << group;
-            if (active_groups & bit) != 0 {
-                self.next_function_group = (group + 1) % GROUP_COUNT;
-                return Some(self.function_packet_for_group(group));
-            }
+        #[cfg(test)]
+        if plan.deadline_enforced {
+            self.deadline_enforced_refreshes = self.deadline_enforced_refreshes.wrapping_add(1);
         }
-        None
     }
 
     fn active_function_group_mask(&self) -> u8 {
@@ -305,7 +363,7 @@ mod invariant_recovery_tests {
     fn invalid_mixed_state_degrades_to_speed_packet() {
         let before = scheduler_invariant_recovery_count();
         let mut slot = invalid_group_slot();
-        slot.refresh_speed_next = false;
+        slot.rotation.speed_next = false;
 
         assert!(matches!(
             slot.next_refresh_packet_with_budget(1),
@@ -315,7 +373,11 @@ mod invariant_recovery_tests {
     }
 }
 
-/// Manages active locomotive slots with round-robin scheduling.
+/// Manages active locomotive slots: commands first, then a round-robin refresh.
+/// Slot traffic (commands and refresh) never puts two different packets to one
+/// address back to back; safety, POM and telemetry packets go out at once, as
+/// in every surveyed station, and the slot traffic that follows them waits.
+/// Stopped locomotives are visited less often while others are moving.
 #[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
 pub(crate) struct SlotManager {
     slots: Vec<Slot, LOCO_SLOT_CAPACITY>,
@@ -327,6 +389,14 @@ pub(crate) struct SlotManager {
     next_index: usize,
     /// Slot index where the next dirty-packet scan starts.
     dirty_cursor: usize,
+    /// Last packet really sent to the track, reported by the runtime through
+    /// `note_emitted`; `None` before the first one.
+    last_packet: Option<DccPacket>,
+    /// Number of refresh turns taken so far; clocks the stopped slots' visits.
+    refresh_turn: u32,
+    /// Slot index where the next scan for a filler refresh starts, so the
+    /// stopped slots share the turns no due slot can take.
+    filler_cursor: usize,
     mutation_sequence: u64,
     paused: bool,
     accepted_lease_epoch: Option<LeaseEpoch>,
@@ -398,6 +468,9 @@ impl SlotManager {
             pending_railcom_telemetry: None,
             next_index: 0,
             dirty_cursor: 0,
+            last_packet: None,
+            refresh_turn: 0,
+            filler_cursor: 0,
             mutation_sequence: 0,
             paused: false,
             accepted_lease_epoch: None,
