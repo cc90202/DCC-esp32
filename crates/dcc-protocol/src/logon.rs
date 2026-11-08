@@ -6,22 +6,26 @@ use crate::packet::DccAddress;
 const PREFIX_SHORT: u8 = 0x38;
 /// Highest annex D prefix of a long locomotive address.
 const PREFIX_LONG_MAX: u8 = 0x27;
+/// Bits of the first byte that hold A13..A8.
+const PREFIX_MASK: u8 = 0x3f;
 
 /// Reads a locomotive address in the 14-bit form of RCN-218 annex D.
 ///
 /// `bytes` holds A13..A8 in the low six bits of the first byte and A7..A0 in
-/// the second; the two top bits of the first byte are ignored, because the
-/// short info uses bit 7 as its frame marker. Prefix 0x38 is a short address
-/// in A6..A0, prefixes 0x00..=0x27 a long address equal to A13..A0.
+/// the second. The two top bits of the first byte are not part of the
+/// address: the frame that carries it gives them a meaning of its own, and the
+/// caller checks them. Prefix 0x38 is a short address in A6..A0, prefixes
+/// 0x00..=0x27 a long address equal to A13..A0.
 ///
 /// Returns `None` for accessory, reserved and firmware-update prefixes, for
-/// short address 0 (which parks a decoder), and for a long address below 128,
-/// which [`DccAddress`] cannot hold.
+/// short address 0 (which parks a decoder), and for a long address below 128.
+/// Annex D allows the latter, but [`DccAddress`] cannot hold it, and the Z21
+/// side reads 1..=127 as a short address, so no app could drive it.
 #[must_use]
 pub fn decode_address(bytes: [u8; 2]) -> Option<DccAddress> {
     let [high, low] = bytes;
-    match high & 0x3f {
-        PREFIX_SHORT if low & 0x80 == 0 => DccAddress::new_short(low),
+    match high & PREFIX_MASK {
+        PREFIX_SHORT => DccAddress::new_short(low),
         prefix @ 0..=PREFIX_LONG_MAX => DccAddress::new_long(u16::from_be_bytes([prefix, low])),
         _ => None,
     }
@@ -64,11 +68,9 @@ mod tests {
     }
 
     #[test]
-    fn ignores_the_two_top_bits_of_the_high_byte() {
-        // Short info sets bit 7 as its frame marker; annex D notes that the
-        // assign packet carries both top bits set.
+    fn leaves_the_two_top_bits_to_the_frame() {
+        // The short info sets bit 7 as its frame marker.
         assert_eq!(decode_address([0xB8, 4]), DccAddress::new_short(4));
-        assert_eq!(decode_address([0xF8, 4]), DccAddress::new_short(4));
         assert_eq!(decode_address([0x83, 0xE9]), DccAddress::new_long(1001));
     }
 
@@ -77,8 +79,8 @@ mod tests {
         // Short address 0 parks the decoder; only A6..A0 carry a short one.
         assert_eq!(decode_address([0x38, 0]), None);
         assert_eq!(decode_address([0x38, 0x80]), None);
-        // Annex D allows a long address below 128; `DccAddress` has no long
-        // form there, and reading it as short would name another decoder.
+        // A long address below 128: reading it as short would name another
+        // decoder.
         assert_eq!(decode_address([0x00, 100]), None);
         // Extended and basic accessory decoders.
         assert_eq!(decode_address([0x28, 1]), None);

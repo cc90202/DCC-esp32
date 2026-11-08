@@ -13,7 +13,7 @@
 //! - [`speed`] and [`function`] are the locomotive state as the command station
 //!   holds it;
 //! - [`railcom_data`] is the decoded RailCom feedback, and [`logon`] the
-//!   RCN-218 logon checksum;
+//!   RCN-218 logon checksum and address form;
 //! - `validator`, behind the `test-support` feature, checks encoded pulse
 //!   streams against the NMRA timing and structure.
 //!
