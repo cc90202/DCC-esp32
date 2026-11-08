@@ -29,9 +29,14 @@
 use crate::dcc::{DccFrame, PowerGeneration};
 use crate::runtime_channels::{RuntimeChannel, RuntimeReceiver, RuntimeSender};
 
-/// Encoded frames buffered ahead of the RMT engine, so the scheduler can run
-/// far enough ahead that a scheduling hiccup never starves the waveform.
-const DCC_FRAME_DEPTH: usize = 16;
+/// Encoded frames buffered ahead of the RMT engine.
+///
+/// Every frame queued here was chosen before the ones ahead of it reached the
+/// track, so a new command waits behind the whole queue: with 16 frames that
+/// was 110-150 ms on the bench. One frame keeps the scheduler a packet ahead
+/// of the engine and no more. Should it ever fall behind, the RMT interrupt
+/// sends an idle packet on its own and the waveform stays whole.
+const DCC_FRAME_DEPTH: usize = 1;
 /// Slot for a correlated exchange: one message in flight by construction, so
 /// the sender and the receiver meet rather than queue.
 pub(crate) const SINGLE_FLIGHT_DEPTH: usize = 1;

@@ -36,7 +36,8 @@ pub async fn packet_scheduler_task(
             sender.send(DccFrame::fence(generation)).await;
         }
 
-        // Commands are processed with at most one packet interval (~8 ms) of latency.
+        // Commands are picked up within one packet interval (~8 ms), and the
+        // frame they produce waits behind at most one queued frame.
         while let Ok(command) = command_receiver.try_receive() {
             if let SchedulerCommand::ProgramOnMain { permit, .. } = command
                 && !crate::track_authority::accepts_current(permit)
