@@ -3,7 +3,7 @@ edition.workspace      = true
 name                   = "dcc-esp32"
 publish.workspace      = true
 rust-version.workspace = true
-version                = "0.9.2"
+version                = "0.9.3"
 
 [workspace]
 members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "crates/dcc-protocol", "crates/dcc-provisioning", "crates/z21", "tools/ota-pack"]
@@ -110,6 +110,11 @@ bench-diag = []
 # Bench only: a build that fails on purpose during its trial, to exercise
 # the rollback. Not additive; never enable it for a release build.
 ota-fault-inject = []
+# RCN-218 automatic logon (DCC-A), work in progress (#52). Off by default: a
+# DCC-A decoder that hears a Logon Enable obeys only broadcasts until it is
+# assigned an address, and the station does not assign one yet. Without it the
+# station sends no logon packet at all.
+dcc-a = []
 
 [[bin]]
 name = "dcc-esp32"

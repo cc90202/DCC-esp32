@@ -230,10 +230,13 @@ fn log_pom_window(
 
 /// Logon packets go to the broadcast address 254 and open a telemetry cutout,
 /// so a window after a locomotive packet or a POM never holds a logon answer.
+/// Never without the `dcc-a` feature (see `Cargo.toml`): no logon answer is
+/// read, so no Select goes out.
 fn may_carry_logon_answer(packet_metadata: Option<RailcomPacketMetadata>) -> bool {
-    packet_metadata.is_some_and(|metadata| {
-        metadata.target_address.is_none() && metadata.cutout == CutoutMode::Telemetry
-    })
+    cfg!(feature = "dcc-a")
+        && packet_metadata.is_some_and(|metadata| {
+            metadata.target_address.is_none() && metadata.cutout == CutoutMode::Telemetry
+        })
 }
 
 fn dispatch_processed_window(
