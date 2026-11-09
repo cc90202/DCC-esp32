@@ -43,17 +43,14 @@ pub const DCC_MAX_PACKET_PULSES: usize = 128;
 /// Capacity of the pulse buffer that holds the variable packet tail alone:
 /// the start bit, the data bytes with their separators, and the end bit.
 ///
-/// At least the tail of the longest packet ([`DCC_MAX_PACKET_BYTES`] bytes);
-/// the margin above that is spare.
-pub const MAX_DATA_PULSES: usize = 96;
+/// Exactly the tail of the longest packet ([`DCC_MAX_PACKET_BYTES`] bytes):
+/// the buffers of this size live next to the waveform interrupt, which
+/// budgets them to the byte.
+pub const MAX_DATA_PULSES: usize = LONGEST_TAIL_PULSES;
 
 const _: () = assert!(
     DCC_MAX_PACKET_PULSES >= LONGEST_PACKET_PULSES,
     "the whole-packet pulse buffer must hold the longest packet"
-);
-const _: () = assert!(
-    MAX_DATA_PULSES >= LONGEST_TAIL_PULSES,
-    "the packet-tail pulse buffer must hold the tail of the longest packet"
 );
 
 #[cfg(test)]

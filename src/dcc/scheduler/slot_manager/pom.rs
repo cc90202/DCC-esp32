@@ -21,6 +21,7 @@ pub(in crate::dcc::scheduler) fn pom_cutout(packet: DccPacket) -> Option<CutoutM
         | DccPacket::BroadcastBinaryStateShort { .. }
         | DccPacket::LogonEnable { .. }
         | DccPacket::LogonSelect { .. }
+        | DccPacket::LogonAssign { .. }
         | DccPacket::ServiceModeVerifyByte { .. }
         | DccPacket::ServiceModeWriteByte { .. } => None,
     }

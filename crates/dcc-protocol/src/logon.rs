@@ -1,6 +1,6 @@
 //! Shared RCN-218 automatic-logon primitives.
 
-use crate::packet::DccAddress;
+use crate::packet::{DccAddress, DccAddressKind};
 
 /// Annex D prefix (A13..A8) of a short locomotive address.
 const PREFIX_SHORT: u8 = 0x38;
@@ -28,6 +28,19 @@ pub fn decode_address(bytes: [u8; 2]) -> Option<DccAddress> {
         PREFIX_SHORT => DccAddress::new_short(low),
         prefix @ 0..=PREFIX_LONG_MAX => DccAddress::new_long(u16::from_be_bytes([prefix, low])),
         _ => None,
+    }
+}
+
+/// Writes a locomotive address in the 14-bit form of RCN-218 annex D.
+///
+/// The inverse of [`decode_address`]: A13..A8 in the low six bits of the first
+/// byte, A7..A0 in the second. The two top bits of the first byte are left at
+/// zero for the frame that carries the address.
+#[must_use]
+pub(crate) fn encode_address(address: DccAddress) -> [u8; 2] {
+    match address.kind() {
+        DccAddressKind::Short => [PREFIX_SHORT, address.value().to_be_bytes()[1]],
+        DccAddressKind::Long => address.value().to_be_bytes(),
     }
 }
 
@@ -88,6 +101,34 @@ mod tests {
         // Reserved, and the firmware-update marker.
         assert_eq!(decode_address([0x39, 4]), None);
         assert_eq!(decode_address([0x3F, 0xFF]), None);
+    }
+
+    #[test]
+    fn encodes_short_address_with_its_annex_d_prefix() {
+        let encoded = |address| DccAddress::new_short(address).map(encode_address);
+
+        assert_eq!(encoded(4), Some([0x38, 4]));
+        assert_eq!(encoded(127), Some([0x38, 127]));
+    }
+
+    #[test]
+    fn encodes_long_address_as_its_plain_value() {
+        let encoded = |address| DccAddress::new_long(address).map(encode_address);
+
+        assert_eq!(encoded(128), Some([0x00, 0x80]));
+        assert_eq!(encoded(1001), Some([0x03, 0xE9]));
+        assert_eq!(encoded(10239), Some([0x27, 0xFF]));
+    }
+
+    #[test]
+    fn decodes_every_address_it_encodes() {
+        let addresses = (1..=127)
+            .filter_map(DccAddress::new_short)
+            .chain((128..=10239).filter_map(DccAddress::new_long));
+
+        for address in addresses {
+            assert_eq!(decode_address(encode_address(address)), Some(address));
+        }
     }
 
     #[test]

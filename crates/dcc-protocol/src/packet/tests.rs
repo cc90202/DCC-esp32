@@ -64,6 +64,7 @@ fn variant_name(packet: DccPacket) -> &'static str {
         DccPacket::BroadcastBinaryStateShort { .. } => "BroadcastBinaryStateShort",
         DccPacket::LogonEnable { .. } => "LogonEnable",
         DccPacket::LogonSelect { .. } => "LogonSelect",
+        DccPacket::LogonAssign { .. } => "LogonAssign",
         DccPacket::ServiceModeVerifyByte { .. } => "ServiceModeVerifyByte",
         DccPacket::ServiceModeWriteByte { .. } => "ServiceModeWriteByte",
         DccPacket::PomWriteByte { .. } => "PomWriteByte",
@@ -124,6 +125,11 @@ fn every_packet_variant_fits_the_declared_byte_capacity() {
             decoder_id: u32::MAX,
             subcommand: u8::MAX,
         },
+        DccPacket::LogonAssign {
+            manufacturer_id: u16::MAX,
+            decoder_id: u32::MAX,
+            address: long_address,
+        },
         DccPacket::ServiceModeVerifyByte {
             cv: service_cv(256),
             value: u8::MAX,
@@ -153,10 +159,10 @@ fn every_packet_variant_fits_the_declared_byte_capacity() {
         );
     }
 
-    let longest = DccPacket::LogonSelect {
+    let longest = DccPacket::LogonAssign {
         manufacturer_id: u16::MAX,
         decoder_id: u32::MAX,
-        subcommand: u8::MAX,
+        address: long_address,
     };
     assert_eq!(
         longest.to_bytes().len(),

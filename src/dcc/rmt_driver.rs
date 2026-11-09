@@ -66,9 +66,15 @@ const _: () = assert!(
     PREAMBLE_RMT_OFFSET < RMT_CHANNEL_TOTAL_RAM_SIZE,
     "preamble offset must fit inside channel RAM"
 );
+// A cutout packet writes two entries after its tail: the cutout padding and
+// the end marker.
 const _: () = assert!(
-    PREAMBLE_RMT_OFFSET + MAX_DATA_PULSES < RMT_CHANNEL_TOTAL_RAM_SIZE,
-    "packet tail plus end marker must fit inside the configured RMT RAM window"
+    PREAMBLE_RMT_OFFSET + MAX_DATA_PULSES + 2 <= RMT_CHANNEL_TOTAL_RAM_SIZE,
+    "packet tail, cutout padding and end marker must fit inside the configured RMT RAM window"
+);
+const _: () = assert!(
+    MAX_DATA_PULSES <= u8::MAX as usize,
+    "the published packet length is stored in a u8"
 );
 
 #[derive(Clone, Copy)]
@@ -120,7 +126,7 @@ impl SharedPacket {
 }
 
 const _: () = assert!(
-    size_of::<SharedPacket>() <= 404,
+    size_of::<SharedPacket>() <= 420,
     "shared packet slots must remain within their static memory budget"
 );
 
