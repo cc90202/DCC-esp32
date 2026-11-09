@@ -94,14 +94,14 @@ impl RailcomCutoutBudget {
     }
 }
 
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(test, target_arch = "riscv32"))]
 pub(super) fn record_track_logon_sent() {
     RAILCOM_SCHEDULER
         .track_logon_sent_count
         .fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(test, target_arch = "riscv32"))]
 pub(super) fn record_track_search_sent() {
     RAILCOM_SCHEDULER
         .track_search_sent_count

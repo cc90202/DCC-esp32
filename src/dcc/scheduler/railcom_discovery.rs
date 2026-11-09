@@ -15,7 +15,9 @@ const RAILCOM_LOGON_GROUP_NOW: LogonGroup = match LogonGroup::new(3) {
 };
 const RAILCOM_LOGON_COMMAND_STATION_ID: u16 = 0x0DCC;
 const RAILCOM_LOGON_SESSION_ID: LogonSessionId = LogonSessionId::new(1);
-const RAILCOM_LOGON_ENABLE_STARTUP_REPEATS: u8 = 3;
+/// Logon Enable sent after each track enable, before the app:search broadcasts;
+/// none without the `dcc-a` feature (see `Cargo.toml`).
+const RAILCOM_LOGON_ENABLE_STARTUP_REPEATS: u8 = if cfg!(feature = "dcc-a") { 3 } else { 0 };
 const RAILCOM_DISCOVERY_INTERVAL_MS: u64 = 1_000;
 /// ZIMO's reference decoder only answers app:search shortly after signal
 /// acquisition/rerail. Keep command-station discovery bounded to the same
@@ -65,5 +67,45 @@ impl RailcomDiscovery {
                 state: false,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Idle packets of one whole discovery window after a track enable.
+    fn discovery_window_packets() -> impl Iterator<Item = DccPacket> {
+        let start = Instant::from_secs(0);
+        let mut discovery = RailcomDiscovery::new(start);
+        discovery.restart(start);
+        (0..RAILCOM_TRACK_SEARCH_WINDOW_SECS).filter_map(move |second| {
+            let now = start + Duration::from_secs(second);
+            discovery
+                .is_due(now)
+                .then(|| discovery.take_next_idle_packet(now))
+        })
+    }
+
+    /// Written out rather than read from the constant under test, so a wrong
+    /// value of it fails here.
+    const EXPECTED_LOGON_ENABLES: usize = if cfg!(feature = "dcc-a") { 3 } else { 0 };
+
+    #[test]
+    fn sends_logon_enable_only_with_dcc_a_then_searches() {
+        let packets: Vec<_> = discovery_window_packets().collect();
+        let (logon, search) = packets.split_at(EXPECTED_LOGON_ENABLES);
+
+        assert!(
+            logon
+                .iter()
+                .all(|packet| matches!(packet, DccPacket::LogonEnable { .. }))
+        );
+        assert!(!search.is_empty());
+        assert!(
+            search
+                .iter()
+                .all(|packet| matches!(packet, DccPacket::BroadcastBinaryStateShort { .. }))
+        );
     }
 }

@@ -37,7 +37,7 @@ use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
 pub(crate) mod channels;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod core;
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(test, target_arch = "riscv32"))]
 mod railcom_discovery;
 mod railcom_policy;
 #[cfg(target_arch = "riscv32")]
