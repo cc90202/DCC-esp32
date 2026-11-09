@@ -3,7 +3,7 @@ edition.workspace      = true
 name                   = "dcc-esp32"
 publish.workspace      = true
 rust-version.workspace = true
-version                = "0.9.2"
+version                = "0.9.3"
 
 [workspace]
 members         = [".", "crates/dcc-ota", "crates/dcc-ota-format", "crates/dcc-protocol", "crates/dcc-provisioning", "crates/z21", "tools/ota-pack"]
