@@ -31,7 +31,7 @@ pub(crate) const PREAMBLE_RMT_OFFSET: usize = PREAMBLE_BITS;
 /// `transmit_continuously(LoopMode::Infinite)`, so the hardware loops the buffer
 /// with zero inter-packet gap.  RMT channel memsize must be ≥ 2 blocks (96 slots)
 /// to fit the idle buffer. Three blocks leave enough tail RAM for RCN-218
-/// LOGON_SELECT packets.
+/// LOGON_ASSIGN packets.
 pub(crate) const IDLE_RMT_SIZE: usize = 49;
 
 const _: () = assert!(

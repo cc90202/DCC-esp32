@@ -366,6 +366,11 @@ mod tests {
                 decoder_id: u32::MAX,
                 subcommand: u8::MAX,
             },
+            DccPacket::LogonAssign {
+                manufacturer_id: 0x0FFF,
+                decoder_id: u32::MAX,
+                address: addr_long,
+            },
         ];
 
         for packet in &packets {

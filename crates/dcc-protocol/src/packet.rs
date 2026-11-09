@@ -134,6 +134,18 @@ pub enum DccPacket {
         /// RCN-218 select subcommand.
         subcommand: u8,
     },
+    /// RCN-218 automatic logon assign packet addressed to 254.
+    ///
+    /// Registers the decoder under `address` for this session. The assignment
+    /// is always temporary: the decoder's own CV1 or CV17/18 stay untouched.
+    LogonAssign {
+        /// Manufacturer of the decoder; the low 12 bits travel.
+        manufacturer_id: u16,
+        /// Unique identifier of the decoder.
+        decoder_id: u32,
+        /// Address the decoder answers to from now on.
+        address: DccAddress,
+    },
     /// Service Mode: Verify Byte (instruction 0b0111_01AA)
     /// Tests if CV equals a specific value (decoder ACKs if match)
     /// CV range: 1-256 (Direct Mode, single-byte addressing)
@@ -172,8 +184,13 @@ pub enum DccPacket {
 
 /// Maximum number of bytes in an encoded DCC packet, including its checksum.
 ///
-/// RCN-218 `LogonSelect` is the longest packet currently supported.
-pub const DCC_MAX_PACKET_BYTES: usize = 10;
+/// RCN-218 `LogonAssign` is the longest packet currently supported. The
+/// standard allows up to 15 bytes, reached only by its `SET_DATA` command.
+pub const DCC_MAX_PACKET_BYTES: usize = 11;
+
+/// RCN-218 §3.6: the two top bits of the assigned address, `11` for an
+/// assignment that leaves the decoder's own address CVs untouched.
+const LOGON_ASSIGN_TEMPORARY: u8 = 0xC0;
 
 /// Builder for DCC packet byte sequences with incremental XOR checksum.
 struct PacketBytes {
@@ -207,10 +224,24 @@ impl PacketBytes {
         }
     }
 
+    /// Starts an RCN-218 packet for one decoder: address 254, the instruction
+    /// with the top four bits of the 12-bit manufacturer id, its low byte,
+    /// and the 32-bit decoder id.
+    fn push_logon_target(&mut self, instruction: u8, manufacturer_id: u16, decoder_id: u32) {
+        let [manufacturer_high, manufacturer_low] = manufacturer_id.to_be_bytes();
+        self.push(254);
+        self.push(instruction | (manufacturer_high & 0x0F));
+        self.push(manufacturer_low);
+        for byte in decoder_id.to_be_bytes() {
+            self.push(byte);
+        }
+    }
+
     /// Appends the Dallas/Maxim CRC8 of the bytes pushed so far.
     ///
-    /// Used by RCN-218 automatic-logon packets (`LogonSelect`), which carry a
-    /// CRC8 byte ahead of the usual trailing XOR checksum.
+    /// Used by RCN-218 automatic-logon packets of six or more bytes
+    /// (`LogonSelect`, `LogonAssign`), which carry a CRC8 byte ahead of the
+    /// usual trailing XOR checksum.
     fn push_crc8(&mut self) {
         let crc = crate::logon::crc8_dallas_maxim(&self.bytes);
         self.push(crc);
@@ -245,6 +276,7 @@ impl DccPacket {
             | Self::BroadcastBinaryStateShort { .. }
             | Self::LogonEnable { .. }
             | Self::LogonSelect { .. }
+            | Self::LogonAssign { .. }
             | Self::ServiceModeVerifyByte { .. }
             | Self::ServiceModeWriteByte { .. } => None,
         }
@@ -417,15 +449,19 @@ impl DccPacket {
                 decoder_id,
                 subcommand,
             } => {
-                let logon_instruction = 0xD0 | ((manufacturer_id >> 8) as u8 & 0x0F);
-                packet.push(254);
-                packet.push(logon_instruction);
-                packet.push((manufacturer_id & 0xFF) as u8);
-                packet.push(((decoder_id >> 24) & 0xFF) as u8);
-                packet.push(((decoder_id >> 16) & 0xFF) as u8);
-                packet.push(((decoder_id >> 8) & 0xFF) as u8);
-                packet.push((decoder_id & 0xFF) as u8);
+                packet.push_logon_target(0xD0, manufacturer_id, decoder_id);
                 packet.push(subcommand);
+                packet.push_crc8();
+            }
+            Self::LogonAssign {
+                manufacturer_id,
+                decoder_id,
+                address,
+            } => {
+                let [address_high, address_low] = crate::logon::encode_address(address);
+                packet.push_logon_target(0xE0, manufacturer_id, decoder_id);
+                packet.push(LOGON_ASSIGN_TEMPORARY | address_high);
+                packet.push(address_low);
                 packet.push_crc8();
             }
             Self::ServiceModeVerifyByte { cv, value } => {
