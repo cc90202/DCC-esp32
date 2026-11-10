@@ -110,21 +110,31 @@ fn dispatch_logon_response(
 ) {
 }
 
-/// A select or assign whose cutout closed without its answer is reported, so
-/// the command is sent again.
+/// Reports a logon cutout that closed without a readable answer: a select
+/// or assign is sent again, and an unreadable answer to a logon enable is
+/// two decoders talking together.
+///
+/// Silence after a logon enable is the normal case and is not reported.
 #[cfg(feature = "dcc-a")]
-fn report_unanswered_logon_command(
+fn report_unreadable_logon_answer(
     command: LogonCommand,
     channel: RailcomChannel,
     answer: Option<&Result<RailcomLogonResponse, ParseError>>,
     scheduler_sender: SchedulerCommandSender,
 ) {
-    if matches!(command, LogonCommand::Select | LogonCommand::Assign)
-        && channel == RailcomChannel::Channel2
-        && !matches!(answer, Some(Ok(_)))
-    {
-        report_logon_answer(LogonAnswer::Unanswered(command), scheduler_sender);
+    if channel != RailcomChannel::Channel2 {
+        return;
     }
+    let report = match (command, answer) {
+        (LogonCommand::Select | LogonCommand::Assign, None | Some(Err(_))) => {
+            LogonAnswer::Unanswered(command)
+        }
+        (LogonCommand::Enable, Some(Err(error))) if error.is_logon_collision() => {
+            LogonAnswer::Collided
+        }
+        _ => return,
+    };
+    report_logon_answer(report, scheduler_sender);
 }
 
 /// Bench diagnostic: what came back after a logon command and was not its
@@ -308,7 +318,7 @@ fn dispatch_processed_window(
         result.window.raw_slice(),
     );
     #[cfg(feature = "dcc-a")]
-    report_unanswered_logon_command(
+    report_unreadable_logon_answer(
         command,
         result.window.channel,
         logon_answer.as_ref(),

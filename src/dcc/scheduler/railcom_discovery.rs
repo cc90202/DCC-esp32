@@ -1,23 +1,17 @@
-use dcc_protocol::packet::{BinaryStateAddress, DccPacket, LogonGroup, LogonSessionId};
+//! Track search broadcasts sent in idle turns after each track enable, so
+//! decoders answer in the cutouts while no locomotive is driven yet.
+
+use dcc_protocol::packet::{BinaryStateAddress, DccPacket};
 use embassy_time::{Duration, Instant};
 
-use super::railcom_policy::{record_track_logon_sent, record_track_search_sent};
+use super::railcom_policy::record_track_search_sent;
 
-/// DCC-A/RailCom track search trigger used when the command station has no
-/// active slots yet but still wants decoders to answer during cutouts.
+/// RailCom track search trigger used when the command station has no active
+/// slots yet but still wants decoders to answer during cutouts.
 const RAILCOM_TRACK_SEARCH_BIN_ADDR: BinaryStateAddress = match BinaryStateAddress::new(2) {
     Some(address) => address,
     None => panic!("track-search binary-state address out of range"),
 };
-const RAILCOM_LOGON_GROUP_NOW: LogonGroup = match LogonGroup::new(3) {
-    Some(group) => group,
-    None => panic!("logon group out of range"),
-};
-const RAILCOM_LOGON_COMMAND_STATION_ID: u16 = 0x0DCC;
-const RAILCOM_LOGON_SESSION_ID: LogonSessionId = LogonSessionId::new(1);
-/// Logon Enable sent after each track enable, before the app:search broadcasts;
-/// none without the `dcc-a` feature (see `Cargo.toml`).
-const RAILCOM_LOGON_ENABLE_STARTUP_REPEATS: u8 = if cfg!(feature = "dcc-a") { 3 } else { 0 };
 const RAILCOM_DISCOVERY_INTERVAL_MS: u64 = 1_000;
 /// ZIMO's reference decoder only answers app:search shortly after signal
 /// acquisition/rerail. Keep command-station discovery bounded to the same
@@ -27,7 +21,6 @@ const RAILCOM_TRACK_SEARCH_WINDOW_SECS: u64 = 30;
 pub(super) struct RailcomDiscovery {
     active_until: Instant,
     next_due: Instant,
-    logon_enable_remaining: u8,
 }
 
 impl RailcomDiscovery {
@@ -35,14 +28,12 @@ impl RailcomDiscovery {
         Self {
             active_until: now,
             next_due: now,
-            logon_enable_remaining: 0,
         }
     }
 
     pub(super) fn restart(&mut self, now: Instant) {
         self.active_until = now + Duration::from_secs(RAILCOM_TRACK_SEARCH_WINDOW_SECS);
         self.next_due = now;
-        self.logon_enable_remaining = RAILCOM_LOGON_ENABLE_STARTUP_REPEATS;
     }
 
     pub(super) fn is_due(&self, now: Instant) -> bool {
@@ -51,21 +42,10 @@ impl RailcomDiscovery {
 
     pub(super) fn take_next_idle_packet(&mut self, now: Instant) -> DccPacket {
         self.next_due = now + Duration::from_millis(RAILCOM_DISCOVERY_INTERVAL_MS);
-
-        if self.logon_enable_remaining > 0 {
-            self.logon_enable_remaining -= 1;
-            record_track_logon_sent();
-            DccPacket::LogonEnable {
-                group: RAILCOM_LOGON_GROUP_NOW,
-                command_station_id: RAILCOM_LOGON_COMMAND_STATION_ID,
-                session_id: RAILCOM_LOGON_SESSION_ID,
-            }
-        } else {
-            record_track_search_sent();
-            DccPacket::BroadcastBinaryStateShort {
-                bin_addr: RAILCOM_TRACK_SEARCH_BIN_ADDR,
-                state: false,
-            }
+        record_track_search_sent();
+        DccPacket::BroadcastBinaryStateShort {
+            bin_addr: RAILCOM_TRACK_SEARCH_BIN_ADDR,
+            state: false,
         }
     }
 }
@@ -87,23 +67,13 @@ mod tests {
         })
     }
 
-    /// Written out rather than read from the constant under test, so a wrong
-    /// value of it fails here.
-    const EXPECTED_LOGON_ENABLES: usize = if cfg!(feature = "dcc-a") { 3 } else { 0 };
-
     #[test]
-    fn sends_logon_enable_only_with_dcc_a_then_searches() {
+    fn every_idle_turn_of_the_window_is_a_track_search() {
         let packets: Vec<_> = discovery_window_packets().collect();
-        let (logon, search) = packets.split_at(EXPECTED_LOGON_ENABLES);
 
+        assert_eq!(packets.len(), RAILCOM_TRACK_SEARCH_WINDOW_SECS as usize);
         assert!(
-            logon
-                .iter()
-                .all(|packet| matches!(packet, DccPacket::LogonEnable { .. }))
-        );
-        assert!(!search.is_empty());
-        assert!(
-            search
+            packets
                 .iter()
                 .all(|packet| matches!(packet, DccPacket::BroadcastBinaryStateShort { .. }))
         );

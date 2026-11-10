@@ -63,6 +63,9 @@ pub(super) struct SchedulerCore {
     loco_response_outbox: LocoResponseOutbox,
     #[cfg(feature = "dcc-a")]
     logon: LogonTable,
+    /// Whether the track lost power since the last logon session started.
+    #[cfg(feature = "dcc-a")]
+    track_was_cut: bool,
 }
 
 impl SchedulerCore {
@@ -72,7 +75,9 @@ impl SchedulerCore {
             slots: SlotManager::new(),
             loco_response_outbox: LocoResponseOutbox::default(),
             #[cfg(feature = "dcc-a")]
-            logon: LogonTable::new(),
+            logon: LogonTable::new(0, 0),
+            #[cfg(feature = "dcc-a")]
+            track_was_cut: true,
         }
     }
 
@@ -151,6 +156,30 @@ impl SchedulerCore {
         self.slots.note_emitted(packet);
     }
 
+    /// Give the decoder table the station's identity; call once, before the
+    /// track is powered.
+    #[cfg(feature = "dcc-a")]
+    pub(super) fn set_logon_identity(&mut self, station_id: u16, session_seed: u8) {
+        self.logon.set_identity(station_id, session_seed);
+    }
+
+    /// Remember that the track is without power: the decoders on it forget
+    /// their registration.
+    #[cfg(feature = "dcc-a")]
+    pub(super) fn track_cut(&mut self) {
+        self.track_was_cut = true;
+    }
+
+    /// The track is powered. Starts a new logon session if it had lost
+    /// power; an app that asks for power on a live track changes nothing,
+    /// or every locomotive would stop obeying until it logged on again.
+    #[cfg(feature = "dcc-a")]
+    pub(super) fn track_powered(&mut self, now: embassy_time::Instant) {
+        if core::mem::take(&mut self.track_was_cut) {
+            self.logon.start_session(now);
+        }
+    }
+
     /// Hand the decoder table what came back after a logon command; an
     /// address a locomotive is driven on counts as taken.
     #[cfg(feature = "dcc-a")]
@@ -165,7 +194,7 @@ impl SchedulerCore {
     }
 
     /// Give the decoder table its turn: close an answer that never came,
-    /// then queue the next select or assign once the last one is gone.
+    /// then queue the next logon packet once the last one is gone.
     ///
     /// While emission is paused the track may be without power: a command
     /// already sent stops being awaited and is sent again afterwards, so no
@@ -206,6 +235,9 @@ impl SchedulerCore {
     #[cfg(target_arch = "riscv32")]
     pub(super) fn quiesce_for_power_on(&mut self) {
         self.slots.quiesce_for_power_on();
+        // The bridge is held low while the power-on fence is crossed.
+        #[cfg(feature = "dcc-a")]
+        self.track_cut();
     }
 
     pub(super) fn authorize_for_emission(
@@ -422,7 +454,7 @@ mod tests {
 
     #[cfg(feature = "dcc-a")]
     mod logon {
-        use embassy_time::Instant;
+        use embassy_time::{Duration, Instant};
 
         use super::*;
         use crate::dcc::{DecoderUid, LogonAnswer};
@@ -445,10 +477,33 @@ mod tests {
 
         /// Takes the next packet and puts it on the track.
         fn emit(core: &mut SchedulerCore) -> ScheduledPacket {
-            core.advance_logon(NOW);
+            emit_at(core, NOW)
+        }
+
+        fn emit_at(core: &mut SchedulerCore, now: Instant) -> ScheduledPacket {
+            core.advance_logon(now);
             let scheduled = core.next_packet();
-            core.logon_packet_emitted(scheduled.packet, NOW);
+            core.logon_packet_emitted(scheduled.packet, now);
             scheduled
+        }
+
+        /// Runs `turns` packets of ten milliseconds each, calling
+        /// `before_turn` ahead of every one, and returns when the
+        /// invitations went out.
+        fn invitation_times(
+            core: &mut SchedulerCore,
+            turns: u32,
+            mut before_turn: impl FnMut(&mut SchedulerCore, u32),
+        ) -> Vec<Instant> {
+            (0..turns)
+                .filter_map(|turn| {
+                    let now = NOW + Duration::from_millis(10) * turn;
+                    before_turn(core, turn);
+                    let packet = emit_at(core, now).packet;
+                    core.slots.note_emitted(packet);
+                    matches!(packet, DccPacket::LogonEnable { .. }).then_some(now)
+                })
+                .collect()
         }
 
         fn drive(core: &mut SchedulerCore, address: DccAddress) {
@@ -500,7 +555,7 @@ mod tests {
         fn no_logon_attempt_is_spent_while_emission_is_paused() {
             let mut core = SchedulerCore::new();
             answer(&mut core, LogonAnswer::Announced(UID));
-            let long_after = NOW + embassy_time::Duration::from_secs(60);
+            let long_after = NOW + Duration::from_secs(60);
 
             // More rounds than a decoder has attempts.
             for _ in 0..10 {
@@ -518,7 +573,7 @@ mod tests {
         fn an_answer_lost_on_a_powered_track_spends_the_attempts() {
             let mut core = SchedulerCore::new();
             answer(&mut core, LogonAnswer::Announced(UID));
-            let long_after = NOW + embassy_time::Duration::from_secs(60);
+            let long_after = NOW + Duration::from_secs(60);
 
             assert_eq!(emit(&mut core).packet, SELECT);
             assert_eq!(core.advance_logon(long_after), None);
@@ -535,6 +590,92 @@ mod tests {
             );
         }
 
+        /// A layout with all twelve locomotives driven, at the ten
+        /// milliseconds a packet takes then.
+        #[test]
+        fn the_invitation_keeps_its_rhythm_beside_twelve_driven_locomotives() {
+            const PACKETS: u32 = 3_000;
+            let mut core = SchedulerCore::new();
+            core.set_logon_identity(0x0abc, 0);
+            for number in 1..=12 {
+                assert!(core.slots.set_speed(
+                    DccAddress::new_short(number).unwrap(),
+                    LogicalSpeed::zero(SpeedFormat::Speed128),
+                    Direction::Forward
+                ));
+            }
+            core.track_powered(NOW);
+
+            let sent_at = invitation_times(&mut core, PACKETS, |_, _| {});
+
+            // The speed commands of the twelve go first; RCN-218 wants the
+            // first invitation within a second of power-on.
+            let first = *sent_at.first().expect("an invitation");
+            assert!((first - NOW).as_millis() < 1_000, "first at {first:?}");
+            let longest_gap = sent_at
+                .windows(2)
+                .map(|pair| pair[1] - pair[0])
+                .max()
+                .expect("more than one invitation");
+            // RCN-218 §3.2: one at least every 300 ms.
+            assert!(longest_gap.as_millis() <= 300, "gap of {longest_gap:?}");
+            // And no more of the track than that takes: one packet in 25.
+            assert!(
+                sent_at.len() as u32 * 25 <= PACKETS + 25,
+                "{} sent",
+                sent_at.len()
+            );
+        }
+
+        /// Session carried by the next invitation, sent a second later.
+        fn next_session(core: &mut SchedulerCore, turn: u32) -> u8 {
+            let now = NOW + Duration::from_secs(u64::from(turn));
+            let packet = emit_at(core, now).packet;
+            let DccPacket::LogonEnable { session_id, .. } = packet else {
+                panic!("expected a logon enable, got {packet:?}");
+            };
+            session_id.value()
+        }
+
+        #[test]
+        fn a_session_starts_only_when_the_track_had_lost_power() {
+            let mut core = SchedulerCore::new();
+            core.set_logon_identity(0x0abc, 10);
+
+            core.track_powered(NOW);
+            let first = next_session(&mut core, 0);
+            // An app asking for power on a live track.
+            core.track_powered(NOW);
+            let same = next_session(&mut core, 1);
+            core.track_cut();
+            core.track_powered(NOW);
+            let second = next_session(&mut core, 2);
+
+            assert_eq!([first, same, second], [12, 12, 14]);
+        }
+
+        #[test]
+        fn a_throttle_that_never_rests_does_not_delay_the_invitation() {
+            let mut core = SchedulerCore::new();
+            core.track_powered(NOW);
+
+            // A new speed at every packet keeps a command waiting.
+            let sent_at = invitation_times(&mut core, 300, |core, turn| {
+                assert!(core.slots.set_speed(
+                    address(),
+                    LogicalSpeed::new((turn % 100) as u8 + 1, SpeedFormat::Speed128).unwrap(),
+                    Direction::Forward
+                ));
+            });
+
+            assert!(sent_at.len() > 10);
+            assert!(
+                sent_at
+                    .windows(2)
+                    .all(|pair| (pair[1] - pair[0]).as_millis() <= 300)
+            );
+        }
+
         #[test]
         fn a_select_dropped_with_the_queue_goes_out_afterwards() {
             let mut core = SchedulerCore::new();
@@ -546,6 +687,27 @@ mod tests {
             assert!(
                 (0..4).any(|_| emit(&mut core).packet == SELECT),
                 "the dropped select never went out"
+            );
+        }
+    }
+
+    /// Without DCC-A no packet to the logon address may reach the track.
+    #[cfg(not(feature = "dcc-a"))]
+    #[test]
+    fn no_logon_packet_is_scheduled_without_the_feature() {
+        let mut core = SchedulerCore::new();
+        assert!(core.slots.set_speed(
+            address(),
+            LogicalSpeed::zero(SpeedFormat::Speed128),
+            Direction::Forward
+        ));
+
+        for _ in 0..1_000 {
+            let packet = core.next_packet().packet;
+            core.slots.note_emitted(packet);
+            assert_eq!(
+                packet.logon_command(),
+                dcc_protocol::packet::LogonCommand::None
             );
         }
     }

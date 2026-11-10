@@ -252,6 +252,23 @@ impl fmt::Display for ParseError {
 
 impl core::error::Error for ParseError {}
 
+impl ParseError {
+    /// Whether this is what two decoders answering a logon enable together
+    /// look like: a whole block with symbols that are no valid code.
+    ///
+    /// A block of the wrong length is a single answer cut short, or noise.
+    #[must_use]
+    pub fn is_logon_collision(self) -> bool {
+        matches!(
+            self,
+            Self::Invalid4Of8Code(_)
+                | Self::Reserved4Of8Code(_)
+                | Self::ControlSymbolNotAllowed(_)
+                | Self::ControlSymbolInsideDatagram { .. }
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub struct RailcomLogonId {
@@ -1661,5 +1678,16 @@ mod tests {
             parsed.items.as_slice(),
             &[RailcomItem::Datagram(RailcomDatagram::CvData(0x42))]
         );
+    }
+
+    #[test]
+    fn only_a_whole_block_of_broken_symbols_reads_as_a_logon_collision() {
+        // 0xff is no 4-of-8 code: two decoders driving the line together.
+        let collided = parse_logon_answer(LogonCommand::Enable, &[0xff, 0xff], &[0xff; 6]);
+        assert!(collided.is_err_and(ParseError::is_logon_collision));
+
+        // A lone channel-2 half is one answer cut short, or noise.
+        let cut_short = parse_logon_answer(LogonCommand::Enable, &[], &[0xff; 6]);
+        assert!(cut_short.is_err_and(|error| !error.is_logon_collision()));
     }
 }

@@ -32,6 +32,8 @@ pub async fn packet_scheduler_task(
     let mut railcom_budget = RailcomCutoutBudget::new();
     let mut discovery = RailcomDiscovery::new(Instant::now());
     let mut observed_invariant_recoveries = scheduler_invariant_recovery_count();
+    #[cfg(feature = "dcc-a")]
+    set_logon_identity(&mut core);
 
     loop {
         if let Ok(generation) = power_quiesce_receiver.try_receive() {
@@ -200,6 +202,22 @@ fn log_logon_event(event: Option<LogonEvent>) {
     }
 }
 
+/// Gives the decoder table the station id, taken from the board's MAC
+/// address, and the session to start from.
+#[cfg(feature = "dcc-a")]
+fn set_logon_identity(core: &mut SchedulerCore) {
+    // The session only has to differ from the one of the last boot; with no
+    // memory of it, any value is as good as another. The radio that feeds
+    // the generator may not run yet, so the time this task started at is
+    // mixed in.
+    let [random, ..] = esp_hal::rng::Rng::new().random().to_le_bytes();
+    let [uptime, ..] = Instant::now().as_ticks().to_le_bytes();
+    core.set_logon_identity(
+        super::logon::station_id_from(esp_hal::efuse::Efuse::mac_address()),
+        random ^ uptime,
+    );
+}
+
 fn apply_command(
     core: &mut SchedulerCore,
     discovery: &mut RailcomDiscovery,
@@ -221,6 +239,8 @@ fn apply_command(
         CommandOutcome::Rejected => defmt::warn!("scheduler command rejected"),
         CommandOutcome::RestartRailcomDiscovery => {
             discovery.restart(Instant::now());
+            #[cfg(feature = "dcc-a")]
+            core.track_powered(Instant::now());
             defmt::info!("railcom discovery: restarted after track enable");
         }
     }
