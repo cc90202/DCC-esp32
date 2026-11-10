@@ -6,13 +6,13 @@
 
 use defmt::{info, warn};
 
-use crate::cutout::CutoutMode;
+use crate::cutout::LogonCommand;
 use crate::dcc::cv::channels::PomRailcomResultSender;
 use crate::dcc::scheduler::channels::SchedulerCommandSender;
 use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
 use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::{FragmentWindow, RailcomLocoSighting};
-use crate::railcom::parser::{LogonPairing, RailcomLogonResponse};
+use crate::railcom::parser::{LogonPairing, ParseError, RailcomLogonResponse};
 use crate::railcom::pipeline::{
     RailcomRxResult, record_pom_result_dropped, record_pom_result_forwarded, rx_overflow_total,
 };
@@ -52,6 +52,22 @@ impl LogonDispatchState {
         if self.suspect_windows > 0 {
             self.suspect_windows -= 1;
             crate::railcom::loco_tracker::forget_pending_fragment();
+        }
+    }
+
+    /// A select whose cutout closed without a short info is forgotten, so
+    /// the next id from that decoder selects it again.
+    fn forget_unanswered_select(
+        &mut self,
+        command: LogonCommand,
+        channel: RailcomChannel,
+        answer: Option<&Result<RailcomLogonResponse, ParseError>>,
+    ) {
+        if command == LogonCommand::Select
+            && channel == RailcomChannel::Channel2
+            && !matches!(answer, Some(Ok(_)))
+        {
+            self.select_sent_for = None;
         }
     }
 
@@ -97,7 +113,35 @@ impl LogonDispatchState {
                 );
                 log_first_sighting("railcom logon address", sighting);
             }
+            RailcomLogonResponse::DecoderState(state) => {
+                info!(
+                    "railcom logon assigned: change_flags={=u8:#04x} change_count={} capabilities={=u16:#06x} packet={}",
+                    state.change_flags, state.change_count, state.capabilities, packet_sequence,
+                );
+            }
         }
+    }
+}
+
+/// Bench diagnostic: what came back after a logon command and was not its
+/// answer. Compiled out unless `bench-diag` is enabled: a decoder without
+/// DCC-A may talk in these cutouts at every logon enable.
+#[cfg_attr(
+    not(feature = "bench-diag"),
+    expect(
+        unused_variables,
+        reason = "the diagnostic macro removes its arguments when bench diagnostics are disabled"
+    )
+)]
+fn log_rejected_logon_answer(result: &RailcomRxResult, command: LogonCommand, error: ParseError) {
+    bench_diag! {
+        info!(
+            "railcom logon answer rejected: command={:?} error={:?} raw={=[u8]:#04x} packet={}",
+            command,
+            error,
+            result.window.raw_slice(),
+            result.window.packet_sequence,
+        );
     }
 }
 
@@ -196,6 +240,8 @@ fn log_pom_window(
     pom_result: Option<&PomRailcomResult>,
 ) {
     bench_diag! {
+        use crate::cutout::CutoutMode;
+
         let Some(metadata) = packet_metadata else {
             return;
         };
@@ -228,15 +274,15 @@ fn log_pom_window(
     }
 }
 
-/// Logon packets go to the broadcast address 254 and open a telemetry cutout,
-/// so a window after a locomotive packet or a POM never holds a logon answer.
-/// Never without the `dcc-a` feature (see `Cargo.toml`): no logon answer is
-/// read, so no Select goes out.
-fn may_carry_logon_answer(packet_metadata: Option<RailcomPacketMetadata>) -> bool {
-    cfg!(feature = "dcc-a")
-        && packet_metadata.is_some_and(|metadata| {
-            metadata.target_address.is_none() && metadata.cutout == CutoutMode::Telemetry
-        })
+/// Logon command whose answer this window may hold.
+///
+/// Always none without the `dcc-a` feature (see `Cargo.toml`): no logon
+/// answer is read, so no Select goes out.
+fn logon_command(packet_metadata: Option<RailcomPacketMetadata>) -> LogonCommand {
+    match packet_metadata {
+        Some(metadata) if cfg!(feature = "dcc-a") => metadata.logon,
+        _ => LogonCommand::None,
+    }
 }
 
 fn dispatch_processed_window(
@@ -250,20 +296,23 @@ fn dispatch_processed_window(
         crate::track_output::railcom_packet_metadata(result.window.packet_sequence);
 
     state.forget_fragment_across_lost_windows();
-    let logon_response = if may_carry_logon_answer(packet_metadata) {
-        state.logon_pairing.observe(
-            result.window.packet_sequence,
-            result.window.channel,
-            result.window.raw_slice(),
-        )
-    } else {
-        None
-    };
+    let command = logon_command(packet_metadata);
+    let logon_answer = state.logon_pairing.observe(
+        command,
+        result.window.packet_sequence,
+        result.window.channel,
+        result.window.raw_slice(),
+    );
+    state.forget_unanswered_select(command, result.window.channel, logon_answer.as_ref());
     // A window that completes a logon answer carries a decoder identity, not
     // address datagrams, even when its symbols also parse as an address pair.
-    match logon_response {
-        Some(response) => {
+    match logon_answer {
+        Some(Ok(response)) => {
             state.dispatch_response(result.window.packet_sequence, response, scheduler_sender);
+        }
+        Some(Err(error)) => {
+            log_rejected_logon_answer(result, command, error);
+            record_loco_sighting(result, packet_metadata, complete_items);
         }
         None => record_loco_sighting(result, packet_metadata, complete_items),
     }

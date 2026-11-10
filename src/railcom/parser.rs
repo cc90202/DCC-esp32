@@ -2,7 +2,7 @@ use core::fmt;
 
 use heapless::Vec;
 
-use crate::cutout::{PacketSequence, RailcomChannel};
+use crate::cutout::{LogonCommand, PacketSequence, RailcomChannel};
 use crate::dcc::DccAddress;
 use dcc_protocol::railcom_data::{ExtPayload, RailcomDatagram, RailcomItem};
 
@@ -182,6 +182,15 @@ pub enum ParseError {
     },
     /// The short info names no locomotive address; the raw address bytes.
     InvalidLogonAddress([u8; 2]),
+    /// A logon answer is two symbols in channel 1 and six in channel 2;
+    /// the symbols each channel held.
+    LogonAnswerLength {
+        channel1_symbols: usize,
+        channel2_symbols: usize,
+    },
+    /// A well-formed block that is not the answer to the logon command sent;
+    /// its 4-bit identifier.
+    UnexpectedLogonAnswer(u8),
     UnsupportedDatagramId(u8),
     TooManyItems,
 }
@@ -222,6 +231,17 @@ impl fmt::Display for ParseError {
                 formatter,
                 "invalid RailCom logon address bytes {high:#04x} {low:#04x}"
             ),
+            Self::LogonAnswerLength {
+                channel1_symbols,
+                channel2_symbols,
+            } => write!(
+                formatter,
+                "RailCom logon answer of {channel1_symbols}+{channel2_symbols} symbols instead of 2+6"
+            ),
+            Self::UnexpectedLogonAnswer(id) => write!(
+                formatter,
+                "RailCom block with identifier {id} does not answer the logon command"
+            ),
             Self::UnsupportedDatagramId(id) => {
                 write!(formatter, "unsupported RailCom datagram identifier {id}")
             }
@@ -245,11 +265,24 @@ pub struct RailcomLogonSelect {
     pub address: DccAddress,
 }
 
+/// RCN-218 §4.2 decoder state, the answer that confirms a logon assign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct RailcomDecoderState {
+    /// Which groups of decoder settings changed since the flags were cleared.
+    pub change_flags: u8,
+    /// 12-bit count of configuration changes.
+    pub change_count: u16,
+    /// Protocol capabilities, bytes 2 and 3 of data space 0.
+    pub capabilities: u16,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
 pub enum RailcomLogonResponse {
     DecoderId(RailcomLogonId),
     Select(RailcomLogonSelect),
+    DecoderState(RailcomDecoderState),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,27 +501,31 @@ pub fn parse_channel1(raw_bytes: &[u8]) -> Result<RailcomParseResult, ParseError
     items_from_symbols(&symbols, RailcomChannel::Channel1)
 }
 
+/// RCN-218 §4.1 identifier of the decoder id.
+const ID_DECODER_UNIQUE: u8 = 15;
+/// RCN-218 §4.2 identifier of the decoder state.
+const ID_DECODER_STATE: u8 = 13;
+
 /// Top two bits of the first short-info byte.
 const SHORT_INFO_MARKER_MASK: u8 = 0xc0;
 /// Their value in a short info: bit 7 set, bit 6 reserved as 0.
 const SHORT_INFO_MARKER: u8 = 0x80;
 
-pub fn parse_logon_response_48(
+/// Reads the 48-bit answer to the logon `command` sent before the cutout.
+///
+/// RCN-218 gives each command its own answer: a decoder id to an enable
+/// (§4.1, no CRC), a short info to a select (§5.1) and a decoder state to an
+/// assign (§4.2), the last two under a CRC. Anything else is an error, a
+/// well-formed answer of another kind included.
+pub fn parse_logon_answer(
+    command: LogonCommand,
     channel1_raw: &[u8],
     channel2_raw: &[u8],
 ) -> Result<RailcomLogonResponse, ParseError> {
-    if channel1_raw.len() != 2 {
-        return Err(ParseError::TruncatedDatagram {
-            id: 15,
-            needed_symbols: 8,
-            available_symbols: channel1_raw.len() + channel2_raw.len(),
-        });
-    }
-    if channel2_raw.len() != 6 {
-        return Err(ParseError::TruncatedDatagram {
-            id: 15,
-            needed_symbols: 8,
-            available_symbols: channel1_raw.len() + channel2_raw.len(),
+    if channel1_raw.len() != 2 || channel2_raw.len() != 6 {
+        return Err(ParseError::LogonAnswerLength {
+            channel1_symbols: channel1_raw.len(),
+            channel2_symbols: channel2_raw.len(),
         });
     }
 
@@ -507,81 +544,109 @@ pub fn parse_logon_response_48(
     }
 
     let id = (useful_bits >> 44) as u8;
-    if id == 15 {
-        let payload = useful_bits & ((1u64 << 44) - 1);
-        return Ok(RailcomLogonResponse::DecoderId(RailcomLogonId {
-            manufacturer_id: ((payload >> 32) & 0x0fff) as u16,
-            decoder_id: (payload & 0xffff_ffff) as u32,
-        }));
+    match command {
+        LogonCommand::None => Err(ParseError::UnexpectedLogonAnswer(id)),
+        LogonCommand::Enable if id == ID_DECODER_UNIQUE => {
+            Ok(RailcomLogonResponse::DecoderId(RailcomLogonId {
+                manufacturer_id: ((useful_bits >> 32) & 0x0fff) as u16,
+                decoder_id: (useful_bits & 0xffff_ffff) as u32,
+            }))
+        }
+        LogonCommand::Enable => Err(ParseError::UnexpectedLogonAnswer(id)),
+        LogonCommand::Select => {
+            let bytes = crc_checked_logon_bytes(useful_bits)?;
+            if bytes[0] & SHORT_INFO_MARKER_MASK != SHORT_INFO_MARKER {
+                return Err(ParseError::UnexpectedLogonAnswer(id));
+            }
+            // Not the two-byte address form [`DccAddress::from_address_fragments`]
+            // reads: below the marker sit the RCN-218 annex D prefix and A7..A0.
+            let address_bytes = [bytes[0], bytes[1]];
+            let address = dcc_protocol::logon::decode_address(address_bytes)
+                .ok_or(ParseError::InvalidLogonAddress(address_bytes))?;
+            Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
+        }
+        LogonCommand::Assign => {
+            let bytes = crc_checked_logon_bytes(useful_bits)?;
+            if id != ID_DECODER_STATE {
+                return Err(ParseError::UnexpectedLogonAnswer(id));
+            }
+            Ok(RailcomLogonResponse::DecoderState(RailcomDecoderState {
+                change_flags: (bytes[0] << 4) | (bytes[1] >> 4),
+                change_count: u16::from_be_bytes([bytes[1] & 0x0f, bytes[2]]),
+                capabilities: u16::from_be_bytes([bytes[3], bytes[4]]),
+            }))
+        }
     }
+}
 
-    let bytes = [
-        ((useful_bits >> 40) & 0xff) as u8,
-        ((useful_bits >> 32) & 0xff) as u8,
-        ((useful_bits >> 24) & 0xff) as u8,
-        ((useful_bits >> 16) & 0xff) as u8,
-        ((useful_bits >> 8) & 0xff) as u8,
-        (useful_bits & 0xff) as u8,
-    ];
-    let expected_crc = dcc_protocol::logon::crc8_dallas_maxim(&bytes[..5]);
-    let actual_crc = bytes[5];
-    if expected_crc != actual_crc {
-        return Err(ParseError::InvalidLogonCrc {
-            expected: expected_crc,
-            actual: actual_crc,
-        });
+/// The five data bytes of a CRC-protected logon answer.
+///
+/// The CRC comes first, so a corrupted answer reads as corrupted whatever its
+/// damaged bits then look like.
+fn crc_checked_logon_bytes(useful_bits: u64) -> Result<[u8; 5], ParseError> {
+    let [_, _, bytes @ .., actual] = useful_bits.to_be_bytes();
+    let expected = dcc_protocol::logon::crc8_dallas_maxim(&bytes);
+    if expected == actual {
+        Ok(bytes)
+    } else {
+        Err(ParseError::InvalidLogonCrc { expected, actual })
     }
-
-    // Checked after the CRC, so a corrupted frame reads as corrupted.
-    // RCN-218 §5.1: the short info starts with bits 10. ID13, the answer to
-    // a logon assign, starts with 11 and carries a valid CRC too.
-    if bytes[0] & SHORT_INFO_MARKER_MASK != SHORT_INFO_MARKER {
-        return Err(ParseError::UnsupportedDatagramId(id));
-    }
-
-    // Not the two-byte address form [`DccAddress::from_address_fragments`]
-    // reads: below the marker sit the RCN-218 annex D prefix and A7..A0.
-    let address_bytes = [bytes[0], bytes[1]];
-    let address = dcc_protocol::logon::decode_address(address_bytes)
-        .ok_or(ParseError::InvalidLogonAddress(address_bytes))?;
-
-    Ok(RailcomLogonResponse::Select(RailcomLogonSelect { address }))
 }
 
 /// Joins the two halves of an RCN-218 logon answer across one cutout.
 ///
 /// The 48-bit answer puts two symbols in channel 1 and six in channel 2 of the
 /// same cutout. The channel-1 half is held until channel 2 of that cutout
-/// arrives, then the pair goes to [`parse_logon_response_48`].
+/// arrives, then the pair goes to [`parse_logon_answer`].
 #[derive(Debug, Default)]
 pub struct LogonPairing {
-    pending_channel1: Option<(PacketSequence, [u8; 2])>,
+    pending_channel1: Option<(PacketSequence, Channel1Half)>,
 }
 
+/// Channel-1 bytes kept for the pairing. One more than the two an answer
+/// uses, so a window that holds too many still reads as too many.
+type Channel1Half = Vec<u8, { CHANNEL1_MAX_BYTES + 1 }>;
+
 impl LogonPairing {
-    /// Feeds one receive window; returns the logon answer it completes, if any.
+    /// Feeds one receive window of the cutout that follows `command`.
+    ///
+    /// Returns nothing when there is no answer to read: no logon command,
+    /// channel 1, or an empty channel 2. A logon answer always fills channel
+    /// 2, while a decoder without DCC-A may send its address in channel 1
+    /// alone. Otherwise the answer, or why what was received is not one:
+    /// several decoders answering at once show up here as an error.
     pub fn observe(
         &mut self,
+        command: LogonCommand,
         packet_sequence: PacketSequence,
         channel: RailcomChannel,
         raw_bytes: &[u8],
-    ) -> Option<RailcomLogonResponse> {
+    ) -> Option<Result<RailcomLogonResponse, ParseError>> {
+        if command == LogonCommand::None {
+            return None;
+        }
         match channel {
             RailcomChannel::Channel1 => {
                 // The capture window keeps the UART's break-frame tail.
-                self.pending_channel1 = match *strip_channel1_break_tail(raw_bytes) {
-                    [first, second] => Some((packet_sequence, [first, second])),
-                    _ => None,
-                };
+                let half = strip_channel1_break_tail(raw_bytes)
+                    .iter()
+                    .copied()
+                    .take(CHANNEL1_MAX_BYTES + 1)
+                    .collect();
+                self.pending_channel1 = Some((packet_sequence, half));
                 None
             }
             RailcomChannel::Channel2 => {
-                let (pending_sequence, channel1_raw) = self.pending_channel1?;
-                if pending_sequence != packet_sequence {
+                let channel1_raw = self
+                    .pending_channel1
+                    .take()
+                    .filter(|&(pending_sequence, _)| pending_sequence == packet_sequence)
+                    .map(|(_, half)| half)
+                    .unwrap_or_default();
+                if raw_bytes.is_empty() {
                     return None;
                 }
-                self.pending_channel1 = None;
-                parse_logon_response_48(&channel1_raw, raw_bytes).ok()
+                Some(parse_logon_answer(command, &channel1_raw, raw_bytes))
             }
         }
     }
@@ -1186,8 +1251,8 @@ mod tests {
     fn test_parse_logon_id15_split_across_channels() {
         let payload = (u64::from(0x0D_u16) << 32) | 0x12_34_56_78;
         let raw = encode_48_bit_for_test(15, payload);
-        let parsed =
-            parse_logon_response_48(&raw[..2], &raw[2..]).expect("id15 parse must succeed");
+        let parsed = parse_logon_answer(LogonCommand::Enable, &raw[..2], &raw[2..])
+            .expect("id15 parse must succeed");
 
         assert_eq!(
             parsed,
@@ -1201,9 +1266,14 @@ mod tests {
     /// The six bytes of a short-info answer whose first two bytes are
     /// `address`, with the capability bytes zero and its CRC.
     fn short_info_bytes_for_test(address: [u8; 2]) -> [u8; 6] {
-        let mut bytes = [address[0], address[1], 0, 0, 0, 0];
-        bytes[5] = dcc_protocol::logon::crc8_dallas_maxim(&bytes[..5]);
-        bytes
+        crc_framed_bytes_for_test([address[0], address[1], 0, 0, 0])
+    }
+
+    /// Five data bytes followed by their CRC, as the CRC-protected logon
+    /// answers travel.
+    fn crc_framed_bytes_for_test(data: [u8; 5]) -> [u8; 6] {
+        let [a, b, c, d, e] = data;
+        [a, b, c, d, e, dcc_protocol::logon::crc8_dallas_maxim(&data)]
     }
 
     fn encode_bytes_for_test(bytes: [u8; 6]) -> [u8; 8] {
@@ -1218,8 +1288,8 @@ mod tests {
     fn test_parse_logon_response_select_short_address() {
         // RCN-218 annex D: frame marker 0x80 plus prefix 0x38, then A6..A0.
         let raw = short_info_for_test([0xB8, 4]);
-        let parsed =
-            parse_logon_response_48(&raw[..2], &raw[2..]).expect("select parse must succeed");
+        let parsed = parse_logon_answer(LogonCommand::Select, &raw[..2], &raw[2..])
+            .expect("select parse must succeed");
 
         assert_eq!(
             parsed,
@@ -1235,7 +1305,7 @@ mod tests {
         let raw = short_info_for_test([0x80, 100]);
 
         assert_eq!(
-            parse_logon_response_48(&raw[..2], &raw[2..]),
+            parse_logon_answer(LogonCommand::Select, &raw[..2], &raw[2..]),
             Err(ParseError::InvalidLogonAddress([0x80, 100]))
         );
     }
@@ -1243,13 +1313,13 @@ mod tests {
     #[test]
     fn test_parse_logon_response_select_requires_the_short_info_marker() {
         // The short info starts with bits 10; a frame starting with 11 is
-        // another answer, whatever its CRC.
+        // another answer, whatever its CRC: 0xD3 would be a decoder state.
         for (first, id) in [(0xC3, 12), (0xD3, 13)] {
             let raw = short_info_for_test([first, 0xE9]);
 
             assert_eq!(
-                parse_logon_response_48(&raw[..2], &raw[2..]),
-                Err(ParseError::UnsupportedDatagramId(id)),
+                parse_logon_answer(LogonCommand::Select, &raw[..2], &raw[2..]),
+                Err(ParseError::UnexpectedLogonAnswer(id)),
                 "first byte {first:#04x}"
             );
         }
@@ -1258,8 +1328,8 @@ mod tests {
     #[test]
     fn test_parse_logon_response_select_long_address() {
         let raw = short_info_for_test([0x83, 0xE9]);
-        let parsed =
-            parse_logon_response_48(&raw[..2], &raw[2..]).expect("select parse must succeed");
+        let parsed = parse_logon_answer(LogonCommand::Select, &raw[..2], &raw[2..])
+            .expect("select parse must succeed");
 
         assert_eq!(
             parsed,
@@ -1280,7 +1350,7 @@ mod tests {
                 raw[position] = code;
 
                 assert_eq!(
-                    parse_logon_response_48(&raw[..2], &raw[2..]),
+                    parse_logon_answer(LogonCommand::Enable, &raw[..2], &raw[2..]),
                     Err(ParseError::ControlSymbolNotAllowed(code)),
                     "control code {code:#04x} at position {position}"
                 );
@@ -1295,8 +1365,8 @@ mod tests {
         let actual = expected ^ 0x01;
         bytes[5] = actual;
         let raw = encode_bytes_for_test(bytes);
-        let err =
-            parse_logon_response_48(&raw[..2], &raw[2..]).expect_err("bad crc must be rejected");
+        let err = parse_logon_answer(LogonCommand::Select, &raw[..2], &raw[2..])
+            .expect_err("bad crc must be rejected");
 
         assert_eq!(err, ParseError::InvalidLogonCrc { expected, actual });
     }
@@ -1309,6 +1379,7 @@ mod tests {
 
         assert_eq!(
             pairing.observe(
+                LogonCommand::Enable,
                 PacketSequence::new(9),
                 RailcomChannel::Channel1,
                 &[0xff, raw[0], raw[1]]
@@ -1316,11 +1387,16 @@ mod tests {
             None
         );
         assert_eq!(
-            pairing.observe(PacketSequence::new(9), RailcomChannel::Channel2, &raw[2..]),
-            Some(RailcomLogonResponse::DecoderId(RailcomLogonId {
+            pairing.observe(
+                LogonCommand::Enable,
+                PacketSequence::new(9),
+                RailcomChannel::Channel2,
+                &raw[2..]
+            ),
+            Some(Ok(RailcomLogonResponse::DecoderId(RailcomLogonId {
                 manufacturer_id: 0x0D,
                 decoder_id: 0x12_34_56_78,
-            }))
+            })))
         );
     }
 
@@ -1355,14 +1431,163 @@ mod tests {
 
         let mut pairing = LogonPairing::default();
         assert_eq!(
-            pairing.observe(PacketSequence::new(3), RailcomChannel::Channel1, &channel1),
+            pairing.observe(
+                LogonCommand::Enable,
+                PacketSequence::new(3),
+                RailcomChannel::Channel1,
+                &channel1
+            ),
             None
         );
         assert_eq!(
-            pairing.observe(PacketSequence::new(3), RailcomChannel::Channel2, &channel2),
-            Some(RailcomLogonResponse::DecoderId(RailcomLogonId {
+            pairing.observe(
+                LogonCommand::Enable,
+                PacketSequence::new(3),
+                RailcomChannel::Channel2,
+                &channel2
+            ),
+            Some(Ok(RailcomLogonResponse::DecoderId(RailcomLogonId {
                 manufacturer_id: 0x001,
                 decoder_id: 0x0020_4000,
+            })))
+        );
+    }
+
+    #[test]
+    fn logon_pairing_reads_no_answer_into_an_empty_channel2() {
+        // A decoder without DCC-A may send its address in channel 1 after a
+        // logon enable; a logon answer always fills channel 2.
+        let adr_high = encode_12_bit_for_test(1, 0x00);
+        let mut pairing = LogonPairing::default();
+
+        for channel1 in [&[][..], &adr_high[..]] {
+            let sequence = PacketSequence::new(5);
+            assert_eq!(
+                pairing.observe(
+                    LogonCommand::Enable,
+                    sequence,
+                    RailcomChannel::Channel1,
+                    channel1
+                ),
+                None
+            );
+            assert_eq!(
+                pairing.observe(
+                    LogonCommand::Enable,
+                    sequence,
+                    RailcomChannel::Channel2,
+                    &[]
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn logon_pairing_reads_nothing_without_a_logon_command() {
+        let raw = encode_48_bit_for_test(15, 0x12_34_56_78);
+        let mut pairing = LogonPairing::default();
+        let sequence = PacketSequence::new(5);
+
+        pairing.observe(
+            LogonCommand::None,
+            sequence,
+            RailcomChannel::Channel1,
+            &raw[..2],
+        );
+
+        assert_eq!(
+            pairing.observe(
+                LogonCommand::None,
+                sequence,
+                RailcomChannel::Channel2,
+                &raw[2..]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_well_formed_answer_to_another_command_is_rejected() {
+        let decoder_id = encode_48_bit_for_test(15, 0x12_34_56_78);
+        let short_info = short_info_for_test([0xB8, 4]);
+
+        // A decoder id carries no CRC, so after a select or an assign it
+        // fails the CRC those answers are read under.
+        for command in [LogonCommand::Select, LogonCommand::Assign] {
+            assert!(matches!(
+                parse_logon_answer(command, &decoder_id[..2], &decoder_id[2..]),
+                Err(ParseError::InvalidLogonCrc { .. })
+            ));
+        }
+        assert_eq!(
+            parse_logon_answer(LogonCommand::Enable, &short_info[..2], &short_info[2..]),
+            Err(ParseError::UnexpectedLogonAnswer(11))
+        );
+        assert_eq!(
+            parse_logon_answer(LogonCommand::Assign, &short_info[..2], &short_info[2..]),
+            Err(ParseError::UnexpectedLogonAnswer(11))
+        );
+    }
+
+    #[test]
+    fn logon_pairing_reports_what_is_not_an_answer() {
+        let raw = encode_48_bit_for_test(15, 0x12_34_56_78);
+        let mut pairing = LogonPairing::default();
+
+        // Channel 2 alone: the channel-1 half of this cutout never came, and
+        // the half of an earlier cutout is not joined to it.
+        pairing.observe(
+            LogonCommand::Enable,
+            PacketSequence::new(6),
+            RailcomChannel::Channel1,
+            &raw[..2],
+        );
+        assert_eq!(
+            pairing.observe(
+                LogonCommand::Enable,
+                PacketSequence::new(7),
+                RailcomChannel::Channel2,
+                &raw[2..]
+            ),
+            Some(Err(ParseError::LogonAnswerLength {
+                channel1_symbols: 0,
+                channel2_symbols: 6,
+            }))
+        );
+
+        // A byte that is no 4-of-8 code, as two decoders answering at once
+        // produce.
+        let mut collided = raw;
+        collided[5] = 0xff;
+        pairing.observe(
+            LogonCommand::Enable,
+            PacketSequence::new(8),
+            RailcomChannel::Channel1,
+            &collided[..2],
+        );
+        assert_eq!(
+            pairing.observe(
+                LogonCommand::Enable,
+                PacketSequence::new(8),
+                RailcomChannel::Channel2,
+                &collided[2..]
+            ),
+            Some(Err(ParseError::Invalid4Of8Code(0xff)))
+        );
+    }
+
+    #[test]
+    fn test_parse_logon_response_decoder_state() {
+        // ID 13, change flags 0xA5, change count 0x123, capabilities 0xBEEF.
+        let raw = encode_bytes_for_test(crc_framed_bytes_for_test([0xDA, 0x51, 0x23, 0xBE, 0xEF]));
+
+        assert_eq!(
+            parse_logon_answer(LogonCommand::Assign, &raw[..2], &raw[2..]),
+            Ok(RailcomLogonResponse::DecoderState(RailcomDecoderState {
+                change_flags: 0xA5,
+                change_count: 0x123,
+                capabilities: 0xBEEF,
             }))
         );
     }

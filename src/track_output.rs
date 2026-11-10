@@ -23,7 +23,7 @@ use crate::cutout::timing::{
     CHANNEL2_END_US, CUTOUT_CONTROL_START_US, CutoutTimeline, RX_CAPTURE_START_US,
     RX_CHANNEL_SPLIT_US, RX_ISR_GUARD_US,
 };
-use crate::cutout::{CutoutMode, PacketSequence, RailcomChannel};
+use crate::cutout::{CutoutMode, LogonCommand, PacketSequence, RailcomChannel};
 use crate::cutout_metadata::PackedRailcomPacketMetadata;
 use crate::dcc::{DccAddress, PomRequestId};
 use crate::diagnostics::diagnostic_counters;
@@ -470,6 +470,7 @@ pub(crate) struct CutoutRequest {
     pub cutout: CutoutMode,
     pub target_address: Option<DccAddress>,
     pub pom_request_id: Option<PomRequestId>,
+    pub logon: LogonCommand,
 }
 
 /// Requests a physical empty cutout from the RMT packet-boundary ISR.
@@ -490,6 +491,7 @@ pub(crate) fn request_cutout_from_isr(request: CutoutRequest) -> bool {
         cutout,
         target_address,
         pom_request_id,
+        logon,
     } = request;
     // The RMT handler captures this timestamp at the hardware packet boundary,
     // before counters and shared-state access. Work performed below therefore
@@ -531,8 +533,9 @@ pub(crate) fn request_cutout_from_isr(request: CutoutRequest) -> bool {
         // Keep GPIO18/SLEEP unchanged during RailCom. The DRV8874 sleep/wake path
         // is too slow for the sub-millisecond cutout, so GPIO4 owns this sequence.
         cutout_off_fast(hw);
-        let metadata_raw =
-            PackedRailcomPacketMetadata::new(target_address, cutout, pom_request_id).raw();
+        let metadata_raw = PackedRailcomPacketMetadata::new(target_address, cutout, pom_request_id)
+            .with_logon(logon)
+            .raw();
         let pom_request_id_raw = pom_request_id.map_or(0, PomRequestId::value);
         PENDING_CUTOUT_PACKET_SEQUENCE.store(packet_sequence.value(), Ordering::Release);
         PENDING_CUTOUT_METADATA.store(metadata_raw, Ordering::Release);

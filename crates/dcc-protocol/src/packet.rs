@@ -39,7 +39,8 @@ use crate::speed28::encode_nmra_instruction_speed_bits;
 pub use address::HighFragment;
 pub use address::{DccAddress, DccAddressKind};
 pub use values::{
-    BinaryStateAddress, LogonGroup, LogonSessionId, NmraSpeed128, PomCv, ServiceModeCv,
+    BinaryStateAddress, LogonCommand, LogonGroup, LogonSessionId, NmraSpeed128, PomCv,
+    ServiceModeCv,
 };
 
 /// Locomotive direction
@@ -279,6 +280,28 @@ impl DccPacket {
             | Self::LogonAssign { .. }
             | Self::ServiceModeVerifyByte { .. }
             | Self::ServiceModeWriteByte { .. } => None,
+        }
+    }
+
+    /// Logon command this packet carries, whose answer fills its cutout.
+    #[must_use]
+    pub const fn logon_command(&self) -> LogonCommand {
+        match *self {
+            Self::LogonEnable { .. } => LogonCommand::Enable,
+            Self::LogonSelect { .. } => LogonCommand::Select,
+            Self::LogonAssign { .. } => LogonCommand::Assign,
+            Self::Idle
+            | Self::Reset
+            | Self::Speed28 { .. }
+            | Self::Speed128 { .. }
+            | Self::FunctionGroup { .. }
+            | Self::EmergencyStop { .. }
+            | Self::BroadcastStop
+            | Self::BroadcastBinaryStateShort { .. }
+            | Self::ServiceModeVerifyByte { .. }
+            | Self::ServiceModeWriteByte { .. }
+            | Self::PomWriteByte { .. }
+            | Self::PomReadByte { .. } => LogonCommand::None,
         }
     }
 
