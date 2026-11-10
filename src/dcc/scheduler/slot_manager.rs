@@ -541,6 +541,12 @@ impl SlotManager {
         self.pending_railcom_telemetry.is_none()
     }
 
+    /// Addresses of the active locomotives.
+    #[cfg(feature = "dcc-a")]
+    pub(crate) fn addresses(&self) -> impl Iterator<Item = DccAddress> + '_ {
+        self.slots.iter().map(|slot| slot.address)
+    }
+
     /// Whether a locomotive is active on `address`.
     #[cfg(feature = "dcc-a")]
     #[must_use]

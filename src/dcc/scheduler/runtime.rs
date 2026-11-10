@@ -9,6 +9,8 @@ use crate::dcc::DccFrame;
 use crate::dcc::channels::{DccFrameSender, PowerQuiesceReceiver};
 use crate::macros::bench_diag;
 use crate::system_status::DisplayEvent;
+#[cfg(feature = "dcc-a")]
+use crate::system_status::LogonStatus;
 use crate::system_status::channels::DisplaySender;
 
 use super::SchedulerCommand;
@@ -28,10 +30,13 @@ pub async fn packet_scheduler_task(
     display_sender: DisplaySender,
 ) -> ! {
     let mut core = SchedulerCore::new();
+    #[cfg(not(feature = "dcc-a"))]
     let mut prev_slot_count: usize = 0;
     let mut railcom_budget = RailcomCutoutBudget::new();
     let mut discovery = RailcomDiscovery::new(Instant::now());
     let mut observed_invariant_recoveries = scheduler_invariant_recovery_count();
+    #[cfg(feature = "dcc-a")]
+    let mut logon_display = LogonDisplay::new(Instant::now());
     #[cfg(feature = "dcc-a")]
     set_logon_identity(&mut core);
 
@@ -44,7 +49,13 @@ pub async fn packet_scheduler_task(
         // Commands are picked up within one packet interval (~8 ms), and the
         // frame they produce waits behind at most one queued frame.
         while let Ok(command) = command_receiver.try_receive() {
-            apply_command(&mut core, &mut discovery, command);
+            apply_command(
+                &mut core,
+                &mut discovery,
+                #[cfg(feature = "dcc-a")]
+                display_sender,
+                command,
+            );
         }
 
         core.flush_loco_response_with(|response| {
@@ -74,19 +85,10 @@ pub async fn packet_scheduler_task(
             }
         }
 
-        let slot_count = core.slot_count();
-        if slot_count != prev_slot_count {
-            prev_slot_count = slot_count;
-            if display_sender
-                .try_send(DisplayEvent::ActiveLocoCount(slot_count as u8))
-                .is_err()
-            {
-                defmt::warn!("scheduler: active loco display event dropped");
-            }
-        }
-
+        #[cfg(not(feature = "dcc-a"))]
+        report_slot_count(&core, display_sender, &mut prev_slot_count);
         #[cfg(feature = "dcc-a")]
-        log_logon_event(core.advance_logon(Instant::now()));
+        logon_display.turn(&mut core, display_sender, Instant::now());
 
         let scheduled = core.next_packet();
         let mut packet = scheduled.packet;
@@ -169,30 +171,95 @@ pub async fn packet_scheduler_task(
     }
 }
 
+/// Tells the display how many locomotives the apps drive, when it changed.
+#[cfg(not(feature = "dcc-a"))]
+fn report_slot_count(core: &SchedulerCore, display: DisplaySender, shown: &mut usize) {
+    let slot_count = core.slot_count();
+    if slot_count != *shown {
+        *shown = slot_count;
+        if display
+            .try_send(DisplayEvent::ActiveLocoCount(slot_count as u8))
+            .is_err()
+        {
+            defmt::warn!("scheduler: active loco display event dropped");
+        }
+    }
+}
+
+/// Tells the display about DCC-A: the locomotives in use and the warnings.
+#[cfg(feature = "dcc-a")]
+struct LogonDisplay {
+    /// The picture the display has.
+    shown: LogonStatus,
+    next_look: Instant,
+}
+
+#[cfg(feature = "dcc-a")]
+impl LogonDisplay {
+    /// How often the picture is compared with what the display has. It
+    /// changes a few times per track power-on and when an app picks a
+    /// locomotive.
+    const LOOK_INTERVAL: embassy_time::Duration = embassy_time::Duration::from_millis(500);
+
+    fn new(now: Instant) -> Self {
+        Self {
+            shown: LogonStatus::default(),
+            next_look: now,
+        }
+    }
+
+    /// Gives the decoder table its turn and passes on what changed.
+    fn turn(&mut self, core: &mut SchedulerCore, display: DisplaySender, now: Instant) {
+        report_logon_event(core.advance_logon(now), display);
+        if now < self.next_look {
+            return;
+        }
+        self.next_look = now + Self::LOOK_INTERVAL;
+        let status = core.logon_status();
+        // A picture that finds the queue full is sent at the next look.
+        if status != self.shown
+            && display
+                .try_send(DisplayEvent::LogonStatus(status.clone()))
+                .is_ok()
+        {
+            self.shown = status;
+        }
+    }
+}
+
+/// Logs a logon change and shows a decoder that logs on late.
+///
 /// Logon changes are rare, one or two per decoder at each track power-on.
 #[cfg(feature = "dcc-a")]
-fn log_logon_event(event: Option<LogonEvent>) {
+fn report_logon_event(event: Option<LogonEvent>, display: DisplaySender) {
     match event {
         None => {}
         Some(LogonEvent::Registered {
             uid,
             address,
             wanted,
-        }) if address == wanted => defmt::info!(
-            "logon: decoder {} registered on address {}",
-            uid,
-            address.value(),
-        ),
-        Some(LogonEvent::Registered {
-            uid,
-            address,
-            wanted,
-        }) => defmt::warn!(
-            "logon: address {} wanted by decoder {} is taken, assigned {}",
-            wanted.value(),
-            uid,
-            address.value(),
-        ),
+            late,
+        }) => {
+            if address == wanted {
+                defmt::info!(
+                    "logon: decoder {} registered on address {}",
+                    uid,
+                    address.value(),
+                );
+            } else {
+                defmt::warn!(
+                    "logon: address {} wanted by decoder {} is taken, assigned {}",
+                    wanted.value(),
+                    uid,
+                    address.value(),
+                );
+            }
+            if late {
+                // Missing it costs a few seconds of notice; the address is
+                // in the status picture either way.
+                let _ = display.try_send(DisplayEvent::NewLoco(address.value()));
+            }
+        }
         Some(LogonEvent::Failed { uid, command }) => {
             defmt::warn!("logon: decoder {} gave no answer to {}", uid, command);
         }
@@ -221,6 +288,7 @@ fn set_logon_identity(core: &mut SchedulerCore) {
 fn apply_command(
     core: &mut SchedulerCore,
     discovery: &mut RailcomDiscovery,
+    #[cfg(feature = "dcc-a")] display: DisplaySender,
     command: SchedulerCommand,
 ) {
     if let SchedulerCommand::ProgramOnMain { permit, .. } = command
@@ -231,7 +299,7 @@ fn apply_command(
     }
     #[cfg(feature = "dcc-a")]
     if let SchedulerCommand::LogonAnswer(answer) = command {
-        log_logon_event(core.logon_answer(answer, Instant::now()));
+        report_logon_event(core.logon_answer(answer, Instant::now()), display);
         return;
     }
     match core.handle_command(command) {

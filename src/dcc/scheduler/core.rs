@@ -124,6 +124,8 @@ impl SchedulerCore {
         self.loco_response_outbox.flush_with(try_send)
     }
 
+    /// With DCC-A the display gets the addresses instead.
+    #[cfg(any(test, not(feature = "dcc-a")))]
     #[must_use]
     pub(super) fn slot_count(&self) -> usize {
         self.slots.slot_count()
@@ -191,6 +193,12 @@ impl SchedulerCore {
         let slots = &self.slots;
         self.logon
             .on_answer(answer, now, |address| slots.has_slot(address))
+    }
+
+    /// The picture of the locomotives in use and of the logon, for the display.
+    #[cfg(feature = "dcc-a")]
+    pub(super) fn logon_status(&self) -> crate::system_status::LogonStatus {
+        self.logon.status(self.slots.addresses())
     }
 
     /// Give the decoder table its turn: close an answer that never came,
@@ -547,6 +555,7 @@ mod tests {
                     uid: UID,
                     address: assigned,
                     wanted: address(),
+                    late: false,
                 })
             );
         }
@@ -674,6 +683,19 @@ mod tests {
                     .windows(2)
                     .all(|pair| (pair[1] - pair[0]).as_millis() <= 300)
             );
+        }
+
+        #[test]
+        fn the_status_joins_registered_decoders_and_driven_locomotives() {
+            let mut core = SchedulerCore::new();
+            drive(&mut core, DccAddress::new_short(40).unwrap());
+            answer(&mut core, LogonAnswer::Announced(UID));
+            while emit(&mut core).packet != SELECT {}
+            answer(&mut core, LogonAnswer::WantsAddress(address()));
+            while !matches!(emit(&mut core).packet, DccPacket::LogonAssign { .. }) {}
+            answer(&mut core, LogonAnswer::Confirmed);
+
+            assert_eq!(core.logon_status().addresses.as_slice(), [3, 40]);
         }
 
         #[test]

@@ -252,12 +252,53 @@ pub enum DisplayEvent {
         setup_url: &'static str,
     },
     SystemState(LedState),
+    /// Locomotives driven by the apps; with DCC-A the display gets their
+    /// addresses in the logon status instead.
+    #[cfg(not(feature = "dcc-a"))]
     ActiveLocoCount(u8),
     Fault(FaultCause),
     FaultCleared,
     Message(crate::display::RowText),
     /// Removes the last [`Self::Message`] from the footer.
     MessageCleared,
+    /// The locomotives in use and the logon warnings, as they stand now.
+    #[cfg(feature = "dcc-a")]
+    LogonStatus(LogonStatus),
+    /// A decoder registered on this address well after the track was powered.
+    #[cfg(feature = "dcc-a")]
+    NewLoco(u16),
+}
+
+/// Addresses [`LogonStatus`] can list: every decoder of the logon table and
+/// every locomotive slot.
+#[cfg(feature = "dcc-a")]
+pub const LOGON_STATUS_ADDRESSES: usize = 28;
+
+/// Conflicts [`LogonStatus`] can list; the display shows one at a time.
+#[cfg(feature = "dcc-a")]
+pub const LOGON_STATUS_CONFLICTS: usize = 4;
+
+/// A decoder that asked for an address already in use and got another.
+#[cfg(feature = "dcc-a")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct AddressConflict {
+    pub wanted: u16,
+    pub assigned: u16,
+}
+
+/// What the display tells about DCC-A: a whole picture rather than changes,
+/// so one that is lost is made good by the next.
+#[cfg(feature = "dcc-a")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct LogonStatus {
+    /// Addresses in use, ascending and without repeats: registered by logon
+    /// since the track was powered, or driven by an app.
+    pub addresses: heapless::Vec<u16, LOGON_STATUS_ADDRESSES>,
+    pub conflicts: heapless::Vec<AddressConflict, LOGON_STATUS_CONFLICTS>,
+    /// Decoders that announced themselves and do not answer since.
+    pub failed: u8,
 }
 
 /// Embassy transport aliases for system status events.
