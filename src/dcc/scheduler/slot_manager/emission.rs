@@ -88,6 +88,9 @@ impl SlotManager {
     /// Record the packet that really went out on the track, idle included;
     /// the spacing rule on the next turn is measured from it.
     pub(crate) fn note_emitted(&mut self, packet: DccPacket) {
+        if matches!(packet, DccPacket::LogonEnable { .. }) {
+            crate::dcc::scheduler::railcom_policy::record_track_logon_sent();
+        }
         self.last_packet = Some(packet);
     }
 
@@ -256,10 +259,14 @@ impl SlotManager {
             return Some((pending.packet, PacketClass::Programming));
         }
 
+        // Ahead of the commands: the logon enable it carries has a deadline
+        // (RCN-218 §3.2) that a busy throttle must not push back, and it is
+        // one packet in dozens.
+        if let Some(packet) = self.take_pending_telemetry_packet() {
+            return Some((packet, PacketClass::Telemetry));
+        }
         if self.slots.is_empty() {
-            return self
-                .take_pending_telemetry_packet()
-                .map(|packet| (packet, PacketClass::Telemetry));
+            return None;
         }
 
         if let Some(packet) = self.take_dirty_speed_packet() {
@@ -270,9 +277,6 @@ impl SlotManager {
                 return packet.map(|packet| (packet, PacketClass::Command));
             }
             DirtyFunctionSelection::NoPendingGroup => {}
-        }
-        if let Some(packet) = self.take_pending_telemetry_packet() {
-            return Some((packet, PacketClass::Telemetry));
         }
 
         self.next_refresh_packet(max_slot_visits_without_function)

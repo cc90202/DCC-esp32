@@ -274,6 +274,9 @@ pub enum LogonAnswer {
     WantsAddress(DccAddress),
     /// The decoder confirmed the address it was assigned.
     Confirmed,
+    /// The cutout after a logon enable held an answer that cannot be read:
+    /// two decoders announced themselves together.
+    Collided,
     /// The cutout after this select or assign closed without its answer.
     Unanswered(LogonCommand),
 }

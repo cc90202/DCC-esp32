@@ -239,15 +239,15 @@ fn reset_barrier_stops_motion_and_clears_pending_pom() {
 }
 
 #[test]
-fn queued_railcom_telemetry_goes_out_once_after_dirty_traffic_and_before_refresh() {
+fn queued_railcom_telemetry_goes_out_once_ahead_of_dirty_traffic() {
     let mut manager = SlotManager::new();
     assert!(manager.set_speed(addr(3), ls(10, SpeedFormat::Speed128), Direction::Forward));
     assert!(manager.railcom_telemetry_packet(DccPacket::Idle));
     assert!(!manager.railcom_telemetry_packet(DccPacket::Idle));
 
     let speed = DccPacket::speed_128step(addr(3), 10, Direction::Forward);
-    assert_eq!(manager.build_next_packet(), speed);
     assert_eq!(manager.build_next_packet(), Some(DccPacket::Idle));
+    assert_eq!(manager.build_next_packet(), speed);
     assert_eq!(manager.build_next_packet(), speed);
     assert!(manager.railcom_telemetry_packet(DccPacket::Idle));
 }
