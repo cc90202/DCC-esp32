@@ -210,6 +210,8 @@ pub(crate) use scheduler::SlotManager;
 #[cfg(target_arch = "riscv32")]
 #[doc(inline)]
 pub use scheduler::packet_scheduler_task;
+#[cfg(feature = "dcc-a")]
+pub use scheduler::{DecoderUid, LogonAnswer};
 #[doc(inline)]
 pub use scheduler::{
     FunctionChange, FunctionIndex, FunctionState, InvalidFunctionIndex, LOCO_SLOT_CAPACITY,

@@ -13,6 +13,8 @@ use crate::system_status::channels::DisplaySender;
 
 use super::SchedulerCommand;
 use super::core::{CommandOutcome, SchedulerCore};
+#[cfg(feature = "dcc-a")]
+use super::logon::LogonEvent;
 use super::railcom_discovery::RailcomDiscovery;
 use super::railcom_policy::{PacketClass, RailcomCutoutBudget, record_track_search_throttled};
 use super::slot_manager::{PacketAuthority, pom_cutout, scheduler_invariant_recovery_count};
@@ -40,20 +42,7 @@ pub async fn packet_scheduler_task(
         // Commands are picked up within one packet interval (~8 ms), and the
         // frame they produce waits behind at most one queued frame.
         while let Ok(command) = command_receiver.try_receive() {
-            if let SchedulerCommand::ProgramOnMain { permit, .. } = command
-                && !crate::track_authority::accepts_current(permit)
-            {
-                defmt::warn!("scheduler rejected expired POM lease");
-                continue;
-            }
-            match core.handle_command(command) {
-                CommandOutcome::Applied => {}
-                CommandOutcome::Rejected => defmt::warn!("scheduler command rejected"),
-                CommandOutcome::RestartRailcomDiscovery => {
-                    discovery.restart(Instant::now());
-                    defmt::info!("railcom discovery: restarted after track enable");
-                }
-            }
+            apply_command(&mut core, &mut discovery, command);
         }
 
         core.flush_loco_response_with(|response| {
@@ -93,6 +82,9 @@ pub async fn packet_scheduler_task(
                 defmt::warn!("scheduler: active loco display event dropped");
             }
         }
+
+        #[cfg(feature = "dcc-a")]
+        log_logon_event(core.advance_logon(Instant::now()));
 
         let scheduled = core.next_packet();
         let mut packet = scheduled.packet;
@@ -168,7 +160,68 @@ pub async fn packet_scheduler_task(
             continue;
         }
         core.packet_emitted(packet);
+        #[cfg(feature = "dcc-a")]
+        core.logon_packet_emitted(packet, Instant::now());
         crate::liveness::beat(crate::liveness::Task::Scheduler);
         yield_now().await;
+    }
+}
+
+/// Logon changes are rare, one or two per decoder at each track power-on.
+#[cfg(feature = "dcc-a")]
+fn log_logon_event(event: Option<LogonEvent>) {
+    match event {
+        None => {}
+        Some(LogonEvent::Registered {
+            uid,
+            address,
+            wanted,
+        }) if address == wanted => defmt::info!(
+            "logon: decoder {} registered on address {}",
+            uid,
+            address.value(),
+        ),
+        Some(LogonEvent::Registered {
+            uid,
+            address,
+            wanted,
+        }) => defmt::warn!(
+            "logon: address {} wanted by decoder {} is taken, assigned {}",
+            wanted.value(),
+            uid,
+            address.value(),
+        ),
+        Some(LogonEvent::Failed { uid, command }) => {
+            defmt::warn!("logon: decoder {} gave no answer to {}", uid, command);
+        }
+        Some(LogonEvent::TableFull(uid)) => {
+            defmt::warn!("logon: no room in the table for decoder {}", uid);
+        }
+    }
+}
+
+fn apply_command(
+    core: &mut SchedulerCore,
+    discovery: &mut RailcomDiscovery,
+    command: SchedulerCommand,
+) {
+    if let SchedulerCommand::ProgramOnMain { permit, .. } = command
+        && !crate::track_authority::accepts_current(permit)
+    {
+        defmt::warn!("scheduler rejected expired POM lease");
+        return;
+    }
+    #[cfg(feature = "dcc-a")]
+    if let SchedulerCommand::LogonAnswer(answer) = command {
+        log_logon_event(core.logon_answer(answer, Instant::now()));
+        return;
+    }
+    match core.handle_command(command) {
+        CommandOutcome::Applied => {}
+        CommandOutcome::Rejected => defmt::warn!("scheduler command rejected"),
+        CommandOutcome::RestartRailcomDiscovery => {
+            discovery.restart(Instant::now());
+            defmt::info!("railcom discovery: restarted after track enable");
+        }
     }
 }

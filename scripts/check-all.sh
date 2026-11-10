@@ -19,6 +19,7 @@ gates=(
     "fmt|cargo fmt --all -- --check"
     "clippy-host|cargo clippy-host -- -D warnings"
     "clippy-default|cargo clippy --lib --bin dcc-esp32 --target riscv32imac-unknown-none-elf -- -D warnings"
+    "clippy-dcc-a|cargo clippy --lib --bin dcc-esp32 --target riscv32imac-unknown-none-elf --features dcc-a -- -D warnings"
     "clippy-esp|cargo clippy-esp -- -D warnings"
     "test-host|cargo test-host"
     "test-dcc-a|cargo test-host-dcc-a"
