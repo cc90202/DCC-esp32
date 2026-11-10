@@ -5,8 +5,9 @@ use dcc_protocol::{DccAddress, Direction, FunctionIndex, LogicalSpeed, SpeedForm
 use super::wire::*;
 use super::{FrameKind, FunctionAction, ParseError, Z21Command};
 
-/// Reads the address of `LAN_GET_LOCOMODE` and `LAN_SET_LOCOMODE`: a plain
-/// big-endian number (§3.1), unlike the X-Bus commands. The two flag bits some
+/// Reads the address of `LAN_GET_LOCOMODE`, `LAN_SET_LOCOMODE` and the CV
+/// commands on the main: a plain big-endian number (§3.1, §6.6), unlike the
+/// other X-Bus commands. The two flag bits some
 /// clients still set are ignored.
 fn parse_plain_loco_address(high: u8, low: u8) -> Option<DccAddress> {
     DccAddress::from_magnitude(u16::from(high & 0x3F) << 8 | u16::from(low))
@@ -260,7 +261,9 @@ fn parse_cv_pom_command(payload: &[u8]) -> Result<Z21Command, ParseError> {
         return Ok(Z21Command::Unknown);
     }
 
-    let address = parse_loco_address(payload[2], payload[3]).ok_or(ParseError::InvalidAddress)?;
+    // The Z21 app sends a long address here without the two flag bits.
+    let address =
+        parse_plain_loco_address(payload[2], payload[3]).ok_or(ParseError::InvalidAddress)?;
     let op = payload[4] & 0xFC;
     let wire_cv = (u16::from(payload[4] & 0x03) << 8) | u16::from(payload[5]);
     let cv = cv_from_wire(wire_cv).ok_or(ParseError::InvalidCvAddress)?;

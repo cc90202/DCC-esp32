@@ -17,24 +17,29 @@ const PREFIX_MASK: u8 = 0x3f;
 /// caller checks them. Prefix 0x38 is a short address in A6..A0, prefixes
 /// 0x00..=0x27 a long address equal to A13..A0.
 ///
-/// Returns `None` for accessory, reserved and firmware-update prefixes, for
-/// short address 0 (which parks a decoder), and for a long address below 128.
-/// Annex D allows the latter, but [`DccAddress`] cannot hold it, and the Z21
-/// side reads 1..=127 as a short address, so no app could drive it.
+/// A long address below 128 is read as the short address with the same number:
+/// annex D allows that form and a ZIMO decoder on short address 3 sends it,
+/// but [`DccAddress`] cannot hold it and the Z21 side reads 1..=127 as short.
+/// The station then assigns the short form, which is what the app drives.
+///
+/// Returns `None` for accessory, reserved and firmware-update prefixes, and
+/// for address 0 in either form (short address 0 parks a decoder).
 #[must_use]
 pub fn decode_address(bytes: [u8; 2]) -> Option<DccAddress> {
     let [high, low] = bytes;
     match high & PREFIX_MASK {
         PREFIX_SHORT => DccAddress::new_short(low),
-        prefix @ 0..=PREFIX_LONG_MAX => DccAddress::new_long(u16::from_be_bytes([prefix, low])),
+        prefix @ 0..=PREFIX_LONG_MAX => {
+            DccAddress::from_magnitude(u16::from_be_bytes([prefix, low]))
+        }
         _ => None,
     }
 }
 
 /// Writes a locomotive address in the 14-bit form of RCN-218 annex D.
 ///
-/// The inverse of [`decode_address`]: A13..A8 in the low six bits of the first
-/// byte, A7..A0 in the second. The two top bits of the first byte are left at
+/// A13..A8 in the low six bits of the first byte, A7..A0 in the second; a
+/// short address goes out with its prefix, as [`decode_address`] reads it. The two top bits of the first byte are left at
 /// zero for the frame that carries the address.
 #[must_use]
 pub(crate) fn encode_address(address: DccAddress) -> [u8; 2] {
@@ -88,13 +93,18 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_long_address_below_128_as_the_short_one() {
+        // What a ZIMO decoder on short address 3 sends in its short info.
+        assert_eq!(decode_address([0x80, 3]), DccAddress::new_short(3));
+        assert_eq!(decode_address([0x00, 127]), DccAddress::new_short(127));
+    }
+
+    #[test]
     fn rejects_addresses_a_locomotive_cannot_drive_with() {
         // Short address 0 parks the decoder; only A6..A0 carry a short one.
         assert_eq!(decode_address([0x38, 0]), None);
         assert_eq!(decode_address([0x38, 0x80]), None);
-        // A long address below 128: reading it as short would name another
-        // decoder.
-        assert_eq!(decode_address([0x00, 100]), None);
+        assert_eq!(decode_address([0x00, 0]), None);
         // Extended and basic accessory decoders.
         assert_eq!(decode_address([0x28, 1]), None);
         assert_eq!(decode_address([0x30, 1]), None);

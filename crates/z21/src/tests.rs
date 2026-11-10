@@ -412,6 +412,19 @@ fn test_parse_cv_pom_read_byte() {
 }
 
 #[test]
+fn test_parse_cv_pom_accepts_a_long_address_without_the_flag_bits() {
+    // What the Z21 app sends to read a CV of locomotive 1003.
+    let frame = xbus_frame(0xE6, &[0x30, 0x03, 0xEB, 0xE4, 0x07, 0x00]);
+    assert_eq!(
+        parse_frame(&frame),
+        Ok(Z21Command::CvPomReadByte {
+            address: addr_long(1003),
+            cv: PomCv::new(8).unwrap(),
+        })
+    );
+}
+
+#[test]
 fn test_parse_cv_pom_reads_the_high_cv_bits_from_the_operation_byte() {
     // CV 1024 is wire CV 0x3FF: the top two bits ride in the operation byte.
     let frame = xbus_frame(0xE6, &[0x30, 0x00, 0x03, 0xE7, 0xFF, 0x00]);

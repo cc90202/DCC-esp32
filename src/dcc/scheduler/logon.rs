@@ -24,10 +24,16 @@ use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
 use super::{DecoderUid, LogonAnswer};
+use crate::system_status::{AddressConflict, LogonStatus};
 
 /// Decoders the table follows. Above the 12 locomotive slots, so a decoder
 /// that failed its logon does not take the place of a working one.
 pub(super) const LOGON_TABLE_CAPACITY: usize = 16;
+
+const _: () = assert!(
+    crate::system_status::LOGON_STATUS_ADDRESSES
+        >= LOGON_TABLE_CAPACITY + crate::dcc::LOCO_SLOT_CAPACITY
+);
 
 /// Times a select or an assign goes out in a row before its decoder is
 /// reported as failed and left alone for [`RETRY_PAUSE`].
@@ -88,6 +94,10 @@ pub(super) fn station_id_from(unique: [u8; 6]) -> u16 {
     u16::from_be_bytes([a ^ c, b ^ d])
 }
 
+/// How long after power-on the decoders already on the track are expected to
+/// be registered; one that comes later was put on the rails since.
+const POWER_ON_BURST: Duration = Duration::from_secs(5);
+
 /// RCN-218 §3.4 select subcommand that asks for the short info.
 const SELECT_SHORT_INFO: u8 = 0xff;
 
@@ -95,11 +105,13 @@ const SELECT_SHORT_INFO: u8 = 0xff;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LogonEvent {
     /// The decoder now answers to `address`, which differs from `wanted`
-    /// when that one was taken.
+    /// when that one was taken. `late` when it came well after the track was
+    /// powered: a locomotive just put on the rails.
     Registered {
         uid: DecoderUid,
         address: DccAddress,
         wanted: DccAddress,
+        late: bool,
     },
     /// The decoder gave no answer to `command`. It is tried again after a
     /// pause; this is told once, not at every failed run.
@@ -154,6 +166,7 @@ impl Entry {
 /// The run of logon enables of one session.
 #[derive(Debug, Clone, Copy)]
 struct Invitation {
+    started: Instant,
     next_due: Instant,
     /// Handed out and not on the track yet.
     handed: bool,
@@ -169,6 +182,7 @@ struct Invitation {
 impl Invitation {
     fn starting_at(now: Instant) -> Self {
         Self {
+            started: now,
             next_due: now,
             handed: false,
             collisions: 0,
@@ -304,6 +318,9 @@ impl LogonTable {
                     uid: entry.uid,
                     address: entry.address?,
                     wanted: entry.wanted?,
+                    late: self
+                        .invitation
+                        .is_some_and(|invitation| now >= invitation.started + POWER_ON_BURST),
                 })
             }
             LogonAnswer::Unanswered(command) => {
@@ -311,6 +328,48 @@ impl LogonTable {
                 self.attempt_failed(entry, command, now)
             }
         }
+    }
+
+    /// The picture for the display: the registered decoders with the
+    /// locomotives `driven` by an app, and what went wrong.
+    pub(super) fn status(&self, driven: impl Iterator<Item = DccAddress>) -> LogonStatus {
+        fn add(status: &mut LogonStatus, address: DccAddress) {
+            let address = address.value();
+            if let Err(place) = status.addresses.binary_search(&address) {
+                // Sized for every entry and every slot, so never full.
+                let _ = status.addresses.insert(place, address);
+            }
+        }
+        let mut status = LogonStatus::default();
+        for entry in self
+            .entries
+            .iter()
+            .filter(|entry| entry.stage == Stage::Assigned)
+        {
+            let Some(assigned) = entry.address else {
+                continue;
+            };
+            add(&mut status, assigned);
+            if let Some(wanted) = entry.wanted
+                && wanted != assigned
+            {
+                // More conflicts than fit are told as the first ones clear.
+                let _ = status.conflicts.push(AddressConflict {
+                    wanted: wanted.value(),
+                    assigned: assigned.value(),
+                });
+            }
+        }
+        for address in driven {
+            add(&mut status, address);
+        }
+        let failed = self
+            .entries
+            .iter()
+            .filter(|entry| entry.failed && entry.is_pending())
+            .count();
+        status.failed = u8::try_from(failed).unwrap_or(u8::MAX);
+        status
     }
 
     /// Gives up an answer that did not come back in time.
@@ -623,6 +682,7 @@ mod tests {
                 uid: uid(7),
                 address: short(3),
                 wanted: short(3),
+                late: false,
             })
         );
         assert_eq!(table.next_packet(START), None);
@@ -880,6 +940,7 @@ mod tests {
                 uid: uid(2),
                 address: long(9_999),
                 wanted: short(3),
+                late: false,
             })
         );
     }
@@ -897,6 +958,7 @@ mod tests {
                 uid: uid(1),
                 address: long(9_998),
                 wanted: short(3),
+                late: false,
             })
         );
     }
@@ -913,6 +975,7 @@ mod tests {
                     uid: uid(decoder_id),
                     address: long(expected),
                     wanted: short(3),
+                    late: false,
                 })
             );
         }
@@ -931,6 +994,7 @@ mod tests {
                 uid: uid(1),
                 address: short(3),
                 wanted: short(3),
+                late: false,
             })
         );
         assert_eq!(
@@ -939,6 +1003,7 @@ mod tests {
                 uid: uid(2),
                 address: long(9_999),
                 wanted: short(3),
+                late: false,
             })
         );
     }
@@ -955,6 +1020,7 @@ mod tests {
                 uid: uid(2),
                 address: short(5),
                 wanted: short(5),
+                late: false,
             })
         );
     }
@@ -1210,6 +1276,7 @@ mod tests {
                 uid: uid(1),
                 address: short(3),
                 wanted: short(3),
+                late: false,
             })
         );
     }
@@ -1241,6 +1308,7 @@ mod tests {
                 uid: uid(2),
                 address: short(3),
                 wanted: short(3),
+                late: false,
             })
         );
         // The first one comes back and finds its address taken.
@@ -1250,6 +1318,7 @@ mod tests {
                 uid: uid(1),
                 address: long(9_999),
                 wanted: short(3),
+                late: false,
             })
         );
     }
@@ -1279,5 +1348,83 @@ mod tests {
 
         assert_eq!(station_id_from(board), station_id_from(board));
         assert_ne!(station_id_from(board), station_id_from(sibling));
+    }
+
+    #[test]
+    fn the_status_lists_registered_and_driven_addresses_once_in_order() {
+        let mut table = LogonTable::new(STATION, 0);
+        log_on(&mut table, 1, long(2_000), nothing_driven);
+        log_on(&mut table, 2, short(3), nothing_driven);
+        table.on_answer(LogonAnswer::Announced(uid(3)), START, nothing_driven);
+
+        let status = table.status([short(40), short(3)].into_iter());
+
+        assert_eq!(status.addresses.as_slice(), [3, 40, 2_000]);
+        assert!(status.conflicts.is_empty());
+        assert_eq!(status.failed, 0);
+    }
+
+    #[test]
+    fn the_status_tells_conflicts_and_silent_decoders() {
+        let mut table = LogonTable::new(STATION, 0);
+        log_on(&mut table, 1, short(3), nothing_driven);
+        log_on(&mut table, 2, short(3), nothing_driven);
+        table.on_answer(LogonAnswer::Announced(uid(3)), START, nothing_driven);
+        for _ in 0..ATTEMPTS {
+            send(&mut table);
+            table.on_answer(
+                LogonAnswer::Unanswered(LogonCommand::Select),
+                START,
+                nothing_driven,
+            );
+        }
+
+        let status = table.status(core::iter::empty());
+
+        assert_eq!(status.addresses.as_slice(), [3, 9_999]);
+        assert_eq!(
+            status.conflicts.as_slice(),
+            [AddressConflict {
+                wanted: 3,
+                assigned: 9_999
+            }]
+        );
+        assert_eq!(status.failed, 1);
+    }
+
+    #[test]
+    fn a_new_session_empties_the_status_until_the_decoders_log_on_again() {
+        let mut table = LogonTable::new(STATION, 0);
+        log_on(&mut table, 1, short(3), nothing_driven);
+        log_on(&mut table, 2, short(3), nothing_driven);
+
+        table.start_session(START);
+
+        assert_eq!(table.status(core::iter::empty()), LogonStatus::default());
+    }
+
+    #[test]
+    fn a_decoder_registered_well_after_power_on_is_told_as_late() {
+        let mut table = LogonTable::new(STATION, 0);
+        table.start_session(START);
+        invite(&mut table, START);
+        let lateness = |event| match event {
+            Some(LogonEvent::Registered { late, .. }) => late,
+            other => panic!("expected a registration, got {other:?}"),
+        };
+
+        let at_power_on = log_on(&mut table, 1, short(3), nothing_driven);
+        table.on_answer(LogonAnswer::Announced(uid(2)), START, nothing_driven);
+        assert_eq!(send(&mut table), Some(select(2)));
+        table.on_answer(LogonAnswer::WantsAddress(short(4)), START, nothing_driven);
+        assert_eq!(send(&mut table), Some(assign(2, short(4))));
+        let put_on_later = table.on_answer(
+            LogonAnswer::Confirmed,
+            START + POWER_ON_BURST,
+            nothing_driven,
+        );
+
+        assert!(!lateness(at_power_on));
+        assert!(lateness(put_on_later));
     }
 }
