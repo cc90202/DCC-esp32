@@ -102,6 +102,26 @@ impl BinaryStateAddress {
     }
 }
 
+/// RCN-218 logon command a packet carries.
+///
+/// The answer in the cutout after the packet can only be read knowing which
+/// command asked for it: a decoder id after an enable, a short info after a
+/// select, a decoder state after an assign. The last two do not name the
+/// decoder that sent them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum LogonCommand {
+    /// The packet is not a logon command.
+    #[default]
+    None,
+    /// Logon Enable: decoders not yet registered answer with their id.
+    Enable,
+    /// Select: the selected decoder answers with its short info.
+    Select,
+    /// Logon Assign: the decoder confirms with its state.
+    Assign,
+}
+
 /// Validated two-bit RCN-218 automatic-logon group.
 ///
 /// Values are 0=all, 1=loco, 2=accessory, 3=now.

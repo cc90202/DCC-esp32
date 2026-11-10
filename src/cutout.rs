@@ -1,5 +1,7 @@
 //! Shared contract for DCC packet emission and RailCom cutout handling.
 
+pub use dcc_protocol::packet::LogonCommand;
+
 /// RailCom cutout policy attached to a DCC frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]

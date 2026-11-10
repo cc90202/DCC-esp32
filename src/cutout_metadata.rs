@@ -4,7 +4,7 @@
 //! presence of each cutout into one `u32` so it can be published through
 //! atomic slots; the RailCom consumers unpack it on the task side.
 
-use crate::cutout::{CutoutMode, PacketSequence};
+use crate::cutout::{CutoutMode, LogonCommand, PacketSequence};
 use crate::dcc::PackedAddressFlags;
 use crate::dcc::{DccAddress, PomRequestId};
 
@@ -34,10 +34,13 @@ pub(crate) struct RailcomPacketMetadata {
     pub cutout: CutoutMode,
     /// POM request the cutout answers, if the packet was a POM.
     pub pom_request_id: Option<PomRequestId>,
+    /// Logon command the packet carried, if any.
+    pub logon: LogonCommand,
 }
 
 /// Bit-packed cutout metadata: `PackedAddressFlags` carries the target,
-/// POM mode, and presence of the separately stored request identifier.
+/// POM mode, presence of the separately stored request identifier, and the
+/// logon command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PackedRailcomPacketMetadata(PackedAddressFlags);
 
@@ -48,6 +51,8 @@ impl PackedRailcomPacketMetadata {
     const CUTOUT_MODE_FIELD: u32 = 0;
     const CUTOUT_MODE_WIDTH: u32 = 2;
     const HAS_POM_REQUEST_ID_BIT: u32 = 2;
+    const LOGON_FIELD: u32 = 3;
+    const LOGON_WIDTH: u32 = 2;
     #[inline(always)]
     pub(crate) const fn from_raw(raw: u32) -> Self {
         Self(PackedAddressFlags::from_raw(raw))
@@ -76,6 +81,32 @@ impl PackedRailcomPacketMetadata {
                 )
                 .with_flag(Self::HAS_POM_REQUEST_ID_BIT, pom_request_id.is_some()),
         )
+    }
+    /// Records the logon command of the packet; a fresh value holds
+    /// [`LogonCommand::None`].
+    #[must_use]
+    #[inline(always)]
+    pub(crate) const fn with_logon(self, logon: LogonCommand) -> Self {
+        Self(self.0.with_field(
+            Self::LOGON_FIELD,
+            Self::LOGON_WIDTH,
+            match logon {
+                LogonCommand::None => 0,
+                LogonCommand::Enable => 1,
+                LogonCommand::Select => 2,
+                LogonCommand::Assign => 3,
+            },
+        ))
+    }
+    #[inline(always)]
+    pub(crate) const fn logon(self) -> LogonCommand {
+        match self.0.field(Self::LOGON_FIELD, Self::LOGON_WIDTH) {
+            0 => LogonCommand::None,
+            1 => LogonCommand::Enable,
+            2 => LogonCommand::Select,
+            3 => LogonCommand::Assign,
+            _ => unreachable!(),
+        }
     }
     #[inline(always)]
     pub(crate) fn target_address(self) -> Option<DccAddress> {
@@ -119,6 +150,7 @@ impl PackedRailcomPacketMetadata {
             target_address: self.target_address(),
             cutout: self.cutout(),
             pom_request_id: self.pom_request_id(raw_request_id),
+            logon: self.logon(),
         }
     }
 }
@@ -164,6 +196,7 @@ mod tests {
                             target_address,
                             cutout,
                             pom_request_id,
+                            logon: LogonCommand::None,
                         }
                     );
                     assert_eq!(
@@ -177,6 +210,39 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_logon_command_round_trips_beside_the_other_fields() {
+        let target_address = DccAddress::new_long(10_239);
+        let pom_request_id = Some(PomRequestId::new(7));
+
+        for logon in [
+            LogonCommand::None,
+            LogonCommand::Enable,
+            LogonCommand::Select,
+            LogonCommand::Assign,
+        ] {
+            let packed = PackedRailcomPacketMetadata::from_raw(
+                PackedRailcomPacketMetadata::new(
+                    target_address,
+                    CutoutMode::PomRead,
+                    pom_request_id,
+                )
+                .with_logon(logon)
+                .raw(),
+            );
+
+            assert_eq!(
+                packed.public_metadata(7),
+                RailcomPacketMetadata {
+                    target_address,
+                    cutout: CutoutMode::PomRead,
+                    pom_request_id,
+                    logon,
+                }
+            );
         }
     }
 }

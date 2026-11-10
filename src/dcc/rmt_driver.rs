@@ -31,7 +31,7 @@ use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
 use crate::cutout::timing::{CUTOUT_CONTROL_END_US, PREAMBLE_STUB_US};
-use crate::cutout::{CutoutMode, PacketSequence};
+use crate::cutout::{CutoutMode, LogonCommand, PacketSequence};
 use crate::dcc::timing::PREAMBLE_RMT_OFFSET;
 use crate::dcc::{DccAddress, PomRequestId};
 use dcc_protocol::timing::{MAX_DATA_PULSES, PREAMBLE_DURATION_US};
@@ -82,6 +82,7 @@ struct PacketMeta {
     cutout: CutoutMode,
     target_address: Option<DccAddress>,
     pom_request_id: u32,
+    logon: LogonCommand,
 }
 
 impl PacketMeta {
@@ -90,6 +91,7 @@ impl PacketMeta {
             cutout: CutoutMode::None,
             target_address: None,
             pom_request_id: 0,
+            logon: LogonCommand::None,
         }
     }
 }
@@ -261,6 +263,7 @@ pub(crate) fn submit_packet(
     cutout: CutoutMode,
     target_address: Option<DccAddress>,
     pom_request_id: Option<PomRequestId>,
+    logon: LogonCommand,
 ) {
     debug_assert!(
         data.len() <= MAX_DATA_PULSES,
@@ -293,6 +296,7 @@ pub(crate) fn submit_packet(
             cutout,
             target_address,
             pom_request_id: pom_request_id.map_or(0, PomRequestId::value),
+            logon,
         };
         packet.dcc_duration_us = dcc_duration_us;
     }
@@ -389,6 +393,7 @@ fn rmt_interrupt() {
                     CutoutMode::PomWrite | CutoutMode::PomRead
                 )
                 .then(|| PomRequestId::new(pkt.meta.pom_request_id)),
+                logon: pkt.meta.logon,
             })
         } else {
             false

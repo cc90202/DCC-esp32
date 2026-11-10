@@ -18,7 +18,7 @@ pub(crate) mod runtime_dispatch;
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod uart_reader;
 
-pub use crate::cutout::{PacketSequence, RailcomChannel};
+pub use crate::cutout::{LogonCommand, PacketSequence, RailcomChannel};
 pub use dcc_protocol::railcom_data::{RailcomDatagram, RailcomItem};
 
 use core::sync::atomic::{AtomicU32, Ordering};

@@ -179,6 +179,7 @@ pub(crate) async fn dcc_engine_task(
             cutout,
             frame.railcom_target_address(),
             frame.pom_request_id(),
+            frame.packet().logon_command(),
         );
         crate::liveness::beat(crate::liveness::Task::Dcc);
     }

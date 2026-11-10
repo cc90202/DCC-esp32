@@ -600,3 +600,29 @@ fn test_service_mode_checksum_calculation() {
     let expected_checksum = bytes[0] ^ bytes[1] ^ bytes[2];
     assert_eq!(bytes[3], expected_checksum);
 }
+
+#[test]
+fn only_logon_packets_name_a_logon_command() {
+    let address = DccAddress::new_short(3).unwrap();
+    let enable = DccPacket::LogonEnable {
+        group: logon_group(3),
+        command_station_id: 0x0DCC,
+        session_id: LogonSessionId::new(1),
+    };
+    let select = DccPacket::LogonSelect {
+        manufacturer_id: 0x0D,
+        decoder_id: 1,
+        subcommand: 0xFF,
+    };
+    let assign = DccPacket::LogonAssign {
+        manufacturer_id: 0x0D,
+        decoder_id: 1,
+        address,
+    };
+
+    assert_eq!(enable.logon_command(), LogonCommand::Enable);
+    assert_eq!(select.logon_command(), LogonCommand::Select);
+    assert_eq!(assign.logon_command(), LogonCommand::Assign);
+    assert_eq!(DccPacket::Idle.logon_command(), LogonCommand::None);
+    assert_eq!(DccPacket::BroadcastStop.logon_command(), LogonCommand::None);
+}
