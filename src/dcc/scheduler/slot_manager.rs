@@ -496,7 +496,7 @@ impl SlotManager {
     }
 
     /// Check if scheduler is currently paused.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "dcc-a"))]
     #[must_use]
     pub(crate) fn is_paused(&self) -> bool {
         self.paused
@@ -522,6 +522,9 @@ impl SlotManager {
         )
     }
 
+    /// Queue the one RailCom-related packet sent with a telemetry cutout;
+    /// refused while another one waits.
+    #[cfg(any(test, feature = "dcc-a"))]
     #[must_use]
     pub(crate) fn railcom_telemetry_packet(&mut self, packet: DccPacket) -> bool {
         if self.pending_railcom_telemetry.is_some() {
@@ -529,6 +532,20 @@ impl SlotManager {
         }
         self.pending_railcom_telemetry = Some(packet);
         true
+    }
+
+    /// Whether no telemetry packet waits for its turn.
+    #[cfg(feature = "dcc-a")]
+    #[must_use]
+    pub(crate) fn railcom_telemetry_is_free(&self) -> bool {
+        self.pending_railcom_telemetry.is_none()
+    }
+
+    /// Whether a locomotive is active on `address`.
+    #[cfg(feature = "dcc-a")]
+    #[must_use]
+    pub(crate) fn has_slot(&self, address: DccAddress) -> bool {
+        self.slot_index(address).is_some()
     }
 
     /// Position of the slot holding `address`, if the locomotive is active.
@@ -569,7 +586,9 @@ impl SlotManager {
                 self.close_program_on_main(request_id)
             }
             SchedulerCommand::RestartRailcomDiscovery => true,
-            SchedulerCommand::RailcomTelemetry { packet } => self.railcom_telemetry_packet(packet),
+            // Taken by the scheduler runtime for the decoder table.
+            #[cfg(feature = "dcc-a")]
+            SchedulerCommand::LogonAnswer(_) => false,
             SchedulerCommand::Pause => {
                 self.pause();
                 true

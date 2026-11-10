@@ -6,7 +6,7 @@
 //! The scheduler runs as an async Embassy actor task. It takes locomotive
 //! requests (`LocoRequest`: speed, functions, emergency stop) and control
 //! messages (`SchedulerCommand`: stop-all, POM, pause, resume, RailCom discovery
-//! and telemetry) over channels and generates a continuous stream of DCC packets
+//! and logon answers) over channels and generates a continuous stream of DCC packets
 //! to refresh decoder state.
 //!
 //! Speed packets that have just changed go out first, then changed function
@@ -31,12 +31,16 @@
 
 use crate::authority::{LeaseEpoch, LeasePermit};
 use crate::dcc::PomRequestId;
+#[cfg(feature = "dcc-a")]
+use dcc_protocol::packet::LogonCommand;
 use dcc_protocol::packet::{DccAddress, DccPacket, Direction};
 
 #[cfg(target_arch = "riscv32")]
 pub(crate) mod channels;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod core;
+#[cfg(all(feature = "dcc-a", any(test, target_arch = "riscv32")))]
+mod logon;
 #[cfg(any(test, target_arch = "riscv32"))]
 mod railcom_discovery;
 mod railcom_policy;
@@ -236,10 +240,9 @@ pub enum SchedulerCommand {
     },
     /// Start a fresh discovery window after track power is physically enabled.
     RestartRailcomDiscovery,
-    /// Send one RailCom-related packet with a telemetry cutout.
-    RailcomTelemetry {
-        packet: DccPacket,
-    },
+    /// What came back in the cutout after a logon command.
+    #[cfg(feature = "dcc-a")]
+    LogonAnswer(LogonAnswer),
     /// Pause packet emission while keeping every slot's state.
     ///
     /// Sent by the fault relay when an emergency stop or a fault latches.
@@ -248,6 +251,31 @@ pub enum SchedulerCommand {
     ///
     /// Sent by the fault relay when track power is armed or a latch clears.
     Resume,
+}
+
+/// Unique identifier a DCC-A decoder announces itself with (RCN-218 §4.1).
+#[cfg(feature = "dcc-a")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "riscv32", derive(defmt::Format))]
+pub struct DecoderUid {
+    /// 12-bit manufacturer number.
+    pub manufacturer_id: u16,
+    /// Number the manufacturer gave this one decoder.
+    pub decoder_id: u32,
+}
+
+/// What the RailCom side read in the cutout after a logon command.
+#[cfg(feature = "dcc-a")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogonAnswer {
+    /// A decoder announced itself after a logon enable.
+    Announced(DecoderUid),
+    /// The selected decoder told the address it wants.
+    WantsAddress(DccAddress),
+    /// The decoder confirmed the address it was assigned.
+    Confirmed,
+    /// The cutout after this select or assign closed without its answer.
+    Unanswered(LogonCommand),
 }
 
 #[cfg(test)]

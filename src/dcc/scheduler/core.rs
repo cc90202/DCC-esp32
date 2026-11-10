@@ -10,6 +10,8 @@ use crate::cutout::CutoutMode;
 use crate::dcc::PomRequestId;
 use dcc_protocol::packet::DccPacket;
 
+#[cfg(feature = "dcc-a")]
+use super::logon::{LogonEvent, LogonTable};
 use super::railcom_policy::PacketClass;
 use super::slot_manager::{
     PacketAuthority, ScheduledPacket, SlotManager, allowed_slot_visits_without_function,
@@ -59,6 +61,8 @@ impl LocoResponseOutbox {
 pub(super) struct SchedulerCore {
     slots: SlotManager,
     loco_response_outbox: LocoResponseOutbox,
+    #[cfg(feature = "dcc-a")]
+    logon: LogonTable,
 }
 
 impl SchedulerCore {
@@ -67,6 +71,8 @@ impl SchedulerCore {
         Self {
             slots: SlotManager::new(),
             loco_response_outbox: LocoResponseOutbox::default(),
+            #[cfg(feature = "dcc-a")]
+            logon: LogonTable::new(),
         }
     }
 
@@ -78,9 +84,11 @@ impl SchedulerCore {
             SchedulerCommand::EmergencyStopAll
             | SchedulerCommand::ProgramOnMain { .. }
             | SchedulerCommand::CloseProgramOnMain { .. }
-            | SchedulerCommand::RailcomTelemetry { .. }
             | SchedulerCommand::Pause
             | SchedulerCommand::Resume => CommandOutcome::Rejected,
+            // The runtime takes logon answers before they get here.
+            #[cfg(feature = "dcc-a")]
+            SchedulerCommand::LogonAnswer(_) => CommandOutcome::Rejected,
         }
     }
 
@@ -141,6 +149,50 @@ impl SchedulerCore {
     #[cfg(target_arch = "riscv32")]
     pub(super) fn packet_emitted(&mut self, packet: DccPacket) {
         self.slots.note_emitted(packet);
+    }
+
+    /// Hand the decoder table what came back after a logon command; an
+    /// address a locomotive is driven on counts as taken.
+    #[cfg(feature = "dcc-a")]
+    pub(super) fn logon_answer(
+        &mut self,
+        answer: super::LogonAnswer,
+        now: embassy_time::Instant,
+    ) -> Option<LogonEvent> {
+        let slots = &self.slots;
+        self.logon
+            .on_answer(answer, now, |address| slots.has_slot(address))
+    }
+
+    /// Give the decoder table its turn: close an answer that never came,
+    /// then queue the next select or assign once the last one is gone.
+    ///
+    /// While emission is paused the track may be without power: a command
+    /// already sent stops being awaited and is sent again afterwards, so no
+    /// attempt is spent on decoders that cannot answer.
+    #[cfg(feature = "dcc-a")]
+    pub(super) fn advance_logon(&mut self, now: embassy_time::Instant) -> Option<LogonEvent> {
+        if self.slots.is_paused() {
+            self.logon.suspend();
+            return None;
+        }
+        let event = self.logon.expire(now);
+        if self.slots.railcom_telemetry_is_free() {
+            // A queued packet that left the queue without reaching the track
+            // was dropped with the rest of the queue.
+            self.logon.requeue();
+            if let Some(packet) = self.logon.next_packet(now) {
+                let queued = self.slots.railcom_telemetry_packet(packet);
+                debug_assert!(queued, "the telemetry place was free");
+            }
+        }
+        event
+    }
+
+    /// Start the wait for the answer to a logon command now on the track.
+    #[cfg(feature = "dcc-a")]
+    pub(super) fn logon_packet_emitted(&mut self, packet: DccPacket, now: embassy_time::Instant) {
+        self.logon.packet_emitted(packet, now);
     }
 
     pub(super) fn discard_pom(
@@ -366,5 +418,135 @@ mod tests {
         core.discard_pom(PomRequestId::new(77), permit);
         assert_eq!(core.slots.pom_context_for_packet(read), None);
         assert_ne!(core.next_packet().class, PacketClass::Programming);
+    }
+
+    #[cfg(feature = "dcc-a")]
+    mod logon {
+        use embassy_time::Instant;
+
+        use super::*;
+        use crate::dcc::{DecoderUid, LogonAnswer};
+        use dcc_protocol::packet::LogonCommand;
+
+        const NOW: Instant = Instant::from_secs(10);
+        const UID: DecoderUid = DecoderUid {
+            manufacturer_id: 145,
+            decoder_id: 7,
+        };
+        const SELECT: DccPacket = DccPacket::LogonSelect {
+            manufacturer_id: 145,
+            decoder_id: 7,
+            subcommand: 0xff,
+        };
+
+        fn answer(core: &mut SchedulerCore, answer: LogonAnswer) -> Option<LogonEvent> {
+            core.logon_answer(answer, NOW)
+        }
+
+        /// Takes the next packet and puts it on the track.
+        fn emit(core: &mut SchedulerCore) -> ScheduledPacket {
+            core.advance_logon(NOW);
+            let scheduled = core.next_packet();
+            core.logon_packet_emitted(scheduled.packet, NOW);
+            scheduled
+        }
+
+        fn drive(core: &mut SchedulerCore, address: DccAddress) {
+            assert!(core.slots.set_speed(
+                address,
+                LogicalSpeed::zero(SpeedFormat::Speed128),
+                Direction::Forward
+            ));
+        }
+
+        #[test]
+        fn an_announced_decoder_is_selected_with_a_telemetry_cutout() {
+            let mut core = SchedulerCore::new();
+            assert_eq!(answer(&mut core, LogonAnswer::Announced(UID)), None);
+
+            let scheduled = emit(&mut core);
+
+            assert_eq!(scheduled.packet, SELECT);
+            assert_eq!(scheduled.class, PacketClass::Telemetry);
+            assert_eq!(emit(&mut core).packet, DccPacket::Idle);
+        }
+
+        #[test]
+        fn a_decoder_asking_for_a_driven_address_gets_a_temporary_one() {
+            let mut core = SchedulerCore::new();
+            drive(&mut core, address());
+            answer(&mut core, LogonAnswer::Announced(UID));
+            while emit(&mut core).packet != SELECT {}
+
+            answer(&mut core, LogonAnswer::WantsAddress(address()));
+            let assigned = loop {
+                if let DccPacket::LogonAssign { address, .. } = emit(&mut core).packet {
+                    break address;
+                }
+            };
+
+            assert_eq!(assigned, DccAddress::new_long(9_999).unwrap());
+            assert_eq!(
+                answer(&mut core, LogonAnswer::Confirmed),
+                Some(LogonEvent::Registered {
+                    uid: UID,
+                    address: assigned,
+                    wanted: address(),
+                })
+            );
+        }
+
+        #[test]
+        fn no_logon_attempt_is_spent_while_emission_is_paused() {
+            let mut core = SchedulerCore::new();
+            answer(&mut core, LogonAnswer::Announced(UID));
+            let long_after = NOW + embassy_time::Duration::from_secs(60);
+
+            // More rounds than a decoder has attempts.
+            for _ in 0..10 {
+                assert_eq!(emit(&mut core).packet, SELECT);
+                assert!(core.handle_command(SchedulerCommand::Pause) == CommandOutcome::Applied);
+                assert_eq!(core.advance_logon(long_after), None);
+                assert!(core.handle_command(SchedulerCommand::Resume) == CommandOutcome::Applied);
+                assert_eq!(core.advance_logon(long_after), None);
+            }
+
+            assert_eq!(emit(&mut core).packet, SELECT);
+        }
+
+        #[test]
+        fn an_answer_lost_on_a_powered_track_spends_the_attempts() {
+            let mut core = SchedulerCore::new();
+            answer(&mut core, LogonAnswer::Announced(UID));
+            let long_after = NOW + embassy_time::Duration::from_secs(60);
+
+            assert_eq!(emit(&mut core).packet, SELECT);
+            assert_eq!(core.advance_logon(long_after), None);
+            assert_eq!(emit(&mut core).packet, SELECT);
+            assert_eq!(core.advance_logon(long_after), None);
+            assert_eq!(emit(&mut core).packet, SELECT);
+
+            assert_eq!(
+                core.advance_logon(long_after),
+                Some(LogonEvent::Failed {
+                    uid: UID,
+                    command: LogonCommand::Select,
+                })
+            );
+        }
+
+        #[test]
+        fn a_select_dropped_with_the_queue_goes_out_afterwards() {
+            let mut core = SchedulerCore::new();
+            answer(&mut core, LogonAnswer::Announced(UID));
+            core.advance_logon(NOW);
+
+            core.slots.reset_for_lease(permit());
+
+            assert!(
+                (0..4).any(|_| emit(&mut core).packet == SELECT),
+                "the dropped select never went out"
+            );
+        }
     }
 }

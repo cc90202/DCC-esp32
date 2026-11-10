@@ -4,7 +4,7 @@
 # when it drops within the limit, never add a line.
 #
 # Format: "<cognitive> <file>::<function>"
-30 src/dcc/scheduler/runtime.rs::packet_scheduler_task
+26 src/dcc/scheduler/runtime.rs::packet_scheduler_task
 25 src/dcc/engine.rs::dcc_engine_task
 20 src/track_output.rs::cutout_timer_interrupt
 20 src/track_output.rs::cutout_timer_interrupt::<anonymous>

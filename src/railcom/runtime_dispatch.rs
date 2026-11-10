@@ -7,9 +7,13 @@
 use defmt::{info, warn};
 
 use crate::cutout::LogonCommand;
+use crate::dcc::PomRailcomResult;
+#[cfg(feature = "dcc-a")]
+use crate::dcc::SchedulerCommand;
 use crate::dcc::cv::channels::PomRailcomResultSender;
 use crate::dcc::scheduler::channels::SchedulerCommandSender;
-use crate::dcc::{DccPacket, PomRailcomResult, SchedulerCommand};
+#[cfg(feature = "dcc-a")]
+use crate::dcc::{DecoderUid, LogonAnswer};
 use crate::macros::bench_diag;
 use crate::railcom::loco_tracker::{FragmentWindow, RailcomLocoSighting};
 use crate::railcom::parser::{LogonPairing, ParseError, RailcomLogonResponse};
@@ -28,7 +32,6 @@ struct LogonDispatchState {
     overflows_seen: u32,
     /// Windows still to dispatch that may predate a lost one.
     suspect_windows: usize,
-    select_sent_for: Option<(u16, u32)>,
 }
 
 /// Windows that can be on their way to dispatch when the capture side counts
@@ -54,72 +57,73 @@ impl LogonDispatchState {
             crate::railcom::loco_tracker::forget_pending_fragment();
         }
     }
+}
 
-    /// A select whose cutout closed without a short info is forgotten, so
-    /// the next id from that decoder selects it again.
-    fn forget_unanswered_select(
-        &mut self,
-        command: LogonCommand,
-        channel: RailcomChannel,
-        answer: Option<&Result<RailcomLogonResponse, ParseError>>,
-    ) {
-        if command == LogonCommand::Select
-            && channel == RailcomChannel::Channel2
-            && !matches!(answer, Some(Ok(_)))
-        {
-            self.select_sent_for = None;
-        }
+/// Tells the scheduler, which owns the decoder table, what came back after a
+/// logon command.
+///
+/// An answer that cannot be queued is not retried here: the table gives up
+/// waiting on its own and sends the command again.
+#[cfg(feature = "dcc-a")]
+fn report_logon_answer(answer: LogonAnswer, scheduler_sender: SchedulerCommandSender) {
+    if scheduler_sender
+        .try_send(SchedulerCommand::LogonAnswer(answer))
+        .is_err()
+    {
+        warn!("railcom logon answer: scheduler channel full");
     }
+}
 
-    fn dispatch_response(
-        &mut self,
-        packet_sequence: PacketSequence,
-        response: RailcomLogonResponse,
-        scheduler_sender: SchedulerCommandSender,
-    ) {
-        match response {
-            RailcomLogonResponse::DecoderId(logon_id) => {
-                let selected = (logon_id.manufacturer_id, logon_id.decoder_id);
-                if self.select_sent_for == Some(selected) {
-                    return;
-                }
-
-                info!(
-                    "railcom logon id: manufacturer={} decoder_id={} packet={}",
-                    logon_id.manufacturer_id, logon_id.decoder_id, packet_sequence,
-                );
-                let packet = DccPacket::LogonSelect {
-                    manufacturer_id: logon_id.manufacturer_id,
-                    decoder_id: logon_id.decoder_id,
-                    subcommand: 0xff,
-                };
-                if scheduler_sender
-                    .try_send(SchedulerCommand::RailcomTelemetry { packet })
-                    .is_ok()
-                {
-                    self.select_sent_for = Some(selected);
-                    info!(
-                        "railcom logon select queued: manufacturer={} decoder_id={}",
-                        logon_id.manufacturer_id, logon_id.decoder_id,
-                    );
-                } else {
-                    warn!("railcom logon select: scheduler channel full");
-                }
-            }
-            RailcomLogonResponse::Select(logon_select) => {
-                let sighting = crate::railcom::loco_tracker::record_identified_address(
-                    packet_sequence,
-                    logon_select.address,
-                );
-                log_first_sighting("railcom logon address", sighting);
-            }
-            RailcomLogonResponse::DecoderState(state) => {
-                info!(
-                    "railcom logon assigned: change_flags={=u8:#04x} change_count={} capabilities={=u16:#06x} packet={}",
-                    state.change_flags, state.change_count, state.capabilities, packet_sequence,
-                );
-            }
+#[cfg(feature = "dcc-a")]
+fn dispatch_logon_response(
+    packet_sequence: PacketSequence,
+    response: RailcomLogonResponse,
+    scheduler_sender: SchedulerCommandSender,
+) {
+    let answer = match response {
+        RailcomLogonResponse::DecoderId(logon_id) => LogonAnswer::Announced(DecoderUid {
+            manufacturer_id: logon_id.manufacturer_id,
+            decoder_id: logon_id.decoder_id,
+        }),
+        RailcomLogonResponse::Select(logon_select) => {
+            // The address the decoder asks for is on the track either way:
+            // its own, or another locomotive's when the two collide.
+            let sighting = crate::railcom::loco_tracker::record_identified_address(
+                packet_sequence,
+                logon_select.address,
+            );
+            log_first_sighting("railcom logon address", sighting);
+            LogonAnswer::WantsAddress(logon_select.address)
         }
+        RailcomLogonResponse::DecoderState(_) => LogonAnswer::Confirmed,
+    };
+    report_logon_answer(answer, scheduler_sender);
+}
+
+/// Without the `dcc-a` feature no logon answer is read, so none reaches
+/// this point.
+#[cfg(not(feature = "dcc-a"))]
+fn dispatch_logon_response(
+    _packet_sequence: PacketSequence,
+    _response: RailcomLogonResponse,
+    _scheduler_sender: SchedulerCommandSender,
+) {
+}
+
+/// A select or assign whose cutout closed without its answer is reported, so
+/// the command is sent again.
+#[cfg(feature = "dcc-a")]
+fn report_unanswered_logon_command(
+    command: LogonCommand,
+    channel: RailcomChannel,
+    answer: Option<&Result<RailcomLogonResponse, ParseError>>,
+    scheduler_sender: SchedulerCommandSender,
+) {
+    if matches!(command, LogonCommand::Select | LogonCommand::Assign)
+        && channel == RailcomChannel::Channel2
+        && !matches!(answer, Some(Ok(_)))
+    {
+        report_logon_answer(LogonAnswer::Unanswered(command), scheduler_sender);
     }
 }
 
@@ -303,12 +307,18 @@ fn dispatch_processed_window(
         result.window.channel,
         result.window.raw_slice(),
     );
-    state.forget_unanswered_select(command, result.window.channel, logon_answer.as_ref());
+    #[cfg(feature = "dcc-a")]
+    report_unanswered_logon_command(
+        command,
+        result.window.channel,
+        logon_answer.as_ref(),
+        scheduler_sender,
+    );
     // A window that completes a logon answer carries a decoder identity, not
     // address datagrams, even when its symbols also parse as an address pair.
     match logon_answer {
         Some(Ok(response)) => {
-            state.dispatch_response(result.window.packet_sequence, response, scheduler_sender);
+            dispatch_logon_response(result.window.packet_sequence, response, scheduler_sender);
         }
         Some(Err(error)) => {
             log_rejected_logon_answer(result, command, error);
