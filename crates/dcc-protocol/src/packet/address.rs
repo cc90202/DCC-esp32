@@ -91,8 +91,8 @@ impl DccAddress {
     /// a wire long-address encoding could in principle carry a value that also
     /// fits the short range. `from_magnitude` is for callers that only have a
     /// plain numeric address and want the same short/long split NMRA uses.
-    /// The RCN-218 logon answers tag the mode with a prefix instead: read them
-    /// with [`crate::logon::decode_address`].
+    /// The RCN-218 logon answers mark a short address with a prefix and read
+    /// the rest by magnitude: see [`crate::logon::decode_address`].
     #[must_use]
     pub fn from_magnitude(addr: u16) -> Option<Self> {
         match addr {

@@ -1317,13 +1317,16 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_logon_response_select_rejects_long_address_below_128() {
-        // Read as a plain number this was short address 100.
-        let raw = short_info_for_test([0x80, 100]);
+    fn test_parse_logon_response_select_reads_long_address_below_128_as_short() {
+        // The bytes a ZIMO decoder on short address 3 answers with.
+        let ch1 = [0x56, 0xac];
+        let ch2 = [0x8e, 0xac, 0xac, 0xac, 0xaa, 0xa5];
 
         assert_eq!(
-            parse_logon_answer(LogonCommand::Select, &raw[..2], &raw[2..]),
-            Err(ParseError::InvalidLogonAddress([0x80, 100]))
+            parse_logon_answer(LogonCommand::Select, &ch1, &ch2),
+            Ok(RailcomLogonResponse::Select(RailcomLogonSelect {
+                address: DccAddress::new_short(3).unwrap(),
+            }))
         );
     }
 
